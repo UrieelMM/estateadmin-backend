@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "administracioncondominio-93419",
+  "private_key_id": "090479707acd4c1e2dee416229082c80aebef19c",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCxDFcjKLSUXg6Z\n0X/s5+m/b/AsUHPKlCNERLkRBngeEcsD19zMJgUo8dmjy1YIn/prVcOe3hPLG5ES\ndFuvpNUtVhpRsK3t4dBtgSveO+DXv2UMu8RGFC7av1l/+4M7UVRSrE2ySv/s4fWP\ntB4puaRWRVbI2ljJiFgHyaVLjNh/gBPNB2uZm59vKHvl4fIcvsyqVbwnHrA+pWtS\nXjbRyJOX7m33Wp8Eqqe4vKL5dkBHM7wyKBg1o52O4FfKGAh4teqtvNnbjBAXXEli\nemg8Mn7/5QDGBP24TKzWaGWDn7pb71qrLvq0qOiP236cgEDOTWlWtrHEMD2a5h6S\nDs20Q8NXAgMBAAECggEAViJ20jgfgn8wA02VOyCo6+X9ptGNQ+VGMxRsJQhMr/Rg\nHIKMfRWSNRVUmQd318JdBpM3FLdeUdYbgirx4EYFIIVfUJbwR2cxC9VoDjp7bPtE\noilHmACBuxKU7FrkwZsTtxT0x+UNFaXo3fz3H72dYgth6V2xDHs0uLU1ocfoHD7X\nq85DLlbeUt9p+U0z/UgZIiYFAWa/sIOc0BU6/HwWS5sgsbDlFYBelGX3b5kcRefD\njeqZmACsFHaGLmZFJuON6kUaUztOrbyDuxLqIs1Ye1obsmXpzRXNpJuUxJXCa5b7\njbhbZ7TFC62VKZ+0RNIQSbWS5HW5YVc/JwQ70uXKwQKBgQDlNemWLe9mvxSHL4t6\n+qSE2RqJlw1EDXvtNR64Me+cfJ2CI/8B6NluBgCCdu94fTp3tO/YeMHPtG5JyKuP\ncrKwCaq3D7ROKsXOQqC1gQpwmM/fypijGMl0kOvnlU28MqkxLCzEnEDbkZmAIptk\nPeRnYwqV7jyTp+WbI/HPJNyt+QKBgQDFvbR3w6fAfoIj+1zQZZxVKOI9544fNwNL\nqWt4L/Yayl8MzXfB7U0QzszcaRX9E/g6ZB6XhfHcleuYGUhYan/NXb5nVHwtol+M\n0ukKREQA2AwcnDeeAuqENRjbETXmIJdkMwWbSy5dFoRGjUDT66qUmOV2vbLvO1rz\nBDr34w2PzwKBgQDHmtuAXSBOabiGwXDF99+tkSL7DwAOc2+ocsn9vf7cV+kSnCZG\nk3BF0BRBiTGhy+xOstLrwL2HE6m3t3kvwsK5arGwGYz7RWRc6sjpRybAR1M/oD6s\nSbmmOU42rl6ztaqBl+akkS4qB/GVFI4eDYgKQMXHK2C1dVEOeY7qxT8ogQKBgBHV\nvWw76mpzPpuuNT3anFIWAOnic7AfDx4I5teNQ95AuHf4JEAKfjPw4wtSMxiDb5Uc\nqKG0BA+IOhqa1SqcWHCWbvD07spS5dlWwIwbgiKtWdJOyLlou+w2ucowcDMUZ3Mz\nIuNR0Zm1yTJv1RQIIneKns+p5nSrXtWiYQswoG2DAoGACQ82Y7LRO4ceO77NPdY1\nbNYNviZpdEUWa2ztf+/Mq0bCUgzDJUPd0wmxbzoDyE9kjTa03XEhq+xEhP3xzNqu\n07KN9NPJ5Lu6obeIoojR85a4uUNZy7UHdlZjQfuwGbUR7OrXGHdm20/mpoqlG/Ig\nk064HHlkOliRNt/5mAexN8Y=\n-----END PRIVATE KEY-----\n",
+  "client_email": "firebase-adminsdk-oe9dm@administracioncondominio-93419.iam.gserviceaccount.com",
+  "client_id": "114580239960452033698",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-oe9dm%40administracioncondominio-93419.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
