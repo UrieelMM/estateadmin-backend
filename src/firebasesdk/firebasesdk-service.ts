@@ -1,9 +1,9 @@
 // src/firebasesdk/firebase-auth.service.ts
 import { Injectable } from '@nestjs/common';
 import * as admin from 'firebase-admin';
-import { RegisterCondominiumUsersCase, registerUser, RegisterClientCase, CreatePublicationCase  } from 'src/cases';
+import { RegisterCondominiumUsersCase, registerUser, RegisterClientCase, CreatePublicationCase, ParcelReceptionCase, MaintenancePaymentCase } from 'src/cases';
 
-import { RegisterUserDto, RegisterClientDto, CreatePublicationDto } from 'src/dtos';
+import { RegisterUserDto, RegisterClientDto, CreatePublicationDto, ParcelDto, MaintenanceFeesDto } from 'src/dtos';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -29,5 +29,13 @@ export class FirebaseAuthService {
 
   async createPublication(createPublicationDto: CreatePublicationDto, files: Express.Multer.File[]) {
     return await CreatePublicationCase(createPublicationDto, files);
+  }
+
+  async createParcelReception(createParcelReceptionDto: ParcelDto, files: Express.Multer.File[]) {
+    return await ParcelReceptionCase(createParcelReceptionDto, files);
+  }
+
+  async createMaintenanceFee(createMaintenanceFeeDto: MaintenanceFeesDto, files: Express.Multer.File[]) {
+    return await MaintenancePaymentCase(createMaintenanceFeeDto, files);
   }
 }
