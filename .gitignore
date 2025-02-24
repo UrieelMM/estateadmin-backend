@@ -4,7 +4,6 @@
 /build
 
 src/firebase/firebase-config.json
-src/firebase/firebase.js
 
 firestore.rules
 
