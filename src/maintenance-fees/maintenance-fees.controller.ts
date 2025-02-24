@@ -11,7 +11,7 @@ export class MaintenanceFeesController {
   @Post('create')
   @UseInterceptors(FilesInterceptor('attachments')) // Asegúrate de que 'attachments' coincide con el nombre del campo en el formulario
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
-  async createMaintenanceFees(@Req() req: Request, @UploadedFiles() files: Express.Multer.File[]) {
+  async createMaintenanceFees(@Req() req: Request, @UploadedFiles() files: any) {
   
     // Construye el DTO a partir de los datos del formulario
     let maintenanceFeeDto: MaintenanceFeesDto = {

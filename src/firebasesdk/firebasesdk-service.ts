@@ -27,15 +27,15 @@ export class FirebaseAuthService {
     return this.registerCondominiumUsersCase.execute(fileBuffer, companyName, condominiumName);
   }
 
-  async createPublication(createPublicationDto: CreatePublicationDto, files: Express.Multer.File[]) {
+  async createPublication(createPublicationDto: CreatePublicationDto, files: any) {
     return await CreatePublicationCase(createPublicationDto, files);
   }
 
-  async createParcelReception(createParcelReceptionDto: ParcelDto, files: Express.Multer.File[]) {
+  async createParcelReception(createParcelReceptionDto: ParcelDto, files: any) {
     return await ParcelReceptionCase(createParcelReceptionDto, files);
   }
 
-  async createMaintenanceFee(createMaintenanceFeeDto: MaintenanceFeesDto, files: Express.Multer.File[]) {
+  async createMaintenanceFee(createMaintenanceFeeDto: MaintenanceFeesDto, files: any) {
     return await MaintenancePaymentCase(createMaintenanceFeeDto, files);
   }
 }

@@ -22,7 +22,7 @@ export class PublicationsController {
   @Post('create')
   @UseInterceptors(FilesInterceptor('attachments')) // Asegúrate de que 'attachments' coincide con el nombre del campo en el formulario
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
-  async createPublication(@Req() req: Request, @UploadedFiles() files: Express.Multer.File[]) {
+  async createPublication(@Req() req: Request, @UploadedFiles() files: any) {
     // Construye el DTO a partir de los datos del formulario
     let createPublicationDto: CreatePublicationDto = {
       title: req.body.title,

@@ -6,7 +6,7 @@ import { FirebaseAuthService } from 'src/firebasesdk/firebasesdk-service';
 export class PublicationsService {
   constructor(private firebaseSDKService: FirebaseAuthService) {}
 
-  async createPublication(createPublicationDto: CreatePublicationDto, files: Express.Multer.File[]): Promise<any> {
+  async createPublication(createPublicationDto: CreatePublicationDto, files: any): Promise<any> {
     return await this.firebaseSDKService.createPublication(createPublicationDto, files);
   }
 }

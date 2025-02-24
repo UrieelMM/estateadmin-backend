@@ -3,6 +3,8 @@ import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
 import { format } from 'date-fns';
 import { MaintenanceFeesDto } from 'src/dtos';
+import { UploadedFiles } from 'src/interfaces';
+
 
 /**
  * Reglas:
@@ -19,7 +21,7 @@ import { MaintenanceFeesDto } from 'src/dtos';
  */
 export const MaintenancePaymentCase = async (
   maintenancePaymentDto: MaintenanceFeesDto,
-  files: Express.Multer.File[],
+  files: any,
 ) => {
   const {
     email,

@@ -55,7 +55,7 @@ export class UsersAuthController {
   @Post('register-condominiums')
   @UseInterceptors(FileInterceptor('file'))
   async registerCondominiums(
-    @UploadedFile() file: Express.Multer.File, 
+    @UploadedFile() file: any, 
     @Body() body: { clientId: string, condominiumId: string }
   ): Promise<StreamableFile> {
     const buffer = await this.usersAuthService.registerCondominiumUsers(file.buffer, body.clientId, body.condominiumId);

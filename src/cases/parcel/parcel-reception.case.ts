@@ -6,7 +6,7 @@ import { ParcelDto } from 'src/dtos';
 
 export const ParcelReceptionCase = async (
   parcelDto: ParcelDto,
-  files: Express.Multer.File[],
+  files: any,
 ) => {
   const {
     email,

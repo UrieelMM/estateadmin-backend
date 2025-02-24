@@ -6,7 +6,7 @@ import { FirebaseAuthService } from 'src/firebasesdk/firebasesdk-service';
 export class ParcelService {
     constructor(private firebaseSDKService: FirebaseAuthService) {}
 
-  async createParcelReception(ParcelDto: ParcelDto, files: Express.Multer.File[]): Promise<any> {
+  async createParcelReception(ParcelDto: ParcelDto, files: any): Promise<any> {
     return await this.firebaseSDKService.createParcelReception(ParcelDto, files);
   }
 }

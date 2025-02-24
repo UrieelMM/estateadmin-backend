@@ -6,7 +6,7 @@ import { CreatePublicationDto } from 'src/dtos';
 
 export const CreatePublicationCase = async (
   createPublicationDto: CreatePublicationDto,
-  files: Express.Multer.File[],
+  files: any,
 ) => {
   const {
     clientId,
