@@ -2,7 +2,7 @@ version: 1.0
 runtime: nodejs18
 
 build:
-  command: "npm install && npx nest build"
+  commands: "npm install && npm run build"
 
 start: "npm run start:prod"
 port: 3000
