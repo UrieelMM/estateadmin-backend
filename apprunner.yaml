@@ -2,21 +2,19 @@ version: 1.0
 runtime: nodejs18
 
 build:
-  commands:
-    - npm install
-    - npx nest build
+  command: "npm install && npx nest build"
 
-start: npm run start:prod
+start: "npm run start:prod"
 port: 3000
 
 healthCheck:
   protocol: TCP
   timeout: 5
-  interval: 10        # Intervalo entre comprobaciones en segundos
-  unhealthyThreshold: 5   # Umbral de mal estado: 5 errores consecutivos
-  healthyThreshold: 1     # Umbral de estado: 1 comprobación exitosa
+  interval: 10
+  unhealthyThreshold: 5
+  healthyThreshold: 1
 
 autoScaling:
-  maxConcurrency: 120   # Máximo de solicitudes simultáneas por instancia
-  minInstances: 1       # Mínimo número de instancias
-  maxInstances: 25      # Máximo número de instancias
+  maxConcurrency: 120
+  minInstances: 1
+  maxInstances: 25
