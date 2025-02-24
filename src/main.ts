@@ -9,7 +9,6 @@ async function bootstrap() {
     allowedHeaders: 'Content-Type, Accept',
   });
   const port = process.env.PORT || 8080;
-  console.log(`Listening on port ${port}`);
   await app.listen(port);
 }
 bootstrap();
