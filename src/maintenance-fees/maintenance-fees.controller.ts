@@ -21,6 +21,8 @@ export class MaintenanceFeesController {
       clientId: req.body.clientId,
       chargeAssignments: req.body.chargeAssignments,
       useCreditBalance: req.body.useCreditBalance,
+      financialAccountId: req.body.financialAccountId,
+      paymentDate: req.body.paymentDate,
       paymentType: req.body.paymentType,
       paymentGroupId: req.body.paymentGroupId,
       month: req.body.month,

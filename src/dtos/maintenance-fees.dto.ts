@@ -48,12 +48,18 @@ export class MaintenanceFeesDto {
   chargeAssignments: string;
 
   @IsString()
+  paymentDate: string;
+
+  @IsString()
+  financialAccountId: string;
+
+  @IsString()
   useCreditBalance: string;
-    
+
   @IsOptional()
   @IsString()
   comments: string;
-    
+
   @IsNotEmpty()
   @IsString()
   clientId: string;

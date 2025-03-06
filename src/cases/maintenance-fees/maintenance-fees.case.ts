@@ -5,19 +5,16 @@ import { format } from 'date-fns';
 import { MaintenanceFeesDto } from 'src/dtos';
 import { UploadedFiles } from 'src/interfaces';
 
-
 /**
  * Reglas:
  * - Pagos parciales: se descuenta charge.amount con amountPaid.
- * - Sobrepago: el excedente se guarda en creditBalance en el pago y, a partir de ahora,
- *   NO se aplica automáticamente al siguiente cargo; se registra para uso manual.
- * - Se permite que un mismo pago se distribuya a varios cargos (campo chargeAssignments).
- * - startAt y dueDate se guardan como string.
+ * - Sobrepago: el excedente se guarda en creditBalance en el pago.
+ * - Un mismo pago se puede repartir a varios cargos (campo chargeAssignments).
+ * - startAt, dueDate y paymentDate se guardan como string.
  * - Si charge.amount llega a 0 se marca como paid:true.
+ * - Nuevo: si amountPaid=0 y el usuario tiene suficiente saldo, se permite pagar con saldo a favor.
  * 
- * Nuevo caso: si el usuario decide pagar un cargo usando únicamente su saldo a favor
- * (por ejemplo, amountPaid = 0, pero con suficiente crédito para cubrir el cargo),
- * se permitirá guardar el pago y se aplicará el crédito disponible para completar el cargo.
+ * CAMBIO: Se añade paymentDate (ahora se espera un ISO string) y financialAccountId en cada pago.
  */
 export const MaintenancePaymentCase = async (
   maintenancePaymentDto: MaintenanceFeesDto,
@@ -33,8 +30,6 @@ export const MaintenancePaymentCase = async (
     // Monto de pago parcial
     amountPaid: amountPaidStr,
     amountPending: amountPendingStr,
-    // Si es un cargo nuevo
-    cargoTotal: cargoTotalStr,
     // Si se paga un cargo existente
     chargeId,
     // Fechas como string
@@ -48,6 +43,11 @@ export const MaintenancePaymentCase = async (
     paymentType,
     // Agrupación de pagos
     paymentGroupId,
+
+    // NUEVO: Fecha de pago y cuenta seleccionada
+    // Ahora se espera un ISO string con la fecha de pago
+    paymentDate,
+    financialAccountId,
   } = maintenancePaymentDto;
 
   // Convertir useCreditBalance a boolean
@@ -65,7 +65,7 @@ export const MaintenancePaymentCase = async (
   // Convertir montos a number
   const amountPaid = parseFloat(amountPaidStr || '0');
   const amountPending = parseFloat(amountPendingStr || '0');
-  const cargoTotal = parseFloat(cargoTotalStr || '0');
+  const cargoTotal = parseFloat(maintenancePaymentDto.cargoTotal || '0');
 
   // 1. Buscar al usuario por su número
   const userSnap = await admin
@@ -83,6 +83,7 @@ export const MaintenancePaymentCase = async (
       `No se encontró un usuario con el número de condómino: ${numberCondominium}.`
     );
   }
+
   const userDoc = userSnap.docs[0];
   const userId = userDoc.id;
   const userData = userDoc.data();
@@ -126,17 +127,20 @@ export const MaintenancePaymentCase = async (
     } catch (error) {
       throw new InternalServerErrorException('chargeAssignments no es un JSON válido.');
     }
+
     const totalAssigned = assignments.reduce((sum, curr) => sum + curr.amount, 0);
-    // Si no se usa crédito, se exige que totalAssigned === amountPaid.
-    // Si se usa crédito, permitimos que totalAssigned > amountPaid.
     if (!applyCredit && totalAssigned !== amountPaid) {
       throw new InternalServerErrorException(
         'El monto abonado debe coincidir exactamente con la suma de los cargos asignados.'
       );
     }
-    // En multi-cargo, si se usa crédito, se calcula creditUsed como (totalAssigned - amountPaid)
-    const creditUsed = applyCredit && totalAssigned > amountPaid ? totalAssigned - amountPaid : 0;
+
+    const creditUsed = applyCredit && totalAssigned > amountPaid
+      ? totalAssigned - amountPaid
+      : 0;
+
     let totalLeftover = 0;
+
     for (const assignment of assignments) {
       const assignmentChargeRef = admin
         .firestore()
@@ -148,21 +152,29 @@ export const MaintenancePaymentCase = async (
         .doc(userId)
         .collection('charges')
         .doc(assignment.chargeId);
+
       const chargeSnap = await assignmentChargeRef.get();
       if (!chargeSnap.exists) {
-        throw new InternalServerErrorException(`El cargo con id ${assignment.chargeId} no existe.`);
+        throw new InternalServerErrorException(
+          `El cargo con id ${assignment.chargeId} no existe.`
+        );
       }
       const chargeData = chargeSnap.data() || {};
       const currentRemaining = chargeData.amount || 0;
+
       let assignedAmount = assignment.amount;
       let leftoverForThisCharge = 0;
+
       if (assignedAmount > currentRemaining) {
         leftoverForThisCharge = assignedAmount - currentRemaining;
         assignedAmount = currentRemaining;
       }
+
       const newRemaining = currentRemaining - assignedAmount;
       const isPaid = newRemaining <= 0;
+
       await assignmentChargeRef.update({ amount: newRemaining, paid: isPaid });
+
       const paymentId = uuidv4();
       const paymentRecord = {
         paymentId,
@@ -178,16 +190,18 @@ export const MaintenancePaymentCase = async (
         dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
         phone: phoneNumber,
         invoiceRequired,
-        // Se guarda el crédito sobrante generado en este cargo, si existe.
         creditBalance: leftoverForThisCharge > 0 ? leftoverForThisCharge : 0,
         paymentType: paymentType || '',
         paymentGroupId: paymentGroupId || '',
-        creditUsed: 0,
+        // Modificación: se asigna el valor calculado de crédito utilizado
+        creditUsed: creditUsed,
+        paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
+        financialAccountId: financialAccountId || '',
       };
       await assignmentChargeRef.collection('payments').doc(paymentId).set(paymentRecord);
       totalLeftover += leftoverForThisCharge;
     }
-    // Actualizar totalCreditBalance: se resta el crédito usado y se suma el sobrante.
+
     const userRef = admin
       .firestore()
       .collection('clients')
@@ -196,11 +210,14 @@ export const MaintenancePaymentCase = async (
       .doc(condominiumId)
       .collection('users')
       .doc(userId);
+
     const newUserTotalCredit = currentTotalCredit - creditUsed + totalLeftover;
     const newTotalCredit = Math.round(newUserTotalCredit * 100) / 100;
     await userRef.update({ totalCreditBalance: newTotalCredit });
-    return { overallCreditBalance: 0, attachmentUrls };
+
+    return { overallCreditBalance: newTotalCredit, attachmentUrls };
   }
+
   // 4. PROCESO ÚNICO (sin chargeAssignments)
   else {
     const userRef = admin
@@ -211,6 +228,7 @@ export const MaintenancePaymentCase = async (
       .doc(condominiumId)
       .collection('users')
       .doc(userId);
+
     let finalChargeId = chargeId ? chargeId : (month ? month : uuidv4());
     const chargeRef = admin
       .firestore()
@@ -222,10 +240,15 @@ export const MaintenancePaymentCase = async (
       .doc(userId)
       .collection('charges')
       .doc(finalChargeId);
+
     let remainingAmount = 0;
-    if (!(await chargeRef.get()).exists) {
+    const existingCharge = await chargeRef.get();
+
+    if (!existingCharge.exists) {
       if (!cargoTotal || cargoTotal <= 0) {
-        throw new InternalServerErrorException('No se especificó un cargoTotal válido al crear el cargo.');
+        throw new InternalServerErrorException(
+          'No se especificó un cargoTotal válido al crear el cargo.'
+        );
       }
       remainingAmount = cargoTotal;
       await chargeRef.set({
@@ -243,8 +266,7 @@ export const MaintenancePaymentCase = async (
         dueDate: dueDateStr || '',
       });
     } else {
-      const chargeSnap = await chargeRef.get();
-      const chargeData = chargeSnap.data() || {};
+      const chargeData = existingCharge.data() || {};
       remainingAmount = chargeData.amount || 0;
       await chargeRef.update({
         phone: phoneNumber,
@@ -254,19 +276,24 @@ export const MaintenancePaymentCase = async (
         ...(dueDateStr ? { dueDate: dueDateStr } : {}),
       });
     }
-    // --- Cálculo del pago único ---
+
     let creditToApply = 0;
     if (applyCredit && currentTotalCredit > 0 && amountPaid < remainingAmount) {
       creditToApply = Math.min(currentTotalCredit, remainingAmount - amountPaid);
     }
+
     const effectivePayment = amountPaid + creditToApply;
     const creditUsed = creditToApply;
     let leftover = 0;
     if (effectivePayment > remainingAmount) {
       leftover = Math.round((effectivePayment - remainingAmount) * 100) / 100;
     }
-    const newRemaining = effectivePayment >= remainingAmount ? 0 : remainingAmount - effectivePayment;
+
+    const newRemaining = effectivePayment >= remainingAmount
+      ? 0
+      : remainingAmount - effectivePayment;
     const isPaid = newRemaining === 0;
+
     const paymentId = uuidv4();
     const paymentData = {
       paymentId,
@@ -286,17 +313,25 @@ export const MaintenancePaymentCase = async (
       creditUsed,
       paymentType: paymentType || '',
       paymentGroupId: paymentGroupId || '',
+
+      // NUEVO: Guardamos fecha y cuenta financiera
+      paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
+      financialAccountId: financialAccountId || '',
     };
+
     await chargeRef.collection('payments').doc(paymentId).set(paymentData);
     await chargeRef.update({ amount: newRemaining, paid: isPaid });
-    // Actualizar el totalCreditBalance del usuario mediante transacción:
+
     await admin.firestore().runTransaction(async (transaction) => {
       const userDocRef = userRef;
       const userDoc = await transaction.get(userDocRef);
       const currentCredit = parseFloat(userDoc.data()?.totalCreditBalance || '0');
       const newCredit = currentCredit - creditUsed + leftover;
-      transaction.update(userDocRef, { totalCreditBalance: Math.round(newCredit * 100) / 100 });
+      transaction.update(userDocRef, {
+        totalCreditBalance: Math.round(newCredit * 100) / 100
+      });
     });
+
     return {
       paymentId,
       attachmentUrls,
