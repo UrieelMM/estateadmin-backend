@@ -118,6 +118,13 @@ export const MaintenancePaymentCase = async (
       throw new InternalServerErrorException('Error al subir los archivos de comprobante.');
     }
   }
+  // Convertir attachmentUrls a un único string, ya que siempre habrá solo una URL
+  const attachmentPayment = attachmentUrls.length > 0 ? attachmentUrls[0] : '';
+
+  // Determinar el mes formateado a partir de paymentDate (ej: "01", "02", etc.)
+  const monthFormatted = paymentDate ? format(new Date(paymentDate), 'MM') : '';
+  // Calcular el año-mes a partir de paymentDate (ej: "2025-03")
+  const yearMonth = paymentDate ? format(new Date(paymentDate), 'yyyy-MM') : '';
 
   // 3. PROCESO MULTI-CARGO
   if (chargeAssignments) {
@@ -182,11 +189,15 @@ export const MaintenancePaymentCase = async (
         numberCondominium,
         clientId,
         condominiumId,
-        month: month || '',
+        // Se asigna el mes derivado de paymentDate en formato "MM"
+        month: monthFormatted,
+        // Nuevo campo yearMonth (ej: "2025-03")
+        yearMonth: yearMonth,
         comments,
         amountPaid: assignedAmount,
         amountPending,
-        attachmentPayment: attachmentUrls,
+        // Se guarda la URL única en lugar de un array
+        attachmentPayment: attachmentPayment,
         dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
         phone: phoneNumber,
         invoiceRequired,
@@ -215,7 +226,7 @@ export const MaintenancePaymentCase = async (
     const newTotalCredit = Math.round(newUserTotalCredit * 100) / 100;
     await userRef.update({ totalCreditBalance: newTotalCredit });
 
-    return { overallCreditBalance: newTotalCredit, attachmentUrls };
+    return { overallCreditBalance: newTotalCredit, attachmentUrls: attachmentPayment };
   }
 
   // 4. PROCESO ÚNICO (sin chargeAssignments)
@@ -257,7 +268,10 @@ export const MaintenancePaymentCase = async (
         email,
         numberCondominium,
         phone: phoneNumber,
-        month: month ?? '',
+        // Se asigna el mes derivado de paymentDate en formato "MM"
+        month: monthFormatted,
+        // Nuevo campo yearMonth (ej: "2025-03")
+        yearMonth: yearMonth,
         comments,
         dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
         paid: false,
@@ -301,11 +315,15 @@ export const MaintenancePaymentCase = async (
       numberCondominium,
       clientId,
       condominiumId,
-      month: month ?? '',
+      // Se asigna el mes derivado de paymentDate en formato "MM"
+      month: monthFormatted,
+      // Nuevo campo yearMonth (ej: "2025-03")
+      yearMonth: yearMonth,
       comments,
       amountPaid: effectivePayment,
       amountPending,
-      attachmentPayment: attachmentUrls,
+      // Se guarda la URL única en lugar de un array
+      attachmentPayment: attachmentPayment,
       dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
       phone: phoneNumber,
       invoiceRequired,
@@ -313,7 +331,6 @@ export const MaintenancePaymentCase = async (
       creditUsed,
       paymentType: paymentType || '',
       paymentGroupId: paymentGroupId || '',
-
       // NUEVO: Guardamos fecha y cuenta financiera
       paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
       financialAccountId: financialAccountId || '',
@@ -334,7 +351,7 @@ export const MaintenancePaymentCase = async (
 
     return {
       paymentId,
-      attachmentUrls,
+      attachmentUrls: attachmentPayment,
       leftoverApplied: leftover,
     };
   }
