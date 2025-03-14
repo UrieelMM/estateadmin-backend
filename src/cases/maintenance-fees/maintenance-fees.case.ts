@@ -20,6 +20,16 @@ export const MaintenancePaymentCase = async (
   maintenancePaymentDto: MaintenanceFeesDto,
   files: any,
 ) => {
+  // Si se recibe el flag de pago no identificado, este endpoint no lo procesa
+  if (
+    String(maintenancePaymentDto.isUnidentifiedPayment) === 'true' ||
+    maintenancePaymentDto.isUnidentifiedPayment === true
+  ) {
+    throw new InternalServerErrorException(
+      'Este endpoint es solo para pagos identificados.'
+    );
+  }
+
   const {
     email,
     numberCondominium,
@@ -43,7 +53,6 @@ export const MaintenancePaymentCase = async (
     paymentType,
     // Agrupación de pagos
     paymentGroupId,
-
     // NUEVO: Fecha de pago y cuenta seleccionada
     // Ahora se espera un ISO string con la fecha de pago
     paymentDate,
@@ -118,8 +127,9 @@ export const MaintenancePaymentCase = async (
       throw new InternalServerErrorException('Error al subir los archivos de comprobante.');
     }
   }
-  // Convertir attachmentUrls a un único string, ya que siempre habrá solo una URL
-  const attachmentPayment = attachmentUrls.length > 0 ? attachmentUrls[0] : '';
+  // Si no se sube un archivo, se usa el valor enviado en maintenancePaymentDto.attachmentPayment
+  const attachmentPayment = attachmentUrls.length > 0 ? attachmentUrls[0] : (maintenancePaymentDto.attachmentPayment || '');
+  console.log("attachmentPayment", attachmentPayment);
 
   // Determinar el mes formateado a partir de paymentDate (ej: "01", "02", etc.)
   const monthFormatted = paymentDate ? format(new Date(paymentDate), 'MM') : '';
@@ -189,26 +199,23 @@ export const MaintenancePaymentCase = async (
         numberCondominium,
         clientId,
         condominiumId,
-        // Se asigna el mes derivado de paymentDate en formato "MM"
         month: monthFormatted,
-        // Nuevo campo yearMonth (ej: "2025-03")
-        yearMonth: yearMonth,
+        yearMonth,
         comments,
         amountPaid: assignedAmount,
         amountPending,
-        // Se guarda la URL única en lugar de un array
-        attachmentPayment: attachmentPayment,
+        attachmentPayment: attachmentPayment, // Se envía la URL del comprobante
         dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
         phone: phoneNumber,
         invoiceRequired,
         creditBalance: leftoverForThisCharge > 0 ? leftoverForThisCharge : 0,
         paymentType: paymentType || '',
         paymentGroupId: paymentGroupId || '',
-        // Modificación: se asigna el valor calculado de crédito utilizado
         creditUsed: creditUsed,
         paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
         financialAccountId: financialAccountId || '',
       };
+      console.log("paymentRecord", paymentRecord);
       await assignmentChargeRef.collection('payments').doc(paymentId).set(paymentRecord);
       totalLeftover += leftoverForThisCharge;
     }
@@ -268,9 +275,7 @@ export const MaintenancePaymentCase = async (
         email,
         numberCondominium,
         phone: phoneNumber,
-        // Se asigna el mes derivado de paymentDate en formato "MM"
         month: monthFormatted,
-        // Nuevo campo yearMonth (ej: "2025-03")
         yearMonth: yearMonth,
         comments,
         dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
@@ -315,15 +320,12 @@ export const MaintenancePaymentCase = async (
       numberCondominium,
       clientId,
       condominiumId,
-      // Se asigna el mes derivado de paymentDate en formato "MM"
       month: monthFormatted,
-      // Nuevo campo yearMonth (ej: "2025-03")
       yearMonth: yearMonth,
       comments,
       amountPaid: effectivePayment,
       amountPending,
-      // Se guarda la URL única en lugar de un array
-      attachmentPayment: attachmentPayment,
+      attachmentPayment: attachmentPayment, // Se envía la URL del comprobante
       dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
       phone: phoneNumber,
       invoiceRequired,
@@ -331,7 +333,6 @@ export const MaintenancePaymentCase = async (
       creditUsed,
       paymentType: paymentType || '',
       paymentGroupId: paymentGroupId || '',
-      // NUEVO: Guardamos fecha y cuenta financiera
       paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
       financialAccountId: financialAccountId || '',
     };

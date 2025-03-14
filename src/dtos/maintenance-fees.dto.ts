@@ -24,6 +24,10 @@ export class MaintenanceFeesDto {
 
   @IsNotEmpty()
   @IsString()
+  attachmentPayment: string;
+
+  @IsNotEmpty()
+  @IsString()
 
   @IsNotEmpty()
   @IsNumber()
@@ -59,6 +63,9 @@ export class MaintenanceFeesDto {
   @IsOptional()
   @IsString()
   comments: string;
+
+  @IsOptional()
+  isUnidentifiedPayment: boolean;
 
   @IsNotEmpty()
   @IsString()

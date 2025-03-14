@@ -2,8 +2,10 @@
 import { Injectable } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { RegisterCondominiumUsersCase, registerUser, RegisterClientCase, CreatePublicationCase, ParcelReceptionCase, MaintenancePaymentCase } from 'src/cases';
+import { EditUnidentifiedPaymentCase } from 'src/cases/maintenance-fees/edit-unidentified-payment.case';
+import { MaintenanceUnidentifiedPaymentCase } from 'src/cases/maintenance-fees/maintenance-unidentified-payment.case';
 
-import { RegisterUserDto, RegisterClientDto, CreatePublicationDto, ParcelDto, MaintenanceFeesDto } from 'src/dtos';
+import { RegisterUserDto, RegisterClientDto, CreatePublicationDto, ParcelDto, MaintenanceFeesDto, CreateUnidentifiedPaymentDto, EditUnidentifiedPaymentDto } from 'src/dtos';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -37,5 +39,13 @@ export class FirebaseAuthService {
 
   async createMaintenanceFee(createMaintenanceFeeDto: MaintenanceFeesDto, files: any) {
     return await MaintenancePaymentCase(createMaintenanceFeeDto, files);
+  }
+
+  async createUnidentifiedPayment(createUnidentifiedPaymentDto: CreateUnidentifiedPaymentDto, files: any) {
+    return await MaintenanceUnidentifiedPaymentCase(createUnidentifiedPaymentDto, files);
+  }
+
+  async editUnidentifiedPayment(editUnidentifiedPaymentDto: EditUnidentifiedPaymentDto) {
+    return await EditUnidentifiedPaymentCase(editUnidentifiedPaymentDto);
   }
 }
