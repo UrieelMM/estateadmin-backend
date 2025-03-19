@@ -216,7 +216,18 @@ export const MaintenancePaymentCase = async (
         financialAccountId: financialAccountId || '',
       };
       console.log("paymentRecord", paymentRecord);
+      // Insertar en la colección de pagos del charge
       await assignmentChargeRef.collection('payments').doc(paymentId).set(paymentRecord);
+      // INSERTAR ADICIONAL: Guardar en la nueva colección paymentsToSendEmail
+      await admin.firestore()
+        .collection('clients')
+        .doc(clientId)
+        .collection('condominiums')
+        .doc(condominiumId)
+        .collection('paymentsToSendEmail')
+        .doc(paymentId)
+        .set(paymentRecord);
+
       totalLeftover += leftoverForThisCharge;
     }
 
@@ -338,6 +349,16 @@ export const MaintenancePaymentCase = async (
     };
 
     await chargeRef.collection('payments').doc(paymentId).set(paymentData);
+    // INSERTAR ADICIONAL: Guardar en la nueva colección paymentsToSendEmail
+    await admin.firestore()
+      .collection('clients')
+      .doc(clientId)
+      .collection('condominiums')
+      .doc(condominiumId)
+      .collection('paymentsToSendEmail')
+      .doc(paymentId)
+      .set(paymentData);
+
     await chargeRef.update({ amount: newRemaining, paid: isPaid });
 
     await admin.firestore().runTransaction(async (transaction) => {
