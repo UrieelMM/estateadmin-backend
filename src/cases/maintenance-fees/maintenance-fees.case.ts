@@ -136,6 +136,9 @@ export const MaintenancePaymentCase = async (
   // Calcular el año-mes a partir de paymentDate (ej: "2025-03")
   const yearMonth = paymentDate ? format(new Date(paymentDate), 'yyyy-MM') : '';
 
+  // Generar un timestamp único para los registros (evita anidar FieldValue.serverTimestamp())
+  const currentTimestamp = admin.firestore.Timestamp.now();
+
   // 3. PROCESO MULTI-CARGO
   if (chargeAssignments) {
     let assignments: { chargeId: string; amount: number; dueDate?: number }[] = [];
@@ -200,15 +203,15 @@ export const MaintenancePaymentCase = async (
         numberCondominium,
         clientId,
         condominiumId,
-        userId, // Guardamos también el userUID
+        userId, // Usamos userId en lugar de userUID
         chargeUID: assignment.chargeId, // Específico de cada asignación
         month: monthFormatted,
         yearMonth,
         comments,
         amountPaid: assignedAmount,
         amountPending,
-        attachmentPayment: attachmentPayment, // Se envía la URL del comprobante
-        dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
+        attachmentPayment: attachmentPayment,
+        dateRegistered: currentTimestamp,  // Usamos timestamp ya generado
         phone: phoneNumber,
         invoiceRequired,
         creditBalance: leftoverForThisCharge > 0 ? leftoverForThisCharge : 0,
@@ -221,7 +224,7 @@ export const MaintenancePaymentCase = async (
       console.log("individual paymentRecord", paymentRecord);
       // Insertar en la colección de pagos del cargo
       await assignmentChargeRef.collection('payments').doc(individualPaymentId).set(paymentRecord);
-      // Acumular el registro en el array para luego agruparlo
+      // Acumular el registro para luego consolidarlo
       paymentsArray.push(paymentRecord);
       totalLeftover += leftoverForThisCharge;
     }
@@ -239,15 +242,14 @@ export const MaintenancePaymentCase = async (
       clientId,
       condominiumId,
       userId,
-      // En multi-cargo, se puede conservar el chargeUID original o dejarlo vacío
-      chargeUID: chargeId || '',
+      chargeUID: chargeId || '', // Se puede conservar el chargeUID original o dejarlo vacío
       month: monthFormatted,
       yearMonth,
       comments,
       amountPaid: aggregatedAmountPaid,
       amountPending,
       attachmentPayment: attachmentPayment,
-      dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
+      dateRegistered: currentTimestamp,
       phone: phoneNumber,
       invoiceRequired,
       creditBalance: aggregatedCreditBalance,
@@ -269,8 +271,7 @@ export const MaintenancePaymentCase = async (
       .doc(aggregatedPaymentId)
       .set(aggregatedPaymentRecord);
 
-    const userRef = admin
-      .firestore()
+    const userRef = admin.firestore()
       .collection('clients')
       .doc(clientId)
       .collection('condominiums')
@@ -287,8 +288,7 @@ export const MaintenancePaymentCase = async (
 
   // 4. PROCESO ÚNICO (sin chargeAssignments)
   else {
-    const userRef = admin
-      .firestore()
+    const userRef = admin.firestore()
       .collection('clients')
       .doc(clientId)
       .collection('condominiums')
@@ -297,8 +297,7 @@ export const MaintenancePaymentCase = async (
       .doc(userId);
 
     let finalChargeId = chargeId ? chargeId : (month ? month : uuidv4());
-    const chargeRef = admin
-      .firestore()
+    const chargeRef = admin.firestore()
       .collection('clients')
       .doc(clientId)
       .collection('condominiums')
@@ -327,7 +326,7 @@ export const MaintenancePaymentCase = async (
         month: monthFormatted,
         yearMonth: yearMonth,
         comments,
-        dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
+        dateRegistered: currentTimestamp,
         paid: false,
         invoiceRequired,
         startAt: startAtStr || '',
@@ -377,7 +376,7 @@ export const MaintenancePaymentCase = async (
       amountPaid: effectivePayment,
       amountPending,
       attachmentPayment: attachmentPayment,
-      dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
+      dateRegistered: currentTimestamp,
       phone: phoneNumber,
       invoiceRequired,
       creditBalance: leftover > 0 ? leftover : 0,
