@@ -157,7 +157,8 @@ export const MaintenancePaymentCase = async (
       : 0;
 
     let totalLeftover = 0;
-
+    const paymentsArray: any[] = [];
+    // Por cada asignación se procesa el cargo correspondiente
     for (const assignment of assignments) {
       const assignmentChargeRef = admin
         .firestore()
@@ -192,13 +193,15 @@ export const MaintenancePaymentCase = async (
 
       await assignmentChargeRef.update({ amount: newRemaining, paid: isPaid });
 
-      const paymentId = uuidv4();
+      const individualPaymentId = uuidv4();
       const paymentRecord = {
-        paymentId,
+        paymentId: individualPaymentId,
         email,
         numberCondominium,
         clientId,
         condominiumId,
+        userId, // Guardamos también el userUID
+        chargeUID: assignment.chargeId, // Específico de cada asignación
         month: monthFormatted,
         yearMonth,
         comments,
@@ -215,21 +218,56 @@ export const MaintenancePaymentCase = async (
         paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
         financialAccountId: financialAccountId || '',
       };
-      console.log("paymentRecord", paymentRecord);
-      // Insertar en la colección de pagos del charge
-      await assignmentChargeRef.collection('payments').doc(paymentId).set(paymentRecord);
-      // INSERTAR ADICIONAL: Guardar en la nueva colección paymentsToSendEmail
-      await admin.firestore()
-        .collection('clients')
-        .doc(clientId)
-        .collection('condominiums')
-        .doc(condominiumId)
-        .collection('paymentsToSendEmail')
-        .doc(paymentId)
-        .set(paymentRecord);
-
+      console.log("individual paymentRecord", paymentRecord);
+      // Insertar en la colección de pagos del cargo
+      await assignmentChargeRef.collection('payments').doc(individualPaymentId).set(paymentRecord);
+      // Acumular el registro en el array para luego agruparlo
+      paymentsArray.push(paymentRecord);
       totalLeftover += leftoverForThisCharge;
     }
+
+    // Calcular totales agregados
+    const aggregatedAmountPaid = paymentsArray.reduce((sum, p) => sum + Number(p.amountPaid || 0), 0);
+    const aggregatedCreditBalance = paymentsArray.reduce((sum, p) => sum + Number(p.creditBalance || 0), 0);
+
+    // Crear un único registro consolidado para paymentsToSendEmail
+    const aggregatedPaymentId = uuidv4();
+    const aggregatedPaymentRecord = {
+      paymentId: aggregatedPaymentId,
+      email,
+      numberCondominium,
+      clientId,
+      condominiumId,
+      userId,
+      // En multi-cargo, se puede conservar el chargeUID original o dejarlo vacío
+      chargeUID: chargeId || '',
+      month: monthFormatted,
+      yearMonth,
+      comments,
+      amountPaid: aggregatedAmountPaid,
+      amountPending,
+      attachmentPayment: attachmentPayment,
+      dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
+      phone: phoneNumber,
+      invoiceRequired,
+      creditBalance: aggregatedCreditBalance,
+      creditUsed: creditUsed,
+      paymentType: paymentType || '',
+      paymentGroupId: paymentGroupId || '',
+      paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
+      financialAccountId: financialAccountId || '',
+      payments: paymentsArray  // Array con los registros individuales
+    };
+
+    // Insertar el registro consolidado en paymentsToSendEmail
+    await admin.firestore()
+      .collection('clients')
+      .doc(clientId)
+      .collection('condominiums')
+      .doc(condominiumId)
+      .collection('paymentsToSendEmail')
+      .doc(aggregatedPaymentId)
+      .set(aggregatedPaymentRecord);
 
     const userRef = admin
       .firestore()
@@ -331,12 +369,14 @@ export const MaintenancePaymentCase = async (
       numberCondominium,
       clientId,
       condominiumId,
+      userId,
+      chargeUID: chargeId || '', // Se guarda el chargeId
       month: monthFormatted,
       yearMonth: yearMonth,
       comments,
       amountPaid: effectivePayment,
       amountPending,
-      attachmentPayment: attachmentPayment, // Se envía la URL del comprobante
+      attachmentPayment: attachmentPayment,
       dateRegistered: admin.firestore.FieldValue.serverTimestamp(),
       phone: phoneNumber,
       invoiceRequired,
@@ -349,7 +389,7 @@ export const MaintenancePaymentCase = async (
     };
 
     await chargeRef.collection('payments').doc(paymentId).set(paymentData);
-    // INSERTAR ADICIONAL: Guardar en la nueva colección paymentsToSendEmail
+    // Insertar un único registro en paymentsToSendEmail
     await admin.firestore()
       .collection('clients')
       .doc(clientId)
