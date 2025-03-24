@@ -1,9 +1,8 @@
-import { Controller, Post, Body, UsePipes, ValidationPipe, UploadedFile, UseInterceptors, StreamableFile } from '@nestjs/common';
+import { Controller, Post, Body, UsePipes, ValidationPipe, UploadedFile, UseInterceptors, StreamableFile, Put, Param } from '@nestjs/common';
 import { UsersAuthService } from './users-auth.service';
-import { RegisterClientDto, RegisterUserDto } from 'src/dtos';
+import { RegisterClientDto, RegisterUserDto, EditUserDto } from 'src/dtos';
 import { FileInterceptor } from '@nestjs/platform-express';
-
-
+import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 
 @Controller('users-auth')
 export class UsersAuthController {
@@ -36,7 +35,6 @@ export class UsersAuthController {
   @Post('register-administrators')
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
   async register(@Body() registerUserDto: RegisterUserDto) {
-    // Llamada al servicio con todos los datos necesarios
     return await this.usersAuthService.registerUser(
       registerUserDto.email,
       registerUserDto.password,
@@ -44,11 +42,24 @@ export class UsersAuthController {
       {
         name: registerUserDto.name,
         lastName: registerUserDto.lastName,
-        companyName: registerUserDto.companyName,
-        condominiumName: registerUserDto.condominiumName,
-        role: registerUserDto.role,
         condominiumUids: registerUserDto.condominiumUids,
+        photoURL: registerUserDto.photoURL,
+        role: registerUserDto.role,
+        active: registerUserDto.active
       }
+    );
+  }
+
+  @Put('edit-administrator/:uid')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+  async editAdministrator(
+    @Param('uid') uid: string,
+    @Body() editUserDto: EditUserDto
+  ) {
+    return await this.usersAuthService.editUser(
+      uid,
+      editUserDto.clientId,
+      editUserDto
     );
   }
 
@@ -56,12 +67,15 @@ export class UsersAuthController {
   @UseInterceptors(FileInterceptor('file'))
   async registerCondominiums(
     @UploadedFile() file: any, 
-    @Body() body: { clientId: string, condominiumId: string }
-  ): Promise<StreamableFile> {
-    const buffer = await this.usersAuthService.registerCondominiumUsers(file.buffer, body.clientId, body.condominiumId);
-    return new StreamableFile(buffer, {
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      disposition: 'attachment; filename="credentials.xlsx"',
-    });
+    @Body() body: { clientId: string; condominiumId: string }
+  ): Promise<{ message: string }> {
+    await this.usersAuthService.registerCondominiumUsers(file.buffer, body.clientId, body.condominiumId);
+    return { message: 'Usuarios registrados correctamente.' };
+  }
+
+  @Post('register-condominium')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+  async registerCondominium(@Body() registerCondominiumDto: RegisterCondominiumDto) {
+    return await this.usersAuthService.registerCondominium(registerCondominiumDto);
   }
 }

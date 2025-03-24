@@ -26,6 +26,10 @@ export const RegisterClientCase = async (
   try {
     console.log(condominiumInfo);
     const clientProfileRef = admin.firestore().collection('clients').doc(clientRecord);
+    
+    // Generar un UID único para el condominio
+    const condominiumUid = uuidv4();
+
     const clientData = {
       uid: clientRecord,
       email,
@@ -39,6 +43,7 @@ export const RegisterClientCase = async (
       taxResidence,
       taxRegime,
       createdDate: admin.firestore.FieldValue.serverTimestamp(),
+      condominiumsUids: [condominiumUid],
     };
     await clientProfileRef.set(clientData);
 
@@ -47,8 +52,6 @@ export const RegisterClientCase = async (
       password,
     });
 
-    // Generar un UID único para el condominio y registrar su información
-    const condominiumUid = uuidv4(); 
     const condominiumRef = admin.firestore().collection(`clients/${clientRecord}/condominiums`).doc(condominiumUid);
     await condominiumRef.set({
       name: condominiumInfo.name,

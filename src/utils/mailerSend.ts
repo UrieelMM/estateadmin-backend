@@ -1,5 +1,5 @@
 import { MailerSend } from "mailersend";
 
 export const mailerSend = new MailerSend({
-    apiKey: "mlsn.0f4dcc57b72525ca512f29f8825a3a654aedb9cb10827df3e2934e8d67440e38",
+    apiKey: "mlsn.0cda1e684fe67e14b7b569d23fc3d66bcb1950417ef2eb9f18007246c6e5a57a",
 });

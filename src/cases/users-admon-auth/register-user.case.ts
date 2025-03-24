@@ -1,39 +1,58 @@
 import * as admin from 'firebase-admin';
 import { RegisterUserDto } from '../../dtos/register-user.dto';
 import { ConflictException, InternalServerErrorException } from '@nestjs/common';
+import { v4 as uuidv4 } from 'uuid';
 
 export const registerUser = async (registerUserDto: RegisterUserDto) => {
-  const { email, password, name, lastName, condominiumUids, clientId } = registerUserDto;
+  const { 
+    email, 
+    name, 
+    lastName, 
+    condominiumUids, 
+    photoURL, 
+    role,
+    active,
+    clientId,
+    password 
+  } = registerUserDto;
 
   try {
-    // Crea un nuevo usuario en Firebase Aut
-    const userRecord = await admin.auth().createUser({
+    const uid = uuidv4(); // Generamos el UID del usuario
+    
+    // Crea un nuevo usuario en Firebase Auth
+    await admin.auth().createUser({
+      uid,
       email,
-      password,
+      password, // Usamos la contraseña del DTO
     });
 
-    // Asigna los claims customizados al usuario. Solo incluimos clientId y role ya que condominiumUids se manejarán en Firestore.
-    await admin.auth().setCustomUserClaims(userRecord.uid, { clientId: clientId, role: 'admin-assistant', condominiumId: condominiumUids[0]});
+    // Asignar claims al usuario
+    await admin.auth().setCustomUserClaims(uid, { 
+      clientId,
+      role,
+      condominiumId: condominiumUids[0]
+    });
 
-    // Aquí se opta por no usar condominiumUid directamente en los custom claims debido al potencial límite de tamaño.
-
-    // Guarda el perfil del usuario en Firestore indicando los condominios a los que tiene acceso.
-    const userProfileRef = admin.firestore().collection(`clients/${clientId}/condominiums/${condominiumUids[0]}/users`).doc(userRecord.uid);
+    // Guardar el perfil del usuario en Firestore
+    const userProfileRef = admin.firestore()
+      .collection(`clients/${clientId}/condominiums/${condominiumUids[0]}/users`)
+      .doc(uid);
 
     const userProfile = {
-      uid: userRecord.uid,
+      uid,
       email,
       name,
       lastName,
-      role: 'admin-assistant', // Rol por defecto
-      condominiumUids, // Almacena el array de UIDs
-      createdDate: admin.firestore.FieldValue.serverTimestamp(), // Fecha de creación
+      photoURL: photoURL || "",
+      role,
+      active: active ?? true,
+      condominiumUids,
+      createdDate: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    // Guarda el perfil del usuario en Firestore
     await userProfileRef.set(userProfile);
 
-    return userProfile; // Retorna los detalles del perfil creado
+    return userProfile;
   } catch (error) {
     if (error.code === 'auth/email-already-exists') {
       throw new ConflictException('El correo electrónico ya está registrado.');

@@ -47,6 +47,14 @@ export class MaintenanceFeesDto {
 
   month: string;
 
+  @IsNotEmpty()
+  @IsString()
+  startAt: string;
+
+  @IsNotEmpty()
+  @IsString()
+  startAts: string;
+
   @IsOptional()
   @IsString()
   chargeAssignments: string;

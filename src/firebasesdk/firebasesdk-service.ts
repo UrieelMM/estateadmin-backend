@@ -1,11 +1,18 @@
 // src/firebasesdk/firebase-auth.service.ts
 import { Injectable } from '@nestjs/common';
 import * as admin from 'firebase-admin';
-import { RegisterCondominiumUsersCase, registerUser, RegisterClientCase, CreatePublicationCase, ParcelReceptionCase, MaintenancePaymentCase } from 'src/cases';
 import { EditUnidentifiedPaymentCase } from 'src/cases/maintenance-fees/edit-unidentified-payment.case';
+import { MaintenancePaymentCase } from 'src/cases/maintenance-fees/maintenance-fees.case';
 import { MaintenanceUnidentifiedPaymentCase } from 'src/cases/maintenance-fees/maintenance-unidentified-payment.case';
-
-import { RegisterUserDto, RegisterClientDto, CreatePublicationDto, ParcelDto, MaintenanceFeesDto, CreateUnidentifiedPaymentDto, EditUnidentifiedPaymentDto } from 'src/dtos';
+import { ParcelReceptionCase } from 'src/cases/parcel/parcel-reception.case';
+import { CreatePublicationCase } from 'src/cases/publications/publications.case';
+import { RegisterClientCase } from 'src/cases/register-clients/register-clients.case';
+import { RegisterCondominiumCase } from 'src/cases/register-condominium-case/register-condominium.case';
+import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
+import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
+import { RegisterUserDto, RegisterClientDto, CreatePublicationDto, ParcelDto, MaintenanceFeesDto, CreateUnidentifiedPaymentDto, EditUnidentifiedPaymentDto, EditUserDto } from 'src/dtos';
+import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
+import { editUser } from 'src/cases/users-admon-auth/edit-user.case';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -23,6 +30,10 @@ export class FirebaseAuthService {
 
   async createUserWithEmail(registerUserDto: RegisterUserDto) {
     return await registerUser(registerUserDto);
+  }
+
+  async editUser(uid: string, clientId: string, editUserDto: EditUserDto) {
+    return await editUser(uid, clientId, editUserDto);
   }
 
   async registerCondominiumUsers(fileBuffer: Buffer, companyName: string, condominiumName: string) {
@@ -47,5 +58,9 @@ export class FirebaseAuthService {
 
   async editUnidentifiedPayment(editUnidentifiedPaymentDto: EditUnidentifiedPaymentDto) {
     return await EditUnidentifiedPaymentCase(editUnidentifiedPaymentDto);
+  }
+
+  async createCondominium(registerCondominiumDto: RegisterCondominiumDto) {
+    return await RegisterCondominiumCase(registerCondominiumDto);
   }
 }

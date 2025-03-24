@@ -1,37 +1,39 @@
-import { IsArray, IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsArray, IsEmail, IsNotEmpty, IsString, IsBoolean, IsOptional } from 'class-validator';
 
 export class RegisterUserDto {
-  @IsNotEmpty()
-  @IsString()
-  clientId: string;
-  
   @IsEmail()
+  @IsNotEmpty()
   email: string;
 
   @IsString()
-  @MinLength(6, { message: 'La contraseña debe tener al menos 6 caracteres' })
+  @IsNotEmpty()
   password: string;
 
-  @IsNotEmpty()
   @IsString()
+  @IsNotEmpty()
+  clientId: string;
+
+  @IsString()
+  @IsNotEmpty()
   name: string;
 
-  @IsNotEmpty()
   @IsString()
+  @IsNotEmpty()
   lastName: string;
 
-  @IsNotEmpty()
-  @IsString()
-  companyName: string;
-
-  @IsNotEmpty()
-  @IsString()
-  condominiumName: string;
-
-  @IsNotEmpty()
-  @IsString()
-  role: string = 'admin-assistant';
-
   @IsArray()
+  @IsNotEmpty()
   condominiumUids: string[];
+
+  @IsString()
+  @IsOptional()
+  photoURL?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  role: string;
+
+  @IsBoolean()
+  @IsOptional()
+  active: boolean = true;
 }

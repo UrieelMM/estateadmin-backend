@@ -5,3 +5,5 @@ export * from './parcel.dto';
 export * from './maintenance-fees.dto';
 export * from './create-unidentified-payment.dto'
 export * from './edit-unidentified-payment.dto'
+export * from './register-condominium.dto'
+export * from './edit-user.dto'

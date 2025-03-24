@@ -59,6 +59,11 @@ export const MaintenancePaymentCase = async (
     financialAccountId,
   } = maintenancePaymentDto;
 
+  // NUEVO: Obtener el arreglo de startAt(s) enviado desde el componente (para multipago)
+  const startAtsArray = maintenancePaymentDto.startAts
+    ? JSON.parse(maintenancePaymentDto.startAts)
+    : [];
+
   // Convertir useCreditBalance a boolean
   const applyCredit =
     typeof useCreditBalance === 'string'
@@ -136,7 +141,7 @@ export const MaintenancePaymentCase = async (
   // Calcular el año-mes a partir de paymentDate (ej: "2025-03")
   const yearMonth = paymentDate ? format(new Date(paymentDate), 'yyyy-MM') : '';
 
-  // Generar un timestamp único para los registros (evita anidar FieldValue.serverTimestamp())
+  // Generar un timestamp único para los registros
   const currentTimestamp = admin.firestore.Timestamp.now();
 
   // 3. PROCESO MULTI-CARGO
@@ -147,6 +152,9 @@ export const MaintenancePaymentCase = async (
     } catch (error) {
       throw new InternalServerErrorException('chargeAssignments no es un JSON válido.');
     }
+
+    // Generar folio único para todos los pagos del multipago
+    const folio = `EA-${Math.floor(Math.random() * 1e12).toString().padStart(12, '0')}`;
 
     const totalAssigned = assignments.reduce((sum, curr) => sum + curr.amount, 0);
     if (!applyCredit && totalAssigned !== amountPaid) {
@@ -161,6 +169,7 @@ export const MaintenancePaymentCase = async (
 
     let totalLeftover = 0;
     const paymentsArray: any[] = [];
+    let index = 0;
     // Por cada asignación se procesa el cargo correspondiente
     for (const assignment of assignments) {
       const assignmentChargeRef = admin
@@ -196,6 +205,11 @@ export const MaintenancePaymentCase = async (
 
       await assignmentChargeRef.update({ amount: newRemaining, paid: isPaid });
 
+      // Procesar el concepto
+      const conceptProcessed = Array.isArray(chargeData.concept)
+        ? chargeData.concept.join(", ")
+        : (chargeData.concept || "Desconocido");
+
       const individualPaymentId = uuidv4();
       const paymentRecord = {
         paymentId: individualPaymentId,
@@ -203,15 +217,15 @@ export const MaintenancePaymentCase = async (
         numberCondominium,
         clientId,
         condominiumId,
-        userId, // Usamos userId en lugar de userUID
-        chargeUID: assignment.chargeId, // Específico de cada asignación
+        userId,
+        chargeUID: assignment.chargeId,
         month: monthFormatted,
         yearMonth,
         comments,
         amountPaid: assignedAmount,
         amountPending,
         attachmentPayment: attachmentPayment,
-        dateRegistered: currentTimestamp,  // Usamos timestamp ya generado
+        dateRegistered: currentTimestamp,
         phone: phoneNumber,
         invoiceRequired,
         creditBalance: leftoverForThisCharge > 0 ? leftoverForThisCharge : 0,
@@ -220,19 +234,25 @@ export const MaintenancePaymentCase = async (
         creditUsed: creditUsed,
         paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
         financialAccountId: financialAccountId || '',
+        concept: conceptProcessed,
+        // NUEVO: Enviar el startAt correspondiente del arreglo (según el orden de asignaciones)
+        startAt: startAtsArray[index] || '',
+        // NUEVO: Agregar folio
+        folio: folio,
       };
       console.log("individual paymentRecord", paymentRecord);
-      // Insertar en la colección de pagos del cargo
       await assignmentChargeRef.collection('payments').doc(individualPaymentId).set(paymentRecord);
-      // Acumular el registro para luego consolidarlo
       paymentsArray.push(paymentRecord);
       totalLeftover += leftoverForThisCharge;
+      index++;
     }
 
-    // Calcular totales agregados
     const aggregatedAmountPaid = paymentsArray.reduce((sum, p) => sum + Number(p.amountPaid || 0), 0);
     const aggregatedCreditBalance = paymentsArray.reduce((sum, p) => sum + Number(p.creditBalance || 0), 0);
 
+    // Consolidar los conceptos de los pagos individuales (valores únicos)
+    const aggregatedConcepts = Array.from(new Set(paymentsArray.map(p => p.concept).filter(c => c)));
+    
     // Crear un único registro consolidado para paymentsToSendEmail
     const aggregatedPaymentId = uuidv4();
     const aggregatedPaymentRecord = {
@@ -258,10 +278,14 @@ export const MaintenancePaymentCase = async (
       paymentGroupId: paymentGroupId || '',
       paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
       financialAccountId: financialAccountId || '',
-      payments: paymentsArray  // Array con los registros individuales
+      payments: paymentsArray,  // Array con los registros individuales
+      concept: aggregatedConcepts.join(", ") || "Desconocido",
+      // NUEVO: En el registro consolidado, se unen todos los startAt enviados (separados por comas)
+      startAt: startAtsArray.length ? startAtsArray.join(", ") : '',
+      // NUEVO: Agregar folio
+      folio: folio,
     };
 
-    // Insertar el registro consolidado en paymentsToSendEmail
     await admin.firestore()
       .collection('clients')
       .doc(clientId)
@@ -285,7 +309,6 @@ export const MaintenancePaymentCase = async (
 
     return { overallCreditBalance: newTotalCredit, attachmentUrls: attachmentPayment };
   }
-
   // 4. PROCESO ÚNICO (sin chargeAssignments)
   else {
     const userRef = admin.firestore()
@@ -310,6 +333,7 @@ export const MaintenancePaymentCase = async (
     let remainingAmount = 0;
     const existingCharge = await chargeRef.get();
 
+    let chargeConcept = 'Cuota de mantenimiento';
     if (!existingCharge.exists) {
       if (!cargoTotal || cargoTotal <= 0) {
         throw new InternalServerErrorException(
@@ -318,7 +342,7 @@ export const MaintenancePaymentCase = async (
       }
       remainingAmount = cargoTotal;
       await chargeRef.set({
-        concept: 'Cuota de mantenimiento',
+        concept: chargeConcept,
         amount: remainingAmount,
         email,
         numberCondominium,
@@ -329,20 +353,25 @@ export const MaintenancePaymentCase = async (
         dateRegistered: currentTimestamp,
         paid: false,
         invoiceRequired,
-        startAt: startAtStr || '',
+        // NUEVO: Procesar startAt usando startAtStr o, si no, la propiedad enviada desde el componente
+        startAt: startAtStr || maintenancePaymentDto.startAt || '',
         dueDate: dueDateStr || '',
       });
     } else {
       const chargeData = existingCharge.data() || {};
       remainingAmount = chargeData.amount || 0;
+      chargeConcept = chargeData.concept;
       await chargeRef.update({
         phone: phoneNumber,
         comments,
         invoiceRequired,
-        ...(startAtStr ? { startAt: startAtStr } : {}),
+        ...( (startAtStr || maintenancePaymentDto.startAt) ? { startAt: startAtStr || maintenancePaymentDto.startAt } : {} ),
         ...(dueDateStr ? { dueDate: dueDateStr } : {}),
       });
     }
+    const conceptProcessed = Array.isArray(chargeConcept)
+      ? chargeConcept.join(", ")
+      : (chargeConcept || "Desconocido");
 
     let creditToApply = 0;
     if (applyCredit && currentTotalCredit > 0 && amountPaid < remainingAmount) {
@@ -362,6 +391,8 @@ export const MaintenancePaymentCase = async (
     const isPaid = newRemaining === 0;
 
     const paymentId = uuidv4();
+    // Generar folio para pago único
+    const folio = `EA-${Math.floor(Math.random() * 1e12).toString().padStart(12, '0')}`;
     const paymentData = {
       paymentId,
       email,
@@ -369,7 +400,7 @@ export const MaintenancePaymentCase = async (
       clientId,
       condominiumId,
       userId,
-      chargeUID: chargeId || '', // Se guarda el chargeId
+      chargeUID: chargeId || '',
       month: monthFormatted,
       yearMonth: yearMonth,
       comments,
@@ -385,6 +416,11 @@ export const MaintenancePaymentCase = async (
       paymentGroupId: paymentGroupId || '',
       paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
       financialAccountId: financialAccountId || '',
+      concept: conceptProcessed,
+      // NUEVO: Procesar startAt en pago único
+      startAt: startAtStr || maintenancePaymentDto.startAt || '',
+      // NUEVO: Agregar folio
+      folio: folio,
     };
 
     await chargeRef.collection('payments').doc(paymentId).set(paymentData);
