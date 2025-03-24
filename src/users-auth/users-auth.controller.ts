@@ -1,8 +1,9 @@
 import { Controller, Post, Body, UsePipes, ValidationPipe, UploadedFile, UseInterceptors, StreamableFile, Put, Param } from '@nestjs/common';
 import { UsersAuthService } from './users-auth.service';
-import { RegisterClientDto, RegisterUserDto, EditUserDto } from 'src/dtos';
+import { RegisterClientDto, RegisterUserDto, EditUserDto, ResetPasswordDto } from 'src/dtos';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
+import { ConfirmResetPasswordDto } from 'src/dtos/confirm-reset-password.dto';
 
 @Controller('users-auth')
 export class UsersAuthController {
@@ -48,6 +49,18 @@ export class UsersAuthController {
         active: registerUserDto.active
       }
     );
+  }
+
+  @Post('reset-password')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+  async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
+    return await this.usersAuthService.resetPassword(resetPasswordDto);
+  }
+
+  @Post('reset-password/confirm')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+  async confirmResetPassword(@Body() confirmResetPasswordDto: ConfirmResetPasswordDto) {
+    return await this.usersAuthService.confirmResetPassword(confirmResetPasswordDto);
   }
 
   @Put('edit-administrator/:uid')

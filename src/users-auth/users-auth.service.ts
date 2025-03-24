@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { FirebaseAuthService } from '../firebasesdk/firebasesdk-service';
-import { RegisterClientDto, RegisterUserDto, EditUserDto } from 'src/dtos';
+import { RegisterClientDto, RegisterUserDto, EditUserDto, ResetPasswordDto, ConfirmResetPasswordDto } from 'src/dtos';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 
 @Injectable()
@@ -37,11 +37,19 @@ export class UsersAuthService {
     return await this.firebaseAuthService.editUser(uid, clientId, userDetails);
   }
 
+  async resetPassword(resetPasswordDto: ResetPasswordDto) {
+    return await this.firebaseAuthService.resetPassword(resetPasswordDto);
+  }
+
   async registerCondominiumUsers(fileBuffer: Buffer, clientId: string, condominiumId: string) {
     return this.firebaseAuthService.registerCondominiumUsers(fileBuffer, clientId, condominiumId);
   }
 
   async registerCondominium(registerCondominiumDto: RegisterCondominiumDto) {
     return await this.firebaseAuthService.createCondominium(registerCondominiumDto);
+  }
+
+  async confirmResetPassword(confirmResetPasswordDto: ConfirmResetPasswordDto) {
+    return await this.firebaseAuthService.confirmResetPassword(confirmResetPasswordDto);
   }
 }

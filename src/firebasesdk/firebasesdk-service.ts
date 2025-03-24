@@ -10,9 +10,11 @@ import { RegisterClientCase } from 'src/cases/register-clients/register-clients.
 import { RegisterCondominiumCase } from 'src/cases/register-condominium-case/register-condominium.case';
 import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
 import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
-import { RegisterUserDto, RegisterClientDto, CreatePublicationDto, ParcelDto, MaintenanceFeesDto, CreateUnidentifiedPaymentDto, EditUnidentifiedPaymentDto, EditUserDto } from 'src/dtos';
+import { RegisterUserDto, RegisterClientDto, CreatePublicationDto, ParcelDto, MaintenanceFeesDto, CreateUnidentifiedPaymentDto, EditUnidentifiedPaymentDto, EditUserDto, ResetPasswordDto, ConfirmResetPasswordDto } from 'src/dtos';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 import { editUser } from 'src/cases/users-admon-auth/edit-user.case';
+import { resetPassword } from 'src/cases/users-admon-auth/reset-password.case';
+import { confirmResetPassword } from 'src/cases/users-admon-auth/confirm-reset-password.case';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -34,6 +36,10 @@ export class FirebaseAuthService {
 
   async editUser(uid: string, clientId: string, editUserDto: EditUserDto) {
     return await editUser(uid, clientId, editUserDto);
+  }
+
+  async resetPassword(resetPasswordDto: ResetPasswordDto) {
+    return await resetPassword(resetPasswordDto);
   }
 
   async registerCondominiumUsers(fileBuffer: Buffer, companyName: string, condominiumName: string) {
@@ -62,5 +68,9 @@ export class FirebaseAuthService {
 
   async createCondominium(registerCondominiumDto: RegisterCondominiumDto) {
     return await RegisterCondominiumCase(registerCondominiumDto);
+  }
+
+  async confirmResetPassword(confirmResetPasswordDto: ConfirmResetPasswordDto) {
+    return await confirmResetPassword(confirmResetPasswordDto);
   }
 }
