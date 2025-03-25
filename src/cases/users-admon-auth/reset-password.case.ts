@@ -11,15 +11,20 @@ export const resetPassword = async (resetPasswordDto: ResetPasswordDto) => {
     // Configuración para el correo de recuperación
     const actionCodeSettings = {
       url: 'https://administracioncondominio-93419.firebaseapp.com/__/auth/action',
-      handleCodeInApp: true
+      handleCodeInApp: true,
     };
 
     // Generar el link de recuperación
-    const link = await admin.auth().generatePasswordResetLink(email, actionCodeSettings);
+    const link = await admin
+      .auth()
+      .generatePasswordResetLink(email, actionCodeSettings);
     console.log('Link generado:', link);
 
     // Configurar el correo
-    const sentFrom = new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support');
+    const sentFrom = new Sender(
+      'MS_CUXpzj@estate-admin.com',
+      'EstateAdmin Support',
+    );
     const recipients = [new Recipient(email)];
 
     // Plantilla HTML del correo
@@ -107,27 +112,34 @@ export const resetPassword = async (resetPasswordDto: ResetPasswordDto) => {
     const emailParams = new EmailParams()
       .setFrom(sentFrom)
       .setTo(recipients)
-      .setReplyTo(new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'))
+      .setReplyTo(
+        new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+      )
       .setSubject('Recupera tu contraseña - EstateAdmin')
       .setHtml(htmlTemplate);
 
     // Enviar el correo
     await mailerSend.email.send(emailParams);
 
-    return { 
-      message: 'Se ha enviado un correo con las instrucciones para restablecer tu contraseña.'
+    return {
+      message:
+        'Se ha enviado un correo con las instrucciones para restablecer tu contraseña.',
     };
   } catch (error: any) {
     console.error('Error detallado:', {
       code: error.code,
       message: error.message,
-      stack: error.stack
+      stack: error.stack,
     });
-    
+
     if (error.code === 'auth/user-not-found') {
-      throw new InternalServerErrorException('No se encontró un usuario con ese correo electrónico.');
+      throw new InternalServerErrorException(
+        'No se encontró un usuario con ese correo electrónico.',
+      );
     }
-    
-    throw new InternalServerErrorException('Error al procesar la solicitud de recuperación de contraseña.');
+
+    throw new InternalServerErrorException(
+      'Error al procesar la solicitud de recuperación de contraseña.',
+    );
   }
-}; 
+};
