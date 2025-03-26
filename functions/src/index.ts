@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 // import * as functions from 'firebase-functions';
 const { onDocumentCreated } = require('firebase-functions/v2/firestore');
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
@@ -9,14 +12,15 @@ const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 import { onRequest } from 'firebase-functions/v2/https';
 const cors = require('cors');
 // const JSZip = require('jszip');
-// const twilio = require('twilio');
+const twilio = require('twilio');
 
 admin.initializeApp();
 
 const storage = new Storage();
 
 const tasksClient = new CloudTasksClient();
-const PROJECT_ID = process.env.GCP_PROJECT || 'administracioncondominio-93419';
+const PROJECT_ID =
+  process.env.GOOGLE_CLOUD_PROJECT || 'administracioncondominio-93419';
 const QUEUE_NAME = 'emailQueue';
 const LOCATION = 'us-central1';
 // URL pública de la función HTTP que procesará la tarea
@@ -396,7 +400,9 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 ////////////////////////////////////////// SEND WHATSAPP FOR PAYMENT //////////////////////////////////////////
 
 // exports.enviarWhatsAppConPago = functions.firestore
-//   .document('clients/{clientId}/condominiums/{condominiumId}/payments/{paymentId}')
+//   .document(
+//     'clients/{clientId}/condominiums/{condominiumId}/payments/{paymentId}',
+//   )
 //   .onCreate(async (snapshot, context) => {
 //     try {
 //       // 1. Extraer datos del pago y parámetros de la ruta
@@ -404,7 +410,11 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 //       const { clientId, condominiumId, paymentId } = context.params;
 
 //       // 2. Obtener datos de la empresaa
-//       const clientDoc = await admin.firestore().collection('clients').doc(clientId).get();
+//       const clientDoc = await admin
+//         .firestore()
+//         .collection('clients')
+//         .doc(clientId)
+//         .get();
 //       const clientData = clientDoc.data();
 //       if (!clientData) {
 //         console.log('No se encontraron datos de la empresa');
@@ -412,18 +422,25 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 //       }
 
 //       // 3. Obtener datos del usuario (buscando por el email del pago)
-//       const usersRef = admin.firestore().collection(`clients/${clientId}/condominiums/${condominiumId}/users`);
-//       const userSnapshot = await usersRef.where('email', '==', paymentData.email).get();
+//       const usersRef = admin
+//         .firestore()
+//         .collection(`clients/${clientId}/condominiums/${condominiumId}/users`);
+//       const userSnapshot = await usersRef
+//         .where('email', '==', paymentData.email)
+//         .get();
 //       if (userSnapshot.empty) {
-//         console.log('No se encontró un usuario con el email:', paymentData.email);
+//         console.log(
+//           'No se encontró un usuario con el email:',
+//           paymentData.email,
+//         );
 //         return;
 //       }
 //       const userData = userSnapshot.docs[0].data();
 
 //       // 4. Generar el folio (por ejemplo: EA-001, EA-002, etc.)
-//       const paymentCountSnapshot = await admin.firestore()
+//       const paymentCountSnapshot = await admin
+//         .firestore()
 //         .collection('clients')
-//         .doc(clientId)
 //         .collection('condominiums')
 //         .doc(condominiumId)
 //         .collection('payments')
@@ -432,7 +449,7 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 
 //       // 5. Formatear la fecha y hora en hora local (America/Mexico_City)
 //       const currentDate = new Date();
-//       const options: Intl.DateTimeFormatOptions = ({
+//       const options: Intl.DateTimeFormatOptions = {
 //         timeZone: 'America/Mexico_City',
 //         year: 'numeric',
 //         month: '2-digit',
@@ -440,14 +457,24 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 //         hour: '2-digit',
 //         minute: '2-digit',
 //         second: '2-digit',
-//       } as Intl.DateTimeFormatOptions);
+//       } as Intl.DateTimeFormatOptions;
 //       const formattedDateTime = currentDate.toLocaleString('es-MX', options);
 //       const [dateProcessed, timeProcessed] = formattedDateTime.split(', ');
 
 //       // 6. Convertir el mes de pago (formato "YYYY-MM") a nombre de mes (por ejemplo: "Agosto 2024")
 //       const monthNames = [
-//         'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
-//         'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+//         'Enero',
+//         'Febrero',
+//         'Marzo',
+//         'Abril',
+//         'Mayo',
+//         'Junio',
+//         'Julio',
+//         'Agosto',
+//         'Septiembre',
+//         'Octubre',
+//         'Noviembre',
+//         'Diciembre',
 //       ];
 //       // Se asume que paymentData.month tiene formato "YYYY-MM"
 //       const [yearStr, monthStr] = paymentData.month.split('-');
@@ -456,14 +483,14 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 //       // 7. Crear el cuerpo del mensaje de WhatsApp con los detalles del pago
 //       const messageBody = `Nuevo pago registrado:
 //                           ID de Pago: ${paymentId}
-//                           Folio: ${folio}
+//                          Folio: ${folio}
 //                           Fecha de procesamiento: ${dateProcessed} ${timeProcessed}
 //                           Nombre del residente: ${userData.name}
-//                           Medio de pago: Transferencia
-//                           Mes pagado: ${monthName}
+//                          Medio de pago: Transferencia
+//                          Mes pagado: ${monthName}
 //                           Monto Pagado: $${paymentData.amountPaid}
 //                           Saldo Pendiente: $${paymentData.amountPending}
-//                           ¡Gracias por tu pago!`;
+//                            ¡Gracias por tu pago!`;
 
 //       // 8. Inicializar el cliente de Twilio usando las credenciales de las variables de entorno
 //       const accountSid = functions.config().twilio.account_sid;
@@ -984,6 +1011,128 @@ export const processGroupPaymentEmail = onRequest(
       if (!userData.email || !userData.email.includes('@')) {
         console.error('Email inválido:', userData.email);
         return res.status(400).send('Email inválido');
+      }
+
+      // Enviar notificación por WhatsApp
+      try {
+        // Obtener el número de WhatsApp del usuario
+        const userPhone = userData.phoneNumber || userData.phone;
+        if (userPhone) {
+          // Formatear la fecha y hora en hora local (America/Mexico_City)
+          const currentDate = new Date();
+          const options: Intl.DateTimeFormatOptions = {
+            timeZone: 'America/Mexico_City',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          } as Intl.DateTimeFormatOptions;
+          const formattedDateTime = currentDate.toLocaleString(
+            'es-MX',
+            options,
+          );
+          const [dateProcessed, timeProcessed] = formattedDateTime.split(', ');
+
+          // Calcular totales
+          let totalMontoPagado = 0;
+          let totalSaldoPendiente = 0;
+          let totalSaldoAFavor = 0;
+
+          // Usar paymentsArray del registro consolidado
+          let paymentsArray = [];
+          if (
+            consolidatedPayment.payments &&
+            Array.isArray(consolidatedPayment.payments)
+          ) {
+            paymentsArray = consolidatedPayment.payments;
+          } else {
+            paymentsArray.push(consolidatedPayment);
+          }
+
+          paymentsArray.forEach((payment) => {
+            totalMontoPagado += Number(payment.amountPaid) || 0;
+            totalSaldoPendiente += Number(payment.amountPending) || 0;
+            totalSaldoAFavor += Number(payment.creditBalance) || 0;
+          });
+
+          // Crear el mensaje de WhatsApp
+          const messageBody = `🎉 *EstateAdmin - ¡Pago Confirmado!*
+
+📋 *Detalles del Pago*
+━━━━━━━━━━━━━━━━━━━━
+📝 Folio: \`${consolidatedPayment.folio || (consolidatedPayment.payments && consolidatedPayment.payments[0]?.folio) || 'Sin folio'}\`
+🕒 Fecha: ${dateProcessed} ${timeProcessed}
+👤 Residente: ${userData.name}
+💳 Medio de pago: ${consolidatedPayment.paymentType || 'No especificado'}
+
+💰 *Resumen de Pagos*
+━━━━━━━━━━━━━━━━━━━━
+💵 Total Pagado: *$${(totalMontoPagado / 100).toFixed(2)}*
+⏳ Saldo Pendiente: *$${(totalSaldoPendiente / 100).toFixed(2)}*
+✨ Saldo a favor: *$${(totalSaldoAFavor / 100).toFixed(2)}*
+
+📋 *Detalle por Concepto*
+━━━━━━━━━━━━━━━━━━━━
+${paymentsArray
+  .map((payment) => {
+    let concepto = payment.concept || 'Sin concepto';
+    if (payment.startAt) {
+      const d = new Date(payment.startAt.replace(' ', 'T'));
+      const monthIndex = d.getMonth();
+      const monthNames = [
+        'Enero',
+        'Febrero',
+        'Marzo',
+        'Abril',
+        'Mayo',
+        'Junio',
+        'Julio',
+        'Agosto',
+        'Septiembre',
+        'Octubre',
+        'Noviembre',
+        'Diciembre',
+      ];
+      const monthName = monthNames[monthIndex] || '';
+      concepto += ` - ${monthName}`;
+    }
+    return `• ${concepto}
+  Pagado: *$${(Number(payment.amountPaid) / 100).toFixed(2)}*
+  Pendiente: *$${(Number(payment.amountPending) / 100).toFixed(2)}*
+  A favor: *$${(Number(payment.creditBalance) / 100).toFixed(2)}*`;
+  })
+  .join('\n\n')}
+
+🙏 ¡Gracias por tu pago!`;
+
+          const accountSid = 'AC45f958b88bf6d9e8219aeeaebceb9d62'; // Ejemplo: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          const authToken = process.env.TWILIO_AUTH_TOKEN;
+          const messagingServiceSid = 'MG443e061010b840925e6829b98d71a08b'; // Ejemplo: "MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+          if (!accountSid || !authToken || !messagingServiceSid) {
+            console.error(
+              'Faltan credenciales de Twilio en las variables de entorno',
+            );
+            return;
+          }
+
+          // Inicializar el cliente de Twilio
+          const clientTwilio = twilio(accountSid, authToken);
+
+          // Enviar el mensaje de WhatsApp usando el Messaging Service
+          const message = await clientTwilio.messages.create({
+            messagingServiceSid: messagingServiceSid,
+            to: 'whatsapp:+5215531139560',
+            body: messageBody,
+          });
+
+          console.log(`Mensaje de WhatsApp enviado con SID: ${message.sid}`);
+        }
+      } catch (whatsappError) {
+        console.error('Error al enviar el mensaje de WhatsApp:', whatsappError);
+        // No lanzamos el error para no interrumpir el proceso de envío de correo
       }
 
       // Helper para formatear a moneda mexicana (los valores vienen en centavos)
