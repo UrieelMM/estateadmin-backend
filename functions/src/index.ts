@@ -28,6 +28,27 @@ const serviceUrl = `https://${LOCATION}-${PROJECT_ID}.cloudfunctions.net/process
 
 const corsHandler = cors({ origin: true });
 
+// Función auxiliar para formatear números de teléfono mexicanos
+const formatPhoneNumber = (phone: string): string => {
+  if (!phone) return '';
+  // Eliminar cualquier carácter que no sea número
+  const cleanPhone = phone.replace(/\D/g, '');
+  // Si el número ya tiene el prefijo +521, lo devolvemos tal cual
+  if (cleanPhone.startsWith('521')) {
+    return `+${cleanPhone}`;
+  }
+  // Si el número comienza con 52, agregamos el 1
+  if (cleanPhone.startsWith('52')) {
+    return `+${cleanPhone}`;
+  }
+  // Si el número comienza con 1, agregamos el 52
+  if (cleanPhone.startsWith('1')) {
+    return `+52${cleanPhone}`;
+  }
+  // Para cualquier otro caso, asumimos que es un número local y agregamos +521
+  return `+521${cleanPhone}`;
+};
+
 // exports.enviarEmailPorPublicacion = functions.firestore
 //   .document('clients/{clientId}/condominiums/{condominiumId}/publications/{publicationId}')
 //   .onCreate(async (snapshot: { data: () => any; }, context: { params: { clientId: any; condominiumId: any; }; }) => {
@@ -704,135 +725,219 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 // });
 
 //TODO: SEND EMAIL FOR CALENDAR EVENTS
-////////////////////////////////////////// SEND EMAIL FOR CALENDAR EVENTS //////////////////////////////////////////
-// exports.enviarEmailPorCalendarEvent = functions.firestore
-//   .document("clients/{clientId}/condominiums/{condominiumId}/calendarEvents/{calendarEventId}")
-//   .onCreate(async (snapshot, context) => {
-//     const eventData = snapshot.data();
-//     const { clientId, condominiumId } = context.params;
+//////////////////////////////////////// SEND EMAIL FOR CALENDAR EVENTS //////////////////////////////////////////
+export const enviarEmailPorCalendarEvent = onDocumentCreated(
+  'clients/{clientId}/condominiums/{condominiumId}/calendarEvents/{calendarEventId}',
+  async (event: any) => {
+    try {
+      const snapshot = event.data;
+      if (!snapshot) {
+        console.log('No hay datos asociados al evento');
+        return;
+      }
+      const eventData = snapshot.data();
+      const { clientId, condominiumId } = event.params;
 
-//     // Solo enviar correo si el registro tiene el campo "email"
-//     if (!eventData.email) {
-//       console.log("No se encontró el campo 'email' en el registro; no se enviará correo.");
-//       return null;
-//     }
+      // Solo enviar correo si el registro tiene el campo "email"
+      if (!eventData.email) {
+        console.log(
+          "No se encontró el campo 'email' en el registro; no se enviará correo.",
+        );
+        return null;
+      }
 
-//     const mailerSend = new MailerSend({
-//       apiKey: "mlsn.0cda1e684fe67e14b7b569d23fc3d66bcb1950417ef2eb9f18007246c6e5a57a", // Reemplaza con tu API Key
-//     });
+      // Obtener datos del usuario
+      const usersRef = admin
+        .firestore()
+        .collection(`clients/${clientId}/condominiums/${condominiumId}/users`);
+      const userSnapshot = await usersRef
+        .where('email', '==', eventData.email)
+        .get();
 
-//     const htmlTemplate = `
-//       <html>
-//         <head>
-//           <style>
-//             body {
-//               font-family: 'Open Sans', sans-serif;
-//               background-color: #f6f6f6;
-//               margin: 0;
-//               padding: 0;
-//             }
-//             .container {
-//               width: 80%;
-//               background-color: #ffffff;
-//               border-radius: 10px;
-//               padding: 50px 40px;
-//               margin: 40px auto;
-//               box-shadow: 5px 5px 10px rgba(0, 0, 0, 0.1);
-//             }
-//             .header {
-//               background-color: #6366F1;
-//               border-radius: 5px 5px 0 0;
-//               padding: 20px;
-//               text-align: center;
-//             }
-//             .header h1 {
-//               color: #fff;
-//               font-size: 24px;
-//               margin: 0;
-//             }
-//             .content {
-//               padding: 20px;
-//               text-align: center;
-//             }
-//             .button {
-//               background-color: #6366F1;
-//               color: white;
-//               padding: 20px;
-//               text-align: center;
-//               text-decoration: none;
-//               display: inline-block;
-//               border-radius: 5px;
-//               margin-top: 20px;
-//               font-size: 18px;
-//               font-weight: bold;
-//               width: 350px;
-//             }
-//             .footer {
-//               background-color: #f6f6f6;
-//               padding: 20px;
-//               text-align: center;
-//               border-radius: 0 0 10px 10px;
-//               font-size: 14px;
-//             }
-//           </style>
-//           <link rel="preconnect" href="https://fonts.googleapis.com">
-//           <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-//           <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
-//         </head>
-//         <body>
-//           <div class="container">
-//             <div class="header">
-//               <h1>Nuevo Evento Registrado</h1>
-//             </div>
-//             <div class="content">
-//               <p>Se ha registrado un nuevo evento en el condominio <strong>${condominiumId}.</p>
-//               <table style="width: 100%; margin-top: 20px; background-color: #f9f9f9; padding: 20px; border-radius: 8px;">
-//                 <tr>
-//                   <td style="padding-bottom: 10px; font-size: 16px; color: #333;"><strong>Nombre del Evento:</strong> ${eventData.name || "N/A"}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding-bottom: 10px; font-size: 16px; color: #333;"><strong>Número de Residente:</strong> ${eventData.number || "N/A"}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding-bottom: 10px; font-size: 16px; color: #333;"><strong>Área Reservada:</strong> ${eventData.commonArea || "N/A"}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding-bottom: 10px; font-size: 16px; color: #333;"><strong>Fecha del Evento:</strong> ${eventData.eventDay || "N/A"}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding-bottom: 10px; font-size: 16px; color: #333;"><strong>Horario:</strong> ${eventData.startTime || "N/A"} - ${eventData.endTime || "N/A"}</td>
-//                 </tr>
-//                 ${eventData.comments
-//         ? `<tr>
-//                          <td style="padding-bottom: 10px; font-size: 16px; color: #333;"><strong>Comentarios:</strong> ${eventData.comments}</td>
-//                        </tr>`
-//         : ""
-//       }
-//               </table>
-//             </div>
-//             <div class="footer">
-//               <p>Un servicio de Omnipixel</p>
-//             </div>
-//           </div>
-//         </body>
-//       </html>
-//     `;
+      if (userSnapshot.empty) {
+        console.error(
+          'No se encontró el usuario con el email:',
+          eventData.email,
+        );
+        return null;
+      }
 
-//     const emailParams = new EmailParams()
-//       .setFrom(new Sender("MS_CUXpzj@estate-admin.com", "EstateAdmin Support"))
-//       .setTo([new Recipient(eventData.email, eventData.name || "Residente")])
-//       .setReplyTo(new Sender("MS_CUXpzj@estate-admin.com", "EstateAdmin Support"))
-//       .setSubject(`Nuevo Evento en Condominio ${condominiumId} (Cliente: ${clientId})`)
-//       .setHtml(htmlTemplate);
+      const userData = userSnapshot.docs[0].data();
+      if (!userData) {
+        console.error('No se encontraron datos del usuario');
+        return null;
+      }
 
-//     try {
-//       await mailerSend.email.send(emailParams);
-//       console.log(`Correo enviado exitosamente a ${eventData.email}`);
-//     } catch (error) {
-//       console.error(`Error al enviar correo electrónico: `, error);
-//     }
-//     return null;
-//   });
+      // Enviar notificación por WhatsApp
+      try {
+        const userPhone = userData.phoneNumber || userData.phone;
+        if (userPhone) {
+          const messageBody = `🎉 *EstateAdmin - Nuevo Evento Registrado*
+
+📋 *Detalles del Evento*
+━━━━━━━━━━━━━━━━━━━━
+📅 Fecha: ${eventData.eventDay || 'No especificada'}
+🕒 Horario: ${eventData.startTime || 'No especificado'} - ${eventData.endTime || 'No especificado'}
+🏢 Área: ${eventData.commonArea || 'No especificada'}
+👤 Residente: ${userData.name || 'No especificado'}
+
+📝 *Información Adicional*
+━━━━━━━━━━━━━━━━━━━━
+📌 Nombre del Evento: ${eventData.name || 'No especificado'}
+${eventData.comments ? `💬 Comentarios: ${eventData.comments}` : ''}
+
+✅ Tu reserva ha sido registrada exitosamente.`;
+
+          const accountSid = 'AC5577bf20cfdb715733d8fd1ab61505dc';
+          const authToken = '0d2d04e187940f3e92798a3260476f0f';
+          const messagingServiceSid = 'MG6b7af612a6554e34fce9e09a744f907b';
+
+          if (!accountSid || !authToken || !messagingServiceSid) {
+            console.error(
+              'Faltan credenciales de Twilio en las variables de entorno',
+            );
+            return;
+          }
+
+          // Inicializar el cliente de Twilio
+          const clientTwilio = twilio(accountSid, authToken);
+
+          // Enviar el mensaje de WhatsApp usando el Messaging Service
+          const message = await clientTwilio.messages.create({
+            messagingServiceSid: messagingServiceSid,
+            to: `whatsapp:${formatPhoneNumber(userPhone)}`,
+            body: messageBody,
+          });
+
+          console.log(`Mensaje de WhatsApp enviado con SID: ${message.sid}`);
+        }
+      } catch (whatsappError) {
+        console.error('Error al enviar el mensaje de WhatsApp:', whatsappError);
+      }
+
+      const mailerSend = new MailerSend({
+        apiKey: process.env.MAILERSEND_API_KEY,
+      });
+
+      const emailHtml = `
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+              body { font-family: 'Open Sans', sans-serif; margin:0; padding:0; background-color: #f6f6f6; }
+              .container { width: 90%; max-width: 600px; margin: 40px auto; background-color: #ffffff; border-radius: 10px; padding: 20px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+              .header { background-color: #6366F1; padding: 20px; border-radius: 10px 10px 0 0; text-align: center; }
+              .header img { width: 100px; height: auto; }
+              .header h1 { color: #ffffff; margin: 0; font-size: 24px; }
+              .content { padding: 20px; }
+              .details-table { width: 100%; border-collapse: collapse; }
+              .details-table th, .details-table td { padding:8px; border-bottom: 1px solid #ddd; text-align: left; }
+              .details-table th { background-color: #6366F1; color: #ffffff; text-align: left; }
+              .details-table tr:nth-child(odd) { background-color: #f9f9f9; }
+              .button { background-color: #6366F1; color: #ffffff; text-decoration: none; padding: 15px; display: block; text-align: center; border-radius: 5px; margin: 20px 0; }
+              .footer { text-align: center; font-size: 14px; color: #666666; margin-top: 20px; }
+              @media (max-width: 600px) {
+                .header h1 { font-size: 20px; }
+                .details-table th, .details-table td { font-size: 12px; padding: 5px; }
+                .button { padding: 10px; font-size: 16px; }
+                .container { padding: 10px; }
+              }
+            </style>
+            <link rel="preconnect" href="https://fonts.googleapis.com">
+            <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+            <link href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300;0,400;0,600;0,700;0,800&display=swap" rel="stylesheet">
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <img src="https://firebasestorage.googleapis.com/v0/b/iahub-24.appspot.com/o/app%2Fassets%2Flogo%2F2.png?alt=media&token=5fb84508-cad4-405c-af43-cd1a4f54f521" alt="EstateAdmin">
+                <h1>Nuevo Evento Registrado</h1>
+              </div>
+              <div class="content" style="padding:20px; background-color: #f6f6f6; margin-top:20px; border-radius: 10px;">
+                <h2 style="color:#1a1a1a; font-size:20px;">Hola, ${userData.name || 'Residente'}</h2>
+                <p style="color:#1a1a1a; font-size:16px;">Se ha registrado un nuevo evento en el condominio.</p>
+                <table class="details-table">
+                  <tr>
+                    <th>Detalle</th>
+                    <th>Información</th>
+                  </tr>
+                  <tr>
+                    <td style="font-weight:bold;">Nombre del Evento</td>
+                    <td>${eventData.name || 'N/A'}</td>
+                  </tr>
+                  <tr>
+                    <td style="font-weight:bold;">Número de Residente</td>
+                    <td>${eventData.number || 'N/A'}</td>
+                  </tr>
+                  <tr>
+                    <td style="font-weight:bold;">Área Reservada</td>
+                    <td>${eventData.commonArea || 'N/A'}</td>
+                  </tr>
+                  <tr>
+                    <td style="font-weight:bold;">Fecha del Evento</td>
+                    <td>${eventData.eventDay || 'N/A'}</td>
+                  </tr>
+                  <tr>
+                    <td style="font-weight:bold;">Horario</td>
+                    <td>${eventData.startTime || 'N/A'} - ${eventData.endTime || 'N/A'}</td>
+                  </tr>
+                  ${
+                    eventData.comments
+                      ? `
+                  <tr>
+                    <td style="font-weight:bold;">Comentarios</td>
+                    <td>${eventData.comments}</td>
+                  </tr>
+                  `
+                      : ''
+                  }
+                </table>
+                <table style="width:100%;">
+                  <tr>
+                    <td>
+                      <p style="font-size:12px;color:#ffffff;margin-top:20px; font-weight:bold; background-color: #6366F1;border-radius:10px;padding:20px;text-align:center">
+                        Tu reserva ha sido registrada exitosamente.
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+              <div class="footer">
+                <div class="footer" style="background-color:#f6f6f6;border-radius:10px 10px 0 0;padding:10px;text-align:center; color:#1a1a1a">
+                  <p>Modernidad y Eficacia en la Administración</p>
+                  <p>Síguenos en nuestras redes sociales: 
+                    <a href="URL_FACEBOOK" style="color:#6366F1; text-decoration:none;">Facebook</a> | 
+                    <a href="URL_TWITTER" style="color:#6366F1; text-decoration:none;">Twitter</a> | 
+                    <a href="URL_INSTAGRAM" style="color:#6366F1; text-decoration:none;">Instagram</a>
+                  </p>
+                  <p>Omnipixel</p>
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+
+      const emailParams = new EmailParams()
+        .setFrom(
+          new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+        )
+        .setTo([new Recipient(eventData.email, userData.name || 'Residente')])
+        .setReplyTo(
+          new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+        )
+        .setSubject(`Nuevo Evento en Condominio ${condominiumId}`)
+        .setHtml(emailHtml);
+
+      await mailerSend.email.send(emailParams);
+      console.log(`Correo enviado exitosamente a ${eventData.email}`);
+      return null;
+    } catch (error) {
+      console.error('Error al procesar el evento:', error);
+      return null;
+    }
+  },
+);
 
 //TODO:SEND EMAIL FOR INVOICES GENERATED
 ////////////////////////////////////////// SEND EMAIL FOR INVOICES GENERATED//////////////////////////////////////////
@@ -1018,6 +1123,16 @@ export const processGroupPaymentEmail = onRequest(
         // Obtener el número de WhatsApp del usuario
         const userPhone = userData.phoneNumber || userData.phone;
         if (userPhone) {
+          // Helper para formatear a moneda mexicana (los valores vienen en centavos)
+          const formatCurrency = (value: any) => {
+            const num = (Number(value) || 0) / 100;
+            return new Intl.NumberFormat('es-MX', {
+              style: 'currency',
+              currency: 'MXN',
+              minimumFractionDigits: 2,
+            }).format(num);
+          };
+
           // Formatear la fecha y hora en hora local (America/Mexico_City)
           const currentDate = new Date();
           const options: Intl.DateTimeFormatOptions = {
@@ -1025,20 +1140,15 @@ export const processGroupPaymentEmail = onRequest(
             year: 'numeric',
             month: '2-digit',
             day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
           } as Intl.DateTimeFormatOptions;
-          const formattedDateTime = currentDate.toLocaleString(
+          const formattedDate = currentDate.toLocaleDateString(
             'es-MX',
             options,
           );
-          const [dateProcessed, timeProcessed] = formattedDateTime.split(', ');
 
           // Calcular totales
           let totalMontoPagado = 0;
           let totalSaldoPendiente = 0;
-          let totalSaldoAFavor = 0;
 
           // Usar paymentsArray del registro consolidado
           let paymentsArray = [];
@@ -1054,62 +1164,53 @@ export const processGroupPaymentEmail = onRequest(
           paymentsArray.forEach((payment) => {
             totalMontoPagado += Number(payment.amountPaid) || 0;
             totalSaldoPendiente += Number(payment.amountPending) || 0;
-            totalSaldoAFavor += Number(payment.creditBalance) || 0;
           });
 
-          // Crear el mensaje de WhatsApp
-          const messageBody = `🎉 *EstateAdmin - ¡Pago Confirmado!*
+          // Preparar los datos para la plantilla
+          const folio =
+            consolidatedPayment.folio ||
+            (consolidatedPayment.payments &&
+              consolidatedPayment.payments[0]?.folio) ||
+            'Sin folio';
+          const fecha = formattedDate;
+          const residente = userData.name;
+          const medioPago =
+            consolidatedPayment.paymentType || 'No especificado';
+          const totalPagado = formatCurrency(totalMontoPagado);
+          const cargos = formatCurrency(totalMontoPagado);
+          const saldo = formatCurrency(totalSaldoPendiente);
 
-📋 *Detalles del Pago*
-━━━━━━━━━━━━━━━━━━━━
-📝 Folio: \`${consolidatedPayment.folio || (consolidatedPayment.payments && consolidatedPayment.payments[0]?.folio) || 'Sin folio'}\`
-🕒 Fecha: ${dateProcessed} ${timeProcessed}
-👤 Residente: ${userData.name}
-💳 Medio de pago: ${consolidatedPayment.paymentType || 'No especificado'}
+          // Preparar el detalle por concepto
+          const detalleConceptos = paymentsArray
+            .map((payment) => {
+              let concepto = payment.concept || 'Sin concepto';
+              if (payment.startAt) {
+                const d = new Date(payment.startAt.replace(' ', 'T'));
+                const monthIndex = d.getMonth();
+                const monthNames = [
+                  'Enero',
+                  'Febrero',
+                  'Marzo',
+                  'Abril',
+                  'Mayo',
+                  'Junio',
+                  'Julio',
+                  'Agosto',
+                  'Septiembre',
+                  'Octubre',
+                  'Noviembre',
+                  'Diciembre',
+                ];
+                const monthName = monthNames[monthIndex] || '';
+                concepto += ` - ${monthName}`;
+              }
+              return `• ${concepto}: $${(Number(payment.amountPaid) / 100).toFixed(2)}`;
+            })
+            .join('\n');
 
-💰 *Resumen de Pagos*
-━━━━━━━━━━━━━━━━━━━━
-💵 Total Pagado: *$${(totalMontoPagado / 100).toFixed(2)}*
-⏳ Saldo Pendiente: *$${(totalSaldoPendiente / 100).toFixed(2)}*
-✨ Saldo a favor: *$${(totalSaldoAFavor / 100).toFixed(2)}*
-
-📋 *Detalle por Concepto*
-━━━━━━━━━━━━━━━━━━━━
-${paymentsArray
-  .map((payment) => {
-    let concepto = payment.concept || 'Sin concepto';
-    if (payment.startAt) {
-      const d = new Date(payment.startAt.replace(' ', 'T'));
-      const monthIndex = d.getMonth();
-      const monthNames = [
-        'Enero',
-        'Febrero',
-        'Marzo',
-        'Abril',
-        'Mayo',
-        'Junio',
-        'Julio',
-        'Agosto',
-        'Septiembre',
-        'Octubre',
-        'Noviembre',
-        'Diciembre',
-      ];
-      const monthName = monthNames[monthIndex] || '';
-      concepto += ` - ${monthName}`;
-    }
-    return `• ${concepto}
-  Pagado: *$${(Number(payment.amountPaid) / 100).toFixed(2)}*
-  Pendiente: *$${(Number(payment.amountPending) / 100).toFixed(2)}*
-  A favor: *$${(Number(payment.creditBalance) / 100).toFixed(2)}*`;
-  })
-  .join('\n\n')}
-
-🙏 ¡Gracias por tu pago!`;
-
-          const accountSid = 'AC45f958b88bf6d9e8219aeeaebceb9d62'; // Ejemplo: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-          const authToken = process.env.TWILIO_AUTH_TOKEN;
-          const messagingServiceSid = 'MG443e061010b840925e6829b98d71a08b'; // Ejemplo: "MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          const accountSid = 'AC5577bf20cfdb715733d8fd1ab61505dc';
+          const authToken = '0d2d04e187940f3e92798a3260476f0f';
+          const messagingServiceSid = 'MG6b7af612a6554e34fce9e09a744f907b';
 
           if (!accountSid || !authToken || !messagingServiceSid) {
             console.error(
@@ -1121,18 +1222,27 @@ ${paymentsArray
           // Inicializar el cliente de Twilio
           const clientTwilio = twilio(accountSid, authToken);
 
-          // Enviar el mensaje de WhatsApp usando el Messaging Service
+          // Enviar el mensaje usando el Messaging Service
           const message = await clientTwilio.messages.create({
             messagingServiceSid: messagingServiceSid,
-            to: 'whatsapp:+5215531139560',
-            body: messageBody,
+            to: `whatsapp:${formatPhoneNumber(userPhone)}`,
+            contentSid: 'HX689d4f847ff700caf528d6e95a81e185',
+            contentVariables: JSON.stringify({
+              1: folio,
+              2: fecha,
+              3: residente,
+              4: medioPago,
+              5: totalPagado,
+              6: cargos,
+              7: saldo,
+              8: detalleConceptos,
+            }),
           });
 
           console.log(`Mensaje de WhatsApp enviado con SID: ${message.sid}`);
         }
       } catch (whatsappError) {
         console.error('Error al enviar el mensaje de WhatsApp:', whatsappError);
-        // No lanzamos el error para no interrumpir el proceso de envío de correo
       }
 
       // Helper para formatear a moneda mexicana (los valores vienen en centavos)
@@ -1625,7 +1735,6 @@ ${paymentsArray
               .details-table th, .details-table td { padding:8px; border-bottom: 1px solid #ddd; text-align: left; }
               .details-table th { background-color: #6366F1; color: #ffffff; text-align: left; }
               .details-table tr:nth-child(odd) { background-color: #f9f9f9; }
-              .totals { font-weight: bold; }
               .button { background-color: #6366F1; color: #ffffff; text-decoration: none; padding: 15px; display: block; text-align: center; border-radius: 5px; margin: 20px 0; }
               .footer { text-align: center; font-size: 14px; color: #666666; margin-top: 20px; }
               @media (max-width: 600px) {
