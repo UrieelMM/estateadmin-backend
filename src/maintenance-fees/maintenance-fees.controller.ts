@@ -1,13 +1,13 @@
-import { 
-  Controller, 
-  Post, 
-  Patch, 
-  Req, 
-  UploadedFiles, 
-  UseInterceptors, 
-  UsePipes, 
-  ValidationPipe, 
-  Body 
+import {
+  Controller,
+  Post,
+  Patch,
+  Req,
+  UploadedFiles,
+  UseInterceptors,
+  UsePipes,
+  ValidationPipe,
+  Body,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { MaintenanceFeesService } from './maintenance-fees.service';
@@ -15,15 +15,28 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { MaintenanceFeesDto } from 'src/dtos';
 import { CreateUnidentifiedPaymentDto } from 'src/dtos/create-unidentified-payment.dto';
 import { EditUnidentifiedPaymentDto } from 'src/dtos/edit-unidentified-payment.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @Controller('maintenance-fees')
 export class MaintenanceFeesController {
-  constructor(private readonly maintenanceFeesService: MaintenanceFeesService) {}
+  constructor(
+    private readonly maintenanceFeesService: MaintenanceFeesService,
+  ) {}
 
   @Post('create')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @UseInterceptors(FilesInterceptor('attachments'))
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
-  async createMaintenanceFees(@Req() req: Request, @UploadedFiles() files: any) {
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async createMaintenanceFees(
+    @Req() req: Request,
+    @UploadedFiles() files: any,
+  ) {
     let maintenanceFeeDto: MaintenanceFeesDto = {
       email: req.body.email,
       numberCondominium: req.body.numberCondominium,
@@ -46,16 +59,29 @@ export class MaintenanceFeesController {
       amountPending: req.body.amountPending,
       cargoTotal: req.body.cargoTotal,
       chargeId: req.body.chargeId,
-      attachmentPayment: req.body.attachmentPayment
+      attachmentPayment: req.body.attachmentPayment,
     };
-    
-    return await this.maintenanceFeesService.createMaintenanceFee(maintenanceFeeDto, files);
+
+    return await this.maintenanceFeesService.createMaintenanceFee(
+      maintenanceFeeDto,
+      files,
+    );
   }
 
   @Post('create-unidentified')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @UseInterceptors(FilesInterceptor('attachments'))
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
-  async createUnidentifiedPayment(@Req() req: Request, @UploadedFiles() files: any) {
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async createUnidentifiedPayment(
+    @Req() req: Request,
+    @UploadedFiles() files: any,
+  ) {
     const unidentifiedPaymentDto: CreateUnidentifiedPaymentDto = {
       email: req.body.email,
       numberCondominium: req.body.numberCondominium,
@@ -76,12 +102,22 @@ export class MaintenanceFeesController {
       appliedToCondomino: req.body.appliedToCondomino,
     };
 
-    return await this.maintenanceFeesService.createUnidentifiedPayment(unidentifiedPaymentDto, files);
+    return await this.maintenanceFeesService.createUnidentifiedPayment(
+      unidentifiedPaymentDto,
+      files,
+    );
   }
 
   // NUEVO ENDPOINT PARA "APLICAR" O EDITAR UN PAGO NO IDENTIFICADO
   @Patch('edit-unidentified')
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
   async editUnidentifiedPayment(@Body() dto: EditUnidentifiedPaymentDto) {
     return await this.maintenanceFeesService.editUnidentifiedPayment(dto);
   }

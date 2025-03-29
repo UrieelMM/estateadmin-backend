@@ -1,17 +1,36 @@
-import { Controller, Post, Req, UploadedFiles, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Req,
+  UploadedFiles,
+  UseInterceptors,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Request } from 'express';
 import { ParcelService } from './parcel.service';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ParcelDto } from 'src/dtos';
+import { Throttle } from '@nestjs/throttler';
 
 @Controller('parcel')
 export class ParcelController {
   constructor(private readonly parcelService: ParcelService) {}
 
   @Post('create')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @UseInterceptors(FilesInterceptor('attachments')) // Asegúrate de que 'attachments' coincide con el nombre del campo en el formulario
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
-  async createParcelReception(@Req() req: Request, @UploadedFiles() files: any) {
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async createParcelReception(
+    @Req() req: Request,
+    @UploadedFiles() files: any,
+  ) {
     // Construye el DTO a partir de los datos del formulario
     let parcelDto: ParcelDto = {
       email: req.body.email,
@@ -23,7 +42,7 @@ export class ParcelController {
       hourReception: req.body.hourReception,
       comments: req.body.comments,
     };
-    
+
     // Llama al servicio pasando el DTO y los archivos
     return await this.parcelService.createParcelReception(parcelDto, files);
   }
