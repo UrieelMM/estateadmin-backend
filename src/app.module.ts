@@ -7,6 +7,7 @@ import { PublicationsModule } from './publications/publications.module';
 import { ParcelModule } from './parcel/parcel.module';
 import { MaintenanceFeesModule } from './maintenance-fees/maintenance-fees.module';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { ToolsModule } from './tools/tools.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
     PublicationsModule,
     ParcelModule,
     MaintenanceFeesModule,
+    ToolsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

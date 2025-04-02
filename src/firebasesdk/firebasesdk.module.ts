@@ -1,12 +1,13 @@
 import * as admin from 'firebase-admin';
 import { Module } from '@nestjs/common';
 import { FirebaseAuthService } from './firebasesdk-service';
-import { RegisterCondominiumUsersCase } from 'src/cases';
+import { RegisterCondominiumUsersCase } from '../cases/users-condominiums-auth/register-condominiums.case';
 import * as dotenv from 'dotenv';
-
+import { ToolsModule } from '../tools/tools.module';
 
 dotenv.config();
 @Module({
+  imports: [ToolsModule],
   providers: [FirebaseAuthService, RegisterCondominiumUsersCase],
   exports: [FirebaseAuthService],
 })
@@ -21,13 +22,14 @@ export class FirebasesdkModule {
       client_id: process.env.FIREBASE_CLIENT_ID,
       auth_uri: process.env.FIREBASE_AUTH_URI,
       token_uri: process.env.FIREBASE_TOKEN_URI,
-      auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+      auth_provider_x509_cert_url:
+        process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
       client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
       universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
     };
 
     admin.initializeApp({
-      credential: admin.credential.cert(firebaseParams   as admin.ServiceAccount,),
-    })
+      credential: admin.credential.cert(firebaseParams as admin.ServiceAccount),
+    });
   }
 }

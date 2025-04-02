@@ -10,6 +10,7 @@ import { RegisterClientCase } from 'src/cases/register-clients/register-clients.
 import { RegisterCondominiumCase } from 'src/cases/register-condominium-case/register-condominium.case';
 import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
 import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
+import { ToolsService } from '../tools/tools.service';
 import {
   RegisterUserDto,
   RegisterClientDto,
@@ -33,14 +34,8 @@ import { registerSuperAdmin } from 'src/cases/users-admon-auth/register-super-ad
 export class FirebaseAuthService {
   constructor(
     private registerCondominiumUsersCase: RegisterCondominiumUsersCase,
-  ) {
-    if (admin.apps.length === 0) {
-      // Asegura la inicialización única de la app
-      admin.initializeApp({
-        // Opciones de inicialización, si es necesario
-      });
-    }
-  }
+    private toolsService: ToolsService,
+  ) {}
 
   async createClient(registerClientCase: RegisterClientDto) {
     return await RegisterClientCase(registerClientCase);
@@ -114,5 +109,19 @@ export class FirebaseAuthService {
 
   async createSuperAdmin(registerSuperAdminDto: RegisterSuperAdminDto) {
     return await registerSuperAdmin(registerSuperAdminDto);
+  }
+
+  async searchPlaces(
+    latitude: number,
+    longitude: number,
+    keyword: string,
+    radius: number,
+  ) {
+    return await this.toolsService.searchPlaces(
+      latitude,
+      longitude,
+      keyword,
+      radius,
+    );
   }
 }
