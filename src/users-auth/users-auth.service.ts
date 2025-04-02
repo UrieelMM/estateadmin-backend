@@ -1,23 +1,35 @@
 import { Injectable } from '@nestjs/common';
 import { FirebaseAuthService } from '../firebasesdk/firebasesdk-service';
-import { RegisterClientDto, RegisterUserDto, EditUserDto, ResetPasswordDto, ConfirmResetPasswordDto } from 'src/dtos';
+import {
+  RegisterClientDto,
+  RegisterUserDto,
+  EditUserDto,
+  ResetPasswordDto,
+  ConfirmResetPasswordDto,
+} from 'src/dtos';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
+import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
 
 @Injectable()
 export class UsersAuthService {
   constructor(private firebaseAuthService: FirebaseAuthService) {}
 
-  async registerClient(email: string, password: string, userDetails: any, ) {
+  async registerClient(email: string, password: string, userDetails: any) {
     const registerClientDto: RegisterClientDto = {
       email,
       password,
-      ...userDetails
+      ...userDetails,
     };
 
     return await this.firebaseAuthService.createClient(registerClientDto);
   }
 
-  async registerUser(email: string, password: string, clientId: string, userDetails: any) {
+  async registerUser(
+    email: string,
+    password: string,
+    clientId: string,
+    userDetails: any,
+  ) {
     const registerUserDto: RegisterUserDto = {
       email,
       password,
@@ -27,7 +39,7 @@ export class UsersAuthService {
       condominiumUids: userDetails.condominiumUids,
       photoURL: userDetails.photoURL,
       role: userDetails.role,
-      active: userDetails.active
+      active: userDetails.active,
     };
 
     return await this.firebaseAuthService.createUserWithEmail(registerUserDto);
@@ -41,15 +53,33 @@ export class UsersAuthService {
     return await this.firebaseAuthService.resetPassword(resetPasswordDto);
   }
 
-  async registerCondominiumUsers(fileBuffer: Buffer, clientId: string, condominiumId: string) {
-    return this.firebaseAuthService.registerCondominiumUsers(fileBuffer, clientId, condominiumId);
+  async registerCondominiumUsers(
+    fileBuffer: Buffer,
+    clientId: string,
+    condominiumId: string,
+  ) {
+    return this.firebaseAuthService.registerCondominiumUsers(
+      fileBuffer,
+      clientId,
+      condominiumId,
+    );
   }
 
   async registerCondominium(registerCondominiumDto: RegisterCondominiumDto) {
-    return await this.firebaseAuthService.createCondominium(registerCondominiumDto);
+    return await this.firebaseAuthService.createCondominium(
+      registerCondominiumDto,
+    );
   }
 
   async confirmResetPassword(confirmResetPasswordDto: ConfirmResetPasswordDto) {
-    return await this.firebaseAuthService.confirmResetPassword(confirmResetPasswordDto);
+    return await this.firebaseAuthService.confirmResetPassword(
+      confirmResetPasswordDto,
+    );
+  }
+
+  async registerSuperAdmin(registerSuperAdminDto: RegisterSuperAdminDto) {
+    return await this.firebaseAuthService.createSuperAdmin(
+      registerSuperAdminDto,
+    );
   }
 }

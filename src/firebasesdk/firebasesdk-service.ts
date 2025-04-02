@@ -10,16 +10,32 @@ import { RegisterClientCase } from 'src/cases/register-clients/register-clients.
 import { RegisterCondominiumCase } from 'src/cases/register-condominium-case/register-condominium.case';
 import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
 import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
-import { RegisterUserDto, RegisterClientDto, CreatePublicationDto, ParcelDto, MaintenanceFeesDto, CreateUnidentifiedPaymentDto, EditUnidentifiedPaymentDto, EditUserDto, ResetPasswordDto, ConfirmResetPasswordDto } from 'src/dtos';
+import {
+  RegisterUserDto,
+  RegisterClientDto,
+  CreatePublicationDto,
+  ParcelDto,
+  MaintenanceFeesDto,
+  CreateUnidentifiedPaymentDto,
+  EditUnidentifiedPaymentDto,
+  EditUserDto,
+  ResetPasswordDto,
+  ConfirmResetPasswordDto,
+} from 'src/dtos';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 import { editUser } from 'src/cases/users-admon-auth/edit-user.case';
 import { resetPassword } from 'src/cases/users-admon-auth/reset-password.case';
 import { confirmResetPassword } from 'src/cases/users-admon-auth/confirm-reset-password.case';
+import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
+import { registerSuperAdmin } from 'src/cases/users-admon-auth/register-super-admin.case';
 
 @Injectable()
 export class FirebaseAuthService {
-  constructor(private registerCondominiumUsersCase: RegisterCondominiumUsersCase) {
-    if (admin.apps.length === 0) { // Asegura la inicialización única de la app
+  constructor(
+    private registerCondominiumUsersCase: RegisterCondominiumUsersCase,
+  ) {
+    if (admin.apps.length === 0) {
+      // Asegura la inicialización única de la app
       admin.initializeApp({
         // Opciones de inicialización, si es necesario
       });
@@ -42,11 +58,22 @@ export class FirebaseAuthService {
     return await resetPassword(resetPasswordDto);
   }
 
-  async registerCondominiumUsers(fileBuffer: Buffer, companyName: string, condominiumName: string) {
-    return this.registerCondominiumUsersCase.execute(fileBuffer, companyName, condominiumName);
+  async registerCondominiumUsers(
+    fileBuffer: Buffer,
+    companyName: string,
+    condominiumName: string,
+  ) {
+    return this.registerCondominiumUsersCase.execute(
+      fileBuffer,
+      companyName,
+      condominiumName,
+    );
   }
 
-  async createPublication(createPublicationDto: CreatePublicationDto, files: any) {
+  async createPublication(
+    createPublicationDto: CreatePublicationDto,
+    files: any,
+  ) {
     return await CreatePublicationCase(createPublicationDto, files);
   }
 
@@ -54,15 +81,26 @@ export class FirebaseAuthService {
     return await ParcelReceptionCase(createParcelReceptionDto, files);
   }
 
-  async createMaintenanceFee(createMaintenanceFeeDto: MaintenanceFeesDto, files: any) {
+  async createMaintenanceFee(
+    createMaintenanceFeeDto: MaintenanceFeesDto,
+    files: any,
+  ) {
     return await MaintenancePaymentCase(createMaintenanceFeeDto, files);
   }
 
-  async createUnidentifiedPayment(createUnidentifiedPaymentDto: CreateUnidentifiedPaymentDto, files: any) {
-    return await MaintenanceUnidentifiedPaymentCase(createUnidentifiedPaymentDto, files);
+  async createUnidentifiedPayment(
+    createUnidentifiedPaymentDto: CreateUnidentifiedPaymentDto,
+    files: any,
+  ) {
+    return await MaintenanceUnidentifiedPaymentCase(
+      createUnidentifiedPaymentDto,
+      files,
+    );
   }
 
-  async editUnidentifiedPayment(editUnidentifiedPaymentDto: EditUnidentifiedPaymentDto) {
+  async editUnidentifiedPayment(
+    editUnidentifiedPaymentDto: EditUnidentifiedPaymentDto,
+  ) {
     return await EditUnidentifiedPaymentCase(editUnidentifiedPaymentDto);
   }
 
@@ -72,5 +110,9 @@ export class FirebaseAuthService {
 
   async confirmResetPassword(confirmResetPasswordDto: ConfirmResetPasswordDto) {
     return await confirmResetPassword(confirmResetPasswordDto);
+  }
+
+  async createSuperAdmin(registerSuperAdminDto: RegisterSuperAdminDto) {
+    return await registerSuperAdmin(registerSuperAdminDto);
   }
 }

@@ -21,6 +21,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 import { ConfirmResetPasswordDto } from 'src/dtos/confirm-reset-password.dto';
 import { Throttle } from '@nestjs/throttler';
+import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
 
 @Controller('users-auth')
 export class UsersAuthController {
@@ -79,6 +80,23 @@ export class UsersAuthController {
         role: registerUserDto.role,
         active: registerUserDto.active,
       },
+    );
+  }
+
+  @Post('register-super-admin')
+  @Throttle({ default: { limit: 2, ttl: 60000 } })
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async registerSuperAdmin(
+    @Body() registerSuperAdminDto: RegisterSuperAdminDto,
+  ) {
+    return await this.usersAuthService.registerSuperAdmin(
+      registerSuperAdminDto,
     );
   }
 
