@@ -7,27 +7,18 @@ import { Logger } from '@nestjs/common';
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
-  // Usar explícitamente la plataforma Express para tener acceso a sus métodos específicos
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
-
-  // Orden específico: primero configurar la ruta de webhook con raw
-  app.use('/stripe/webhook', (req, res, next) => {
-    if (req.method === 'POST') {
-      logger.log('Recibido webhook en /stripe/webhook, usando raw parser');
-      bodyParser.raw({ type: 'application/json' })(req, res, next);
-    } else {
-      next();
-    }
+  // Crear app sin bodyParser por defecto
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false, // Desactivar el parser de cuerpo integrado
   });
 
-  // Luego configurar el resto de rutas con JSON parser
-  app.use((req, res, next) => {
-    if (req.originalUrl !== '/stripe/webhook' || req.method !== 'POST') {
-      bodyParser.json()(req, res, next);
-    } else {
-      next();
-    }
-  });
+  // Usar un enfoque más simple para el manejo de webhooks
+  // Primero para la ruta específica del webhook
+  app.use('/stripe/webhook', bodyParser.raw({ type: 'application/json' }));
+
+  // Después para todas las demás rutas
+  app.use(bodyParser.json({ limit: '10mb' }));
+  app.use(bodyParser.urlencoded({ extended: true }));
 
   // Habilitar CORS
   app.enableCors({

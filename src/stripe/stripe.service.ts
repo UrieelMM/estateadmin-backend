@@ -119,47 +119,34 @@ export class StripeService {
   /**
    * Procesar evento de webhook de Stripe
    */
-  async processWebhookEvent(
-    signature: string,
-    payload: Buffer | string | object,
-  ) {
+  async processWebhookEvent(signature: string, payload: Buffer | string) {
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
     this.logger.log(
-      `Recibido webhook de Stripe con firma: ${signature.substring(0, 10)}...`,
+      `Webhook secret configurado: ${webhookSecret ? 'Sí' : 'No'}`,
     );
-    this.logger.log(
-      `Usando webhook secret: ${webhookSecret ? webhookSecret.substring(0, 5) + '...' : 'NO CONFIGURADO'}`,
-    );
-
-    // Depurar el tipo de payload recibido
-    this.logger.log(`Tipo de payload recibido: ${typeof payload}`);
 
     try {
       if (!webhookSecret) {
         throw new Error('No se ha configurado STRIPE_WEBHOOK_SECRET');
       }
 
-      // Convertir el payload al formato adecuado para constructEvent
-      let rawPayload: Buffer | string;
+      this.logger.log(`Verificando firma del webhook...`);
 
-      if (Buffer.isBuffer(payload)) {
-        rawPayload = payload;
-      } else if (typeof payload === 'string') {
-        rawPayload = payload;
-      } else if (typeof payload === 'object') {
-        // Si es un objeto, intentar convertirlo a string
+      // Asegurarnos de que payload sea Buffer o string
+      let rawPayload = payload;
+      if (!Buffer.isBuffer(payload) && typeof payload !== 'string') {
+        this.logger.log(
+          `Payload no es Buffer ni string, intentando convertir a string...`,
+        );
         rawPayload = JSON.stringify(payload);
-      } else {
-        throw new Error(`Tipo de payload no soportado: ${typeof payload}`);
       }
 
-      // Verificar la firma del webhook
-      this.logger.log(`Verificando firma del webhook...`);
       const event = this.stripe.webhooks.constructEvent(
         rawPayload,
         signature,
         webhookSecret,
       );
+
       this.logger.log(
         `Evento de Stripe verificado: ${event.type}, id: ${event.id}`,
       );

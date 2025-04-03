@@ -111,25 +111,33 @@ export class StripeController {
     @Res() res: Response,
     @Headers('stripe-signature') signature: string,
   ) {
+    this.logger.log('Webhook recibido');
+
     if (!signature) {
-      throw new BadRequestException('No se encontró la firma de Stripe');
+      this.logger.error('No se encontró la firma de Stripe');
+      return res.status(HttpStatus.BAD_REQUEST).json({
+        message: 'No se encontró la firma de Stripe',
+      });
     }
 
-    // Acceder al raw body, en Express con bodyParser.raw() se almacena directamente en req.body
+    // Con el middleware configurado correctamente, req.body debe ser un Buffer
     const rawBody = req.body;
     if (!rawBody) {
       this.logger.error('No se recibió el cuerpo de la solicitud');
-      throw new BadRequestException(
-        'No se pudo leer el cuerpo de la solicitud',
-      );
+      return res.status(HttpStatus.BAD_REQUEST).json({
+        message: 'No se pudo leer el cuerpo de la solicitud',
+      });
     }
 
     try {
-      // Pasar el cuerpo directamente sin convertirlo a Buffer
+      this.logger.log(
+        `Procesando webhook, tipo de cuerpo: ${typeof rawBody}, ¿es Buffer? ${Buffer.isBuffer(rawBody)}`,
+      );
       const result = await this.stripeService.processWebhookEvent(
         signature,
         rawBody,
       );
+      this.logger.log('Webhook procesado exitosamente');
       return res.status(HttpStatus.OK).json(result);
     } catch (error) {
       this.logger.error(`Error en el webhook: ${error.message}`, error.stack);
