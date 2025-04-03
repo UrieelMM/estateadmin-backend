@@ -55,11 +55,11 @@ class CreateCheckoutSessionDto {
   // Se permite URL locales al deshabilitar el requerimiento de TLD
   //TODO: Cambiar a true cuando se esté en producción
   @IsNotEmpty()
-  @IsUrl({ require_tld: false })
+  @IsUrl({ require_tld: true })
   successUrl: string;
 
   @IsNotEmpty()
-  @IsUrl({ require_tld: false })
+  @IsUrl({ require_tld: true })
   cancelUrl: string;
 }
 
