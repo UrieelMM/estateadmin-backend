@@ -10,6 +10,7 @@ import {
   UsePipes,
   ValidationPipe,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { StripeService } from './stripe.service';
@@ -72,6 +73,8 @@ class CheckSessionStatusDto {
 
 @Controller('stripe')
 export class StripeController {
+  private readonly logger = new Logger(StripeController.name);
+
   constructor(private readonly stripeService: StripeService) {}
 
   /**
@@ -104,7 +107,7 @@ export class StripeController {
    */
   @Post('webhook')
   async handleWebhook(
-    @Req() req: RawBodyRequest<Request>,
+    @Req() req: Request,
     @Res() res: Response,
     @Headers('stripe-signature') signature: string,
   ) {
@@ -112,8 +115,10 @@ export class StripeController {
       throw new BadRequestException('No se encontró la firma de Stripe');
     }
 
-    const rawBody = req.rawBody;
+    // Acceder al raw body, en Express con bodyParser.raw() se almacena directamente en req.body
+    const rawBody = req.body;
     if (!rawBody) {
+      this.logger.error('No se recibió el cuerpo de la solicitud');
       throw new BadRequestException(
         'No se pudo leer el cuerpo de la solicitud',
       );
@@ -122,10 +127,11 @@ export class StripeController {
     try {
       const result = await this.stripeService.processWebhookEvent(
         signature,
-        rawBody,
+        Buffer.from(rawBody),
       );
       return res.status(HttpStatus.OK).json(result);
     } catch (error) {
+      this.logger.error(`Error en el webhook: ${error.message}`, error.stack);
       return res.status(HttpStatus.BAD_REQUEST).json({
         message: error.message,
       });

@@ -128,6 +128,11 @@ export class StripeService {
       `Usando webhook secret: ${webhookSecret ? webhookSecret.substring(0, 5) + '...' : 'NO CONFIGURADO'}`,
     );
 
+    // Imprimir el payload para debugging
+    this.logger.log(
+      `Payload recibido: ${payload.toString().substring(0, 100)}...`,
+    );
+
     try {
       if (!webhookSecret) {
         throw new Error('No se ha configurado STRIPE_WEBHOOK_SECRET');
