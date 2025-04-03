@@ -125,9 +125,10 @@ export class StripeController {
     }
 
     try {
+      // Pasar el cuerpo directamente sin convertirlo a Buffer
       const result = await this.stripeService.processWebhookEvent(
         signature,
-        Buffer.from(rawBody),
+        rawBody,
       );
       return res.status(HttpStatus.OK).json(result);
     } catch (error) {
