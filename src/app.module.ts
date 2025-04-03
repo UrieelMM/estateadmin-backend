@@ -8,6 +8,7 @@ import { ParcelModule } from './parcel/parcel.module';
 import { MaintenanceFeesModule } from './maintenance-fees/maintenance-fees.module';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ToolsModule } from './tools/tools.module';
+import { StripeModule } from './stripe/stripe.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { ToolsModule } from './tools/tools.module';
     ParcelModule,
     MaintenanceFeesModule,
     ToolsModule,
+    StripeModule,
   ],
   controllers: [AppController],
   providers: [AppService],

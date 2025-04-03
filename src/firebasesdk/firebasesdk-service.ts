@@ -11,6 +11,7 @@ import { RegisterCondominiumCase } from 'src/cases/register-condominium-case/reg
 import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
 import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
 import { ToolsService } from '../tools/tools.service';
+import { StripeService } from '../stripe/stripe.service';
 import {
   RegisterUserDto,
   RegisterClientDto,
@@ -35,6 +36,7 @@ export class FirebaseAuthService {
   constructor(
     private registerCondominiumUsersCase: RegisterCondominiumUsersCase,
     private toolsService: ToolsService,
+    private stripeService: StripeService,
   ) {}
 
   async createClient(registerClientCase: RegisterClientDto) {
@@ -123,5 +125,29 @@ export class FirebaseAuthService {
       keyword,
       radius,
     );
+  }
+
+  /**
+   * Crear una sesión de checkout de Stripe para pagar una factura
+   */
+  async createStripeCheckoutSession(params: {
+    invoiceId: string;
+    clientId: string;
+    condominiumId: string;
+    amount: number;
+    invoiceNumber: string;
+    userEmail: string;
+    description?: string;
+    successUrl: string;
+    cancelUrl: string;
+  }) {
+    return await this.stripeService.createCheckoutSession(params);
+  }
+
+  /**
+   * Verificar el estado de una sesión de pago
+   */
+  async checkStripeSessionStatus(sessionId: string) {
+    return await this.stripeService.checkSessionStatus(sessionId);
   }
 }

@@ -4,10 +4,11 @@ import { FirebaseAuthService } from './firebasesdk-service';
 import { RegisterCondominiumUsersCase } from '../cases/users-condominiums-auth/register-condominiums.case';
 import * as dotenv from 'dotenv';
 import { ToolsModule } from '../tools/tools.module';
+import { StripeModule } from '../stripe/stripe.module';
 
 dotenv.config();
 @Module({
-  imports: [ToolsModule],
+  imports: [ToolsModule, StripeModule],
   providers: [FirebaseAuthService, RegisterCondominiumUsersCase],
   exports: [FirebaseAuthService],
 })
