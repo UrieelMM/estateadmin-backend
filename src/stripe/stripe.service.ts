@@ -253,7 +253,9 @@ export class StripeService {
         paymentIntentId: session.payment_intent,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-      this.logger.log(`Estado de factura actualizado correctamente`);
+      this.logger.log(
+        `Estado de factura actualizado correctamente ${session.id}`,
+      );
 
       // Obtener datos de la factura y del usuario para enviar correo
       const invoiceData = invoiceDoc.data();
