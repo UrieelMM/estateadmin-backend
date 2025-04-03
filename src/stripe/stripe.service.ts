@@ -117,10 +117,55 @@ export class StripeService {
   }
 
   /**
+   * Guardar registro del evento de webhook para auditoría
+   */
+  private async logWebhookEvent(
+    event: any,
+    clientId: string,
+    condominiumId: string,
+  ) {
+    try {
+      // Crear un registro en Firestore con la nueva estructura
+      await admin
+        .firestore()
+        .collection(
+          `clients/${clientId}/condominiums/${condominiumId}/stripe_webhook_events`,
+        )
+        .doc(event.id)
+        .set(
+          {
+            eventId: event.id,
+            eventType: event.type,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            processed: true,
+            payload: JSON.stringify(event), // Solo guardar campos relevantes en prod
+          },
+          { merge: true },
+        );
+
+      this.logger.log(
+        `Evento ${event.id} registrado en Firestore para auditoría`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Error al registrar evento en Firestore: ${error.message}`,
+      );
+      // No lanzamos error para no interrumpir el flujo principal
+    }
+  }
+
+  /**
    * Procesar evento de webhook de Stripe
    */
-  async processWebhookEvent(signature: string, payload: Buffer | string) {
+  async processWebhookEvent(
+    signature: string,
+    payload: Buffer | string,
+    clientId: string,
+    condominiumId: string,
+  ) {
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    const maxWebhookAgeSeconds = 300; // 5 minutos de tolerancia
+
     this.logger.log(
       `Webhook secret configurado: ${webhookSecret ? 'Sí' : 'No'}`,
     );
@@ -179,20 +224,68 @@ export class StripeService {
         webhookSecret,
       );
 
+      // Verificar si el evento es demasiado antiguo
+      const eventCreatedTime = event.created;
+      const currentTime = Math.floor(Date.now() / 1000);
+      if (currentTime - eventCreatedTime > maxWebhookAgeSeconds) {
+        this.logger.warn(
+          `Evento ${event.id} rechazado por antigüedad: ${currentTime - eventCreatedTime} segundos`,
+        );
+        return { received: true, rejected: true, reason: 'expired' };
+      }
+
       this.logger.log(
         `Evento de Stripe verificado: ${event.type}, id: ${event.id}`,
       );
+
+      // Registrar el evento antes de procesarlo
+      await this.logWebhookEvent(event, clientId, condominiumId);
+
+      // Verificar si ya procesamos este evento (idempotencia a nivel de evento)
+      const eventDoc = await admin
+        .firestore()
+        .collection(
+          `clients/${clientId}/condominiums/${condominiumId}/stripe_webhook_events`,
+        )
+        .doc(event.id)
+        .get();
+
+      if (eventDoc.exists && eventDoc.data().completed) {
+        this.logger.log(`Evento ${event.id} ya fue procesado previamente`);
+        return { received: true, alreadyProcessed: true };
+      }
 
       // Manejar los diferentes tipos de eventos
       switch (event.type) {
         case 'checkout.session.completed':
           await this.handleCheckoutSessionCompleted(event.data.object);
           break;
+        case 'checkout.session.expired':
+          await this.handleCheckoutSessionExpired(event.data.object);
+          break;
         case 'payment_intent.succeeded':
           await this.handlePaymentIntentSucceeded(event.data.object);
           break;
         case 'payment_intent.payment_failed':
           await this.handlePaymentIntentFailed(event.data.object);
+          break;
+        case 'payment_intent.canceled':
+          await this.handlePaymentIntentCanceled(event.data.object);
+          break;
+        case 'payment_intent.processing':
+          await this.handlePaymentIntentProcessing(event.data.object);
+          break;
+        case 'charge.refunded':
+          await this.handleChargeRefunded(event.data.object);
+          break;
+        case 'charge.refund.updated':
+          await this.handleChargeRefundUpdated(event.data.object);
+          break;
+        case 'charge.dispute.created':
+          await this.handleChargeDisputeCreated(event.data.object);
+          break;
+        case 'charge.dispute.closed':
+          await this.handleChargeDisputeClosed(event.data.object);
           break;
         default:
           this.logger.log(`Evento no manejado: ${event.type}`);
@@ -237,28 +330,68 @@ export class StripeService {
         )
         .doc(invoiceId);
 
-      const invoiceDoc = await invoiceRef.get();
-      if (!invoiceDoc.exists) {
-        this.logger.error(`No se encontró la factura con ID: ${invoiceId}`);
-        return;
-      }
-      this.logger.log(`Factura encontrada, actualizando estado...`);
+      // Realizar la operación dentro de una transacción para garantizar atomicidad
+      await admin.firestore().runTransaction(async (transaction) => {
+        const invoiceDoc = await transaction.get(invoiceRef);
 
-      // Actualizar el estado de la factura
-      await invoiceRef.update({
-        paymentStatus: 'paid',
-        paymentDate: admin.firestore.FieldValue.serverTimestamp(),
-        paymentMethod: 'stripe',
-        paymentSessionId: session.id,
-        paymentIntentId: session.payment_intent,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        if (!invoiceDoc.exists) {
+          throw new Error(`No se encontró la factura con ID: ${invoiceId}`);
+        }
+
+        const invoiceData = invoiceDoc.data();
+
+        // Verificar si la factura ya fue procesada (control de idempotencia)
+        if (
+          invoiceData.paymentStatus === 'paid' &&
+          invoiceData.paymentSessionId === session.id
+        ) {
+          this.logger.log(
+            `Esta sesión de pago ya fue procesada anteriormente: ${session.id}`,
+          );
+          return;
+        }
+
+        this.logger.log(`Factura encontrada, actualizando estado...`);
+
+        // Actualizar dentro de la transacción
+        transaction.update(invoiceRef, {
+          paymentStatus: 'paid',
+          status: 'paid', // Actualizar también el campo status para mantener coherencia
+          paymentDate: admin.firestore.FieldValue.serverTimestamp(),
+          paymentMethod: 'stripe',
+          paymentSessionId: session.id,
+          paymentIntentId: session.payment_intent,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        this.logger.log(
+          `Estado de factura actualizado en transacción para: ${session.id}`,
+        );
       });
-      this.logger.log(
-        `Estado de factura actualizado correctamente ${session.id}`,
-      );
 
-      // Obtener datos de la factura y del usuario para enviar correo
-      const invoiceData = invoiceDoc.data();
+      // Una vez completada la transacción, obtener datos actualizados
+      const updatedInvoiceDoc = await invoiceRef.get();
+      const invoiceData = updatedInvoiceDoc.data();
+
+      // Verificar que el monto pagado coincide con el monto de la factura (tolerancia del 1%)
+      const sessionAmount = session.amount_total / 100; // Stripe almacena en centavos
+      const invoiceAmount = invoiceData.amount;
+      const tolerance = invoiceAmount * 0.01; // 1% de tolerancia
+
+      if (Math.abs(sessionAmount - invoiceAmount) > tolerance) {
+        this.logger.warn(
+          `Discrepancia de monto detectada: Factura=${invoiceAmount}, Pago=${sessionAmount}`,
+        );
+
+        // Registrar la discrepancia pero continuar el proceso
+        await invoiceRef.update({
+          amountDiscrepancy: true,
+          expectedAmount: invoiceAmount,
+          paidAmount: sessionAmount,
+        });
+      }
+
+      // Obtener datos para enviar correo
       const userUID = invoiceData.userUID;
 
       if (!userUID) {
@@ -278,6 +411,14 @@ export class StripeService {
         return;
       }
 
+      // Lógica para enviar correo solo una vez
+      if (invoiceData.emailSent) {
+        this.logger.log(
+          `Ya se envió un correo para la sesión ${session.id}, omitiendo envío.`,
+        );
+        return;
+      }
+
       const userData = userDoc.data();
       const userEmail = invoiceData.userEmail || userData.email;
 
@@ -286,8 +427,8 @@ export class StripeService {
         return;
       }
 
-      // Enviar correo de confirmación (implementar esta función)
-      await this.sendPaymentConfirmationEmail({
+      // Enviar correo de confirmación
+      await this.sendPaymentConfirmationEmailWithRetry({
         email: userEmail,
         name: userData.name,
         invoiceNumber: invoiceData.invoiceNumber,
@@ -295,7 +436,15 @@ export class StripeService {
         paymentDate: new Date(),
       });
 
-      this.logger.log(`Pago de factura ${invoiceId} procesado correctamente`);
+      // Marcar en Firestore que el correo ya fue enviado
+      await invoiceRef.update({
+        emailSent: true,
+        emailSentDate: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      this.logger.log(
+        `Correo de confirmación enviado y marcado como enviado en Firestore.`,
+      );
     } catch (error) {
       this.logger.error(
         `Error al procesar el pago completado: ${error.message}`,
@@ -320,6 +469,68 @@ export class StripeService {
   private async handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
     this.logger.error(`PaymentIntent fallido: ${paymentIntent.id}`);
     // Podrías implementar lógica para notificar al usuario del fallo
+  }
+
+  /**
+   * Sistema de reintentos con backoff exponencial
+   */
+  private async withRetry<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    initialDelay: number = 300,
+  ): Promise<T> {
+    let retries = 0;
+    let lastError: any;
+
+    while (retries <= maxRetries) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+
+        // Errores que no deberían reintentarse
+        if (error.code === 'not-found' || error.code === 'permission-denied') {
+          throw error;
+        }
+
+        retries++;
+
+        if (retries > maxRetries) {
+          this.logger.error(`Máximo de reintentos (${maxRetries}) alcanzado.`);
+          throw lastError;
+        }
+
+        // Calcular delay con backoff exponencial y jitter (aleatorización)
+        const delay =
+          initialDelay * Math.pow(2, retries - 1) * (0.5 + Math.random());
+        this.logger.log(
+          `Reintentando operación en ${Math.round(delay)}ms (intento ${retries}/${maxRetries})...`,
+        );
+
+        // Esperar antes del siguiente reintento
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    // Nunca deberíamos llegar aquí, pero TypeScript necesita un valor de retorno
+    throw lastError;
+  }
+
+  /**
+   * Enviar correo de confirmación con reintentos
+   */
+  private async sendPaymentConfirmationEmailWithRetry(params: {
+    email: string;
+    name: string;
+    invoiceNumber: string;
+    amount: number;
+    paymentDate: Date;
+  }): Promise<void> {
+    return this.withRetry(
+      () => this.sendPaymentConfirmationEmail(params),
+      3, // Máximo 3 reintentos
+      500, // Delay inicial de 500ms
+    );
   }
 
   /**
@@ -465,6 +676,203 @@ export class StripeService {
     } catch (error) {
       this.logger.error(
         `Error al enviar correo de confirmación: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Manejar el evento de sesión de checkout expirada
+   */
+  private async handleCheckoutSessionExpired(session: Stripe.Checkout.Session) {
+    try {
+      this.logger.log(`Sesión expirada: ${session.id}`);
+      const { invoiceId, clientId, condominiumId } = session.metadata || {};
+
+      if (!invoiceId || !clientId || !condominiumId) {
+        this.logger.error('Metadatos faltantes en la sesión expirada');
+        return;
+      }
+
+      // Actualizar estado de la factura
+      const invoiceRef = admin
+        .firestore()
+        .collection(
+          `clients/${clientId}/condominiums/${condominiumId}/invoicesGenerated`,
+        )
+        .doc(invoiceId);
+
+      await invoiceRef.update({
+        paymentStatus: 'expired',
+        status: 'expired',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `Error al procesar sesión expirada: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Manejar el evento de pago cancelado
+   */
+  private async handlePaymentIntentCanceled(
+    paymentIntent: Stripe.PaymentIntent,
+  ) {
+    try {
+      this.logger.log(`PaymentIntent cancelado: ${paymentIntent.id}`);
+      // Aquí puedes implementar lógica adicional si es necesario
+    } catch (error) {
+      this.logger.error(
+        `Error al procesar pago cancelado: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Manejar el evento de pago en proceso
+   */
+  private async handlePaymentIntentProcessing(
+    paymentIntent: Stripe.PaymentIntent,
+  ) {
+    try {
+      this.logger.log(`PaymentIntent en proceso: ${paymentIntent.id}`);
+      // Aquí puedes implementar lógica adicional si es necesario
+    } catch (error) {
+      this.logger.error(
+        `Error al procesar pago en proceso: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Manejar el evento de reembolso
+   */
+  private async handleChargeRefunded(charge: Stripe.Charge) {
+    try {
+      this.logger.log(`Cargo reembolsado: ${charge.id}`);
+      const { invoiceId, clientId, condominiumId } = charge.metadata || {};
+
+      if (!invoiceId || !clientId || !condominiumId) {
+        this.logger.error('Metadatos faltantes en el cargo reembolsado');
+        return;
+      }
+
+      // Actualizar estado de la factura
+      const invoiceRef = admin
+        .firestore()
+        .collection(
+          `clients/${clientId}/condominiums/${condominiumId}/invoicesGenerated`,
+        )
+        .doc(invoiceId);
+
+      await invoiceRef.update({
+        paymentStatus: 'refunded',
+        status: 'refunded',
+        refundDate: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `Error al procesar reembolso: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Manejar el evento de actualización de reembolso
+   */
+  private async handleChargeRefundUpdated(refund: Stripe.Refund) {
+    try {
+      this.logger.log(`Reembolso actualizado: ${refund.id}`);
+      // Aquí puedes implementar lógica adicional si es necesario
+    } catch (error) {
+      this.logger.error(
+        `Error al procesar actualización de reembolso: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Manejar el evento de disputa creada
+   */
+  private async handleChargeDisputeCreated(dispute: Stripe.Dispute) {
+    try {
+      this.logger.log(`Disputa creada: ${dispute.id}`);
+      const { invoiceId, clientId, condominiumId } = dispute.metadata || {};
+
+      if (!invoiceId || !clientId || !condominiumId) {
+        this.logger.error('Metadatos faltantes en la disputa');
+        return;
+      }
+
+      // Actualizar estado de la factura
+      const invoiceRef = admin
+        .firestore()
+        .collection(
+          `clients/${clientId}/condominiums/${condominiumId}/invoicesGenerated`,
+        )
+        .doc(invoiceId);
+
+      await invoiceRef.update({
+        paymentStatus: 'disputed',
+        status: 'disputed',
+        disputeCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `Error al procesar disputa creada: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Manejar el evento de disputa cerrada
+   */
+  private async handleChargeDisputeClosed(dispute: Stripe.Dispute) {
+    try {
+      this.logger.log(`Disputa cerrada: ${dispute.id}`);
+      const { invoiceId, clientId, condominiumId } = dispute.metadata || {};
+
+      if (!invoiceId || !clientId || !condominiumId) {
+        this.logger.error('Metadatos faltantes en la disputa cerrada');
+        return;
+      }
+
+      // Actualizar estado de la factura
+      const invoiceRef = admin
+        .firestore()
+        .collection(
+          `clients/${clientId}/condominiums/${condominiumId}/invoicesGenerated`,
+        )
+        .doc(invoiceId);
+
+      const updateData: any = {
+        disputeClosedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      // Actualizar estado según el resultado de la disputa
+      if (dispute.status === 'won') {
+        updateData.paymentStatus = 'paid';
+        updateData.status = 'paid';
+      } else if (dispute.status === 'lost') {
+        updateData.paymentStatus = 'refunded';
+        updateData.status = 'refunded';
+      }
+
+      await invoiceRef.update(updateData);
+    } catch (error) {
+      this.logger.error(
+        `Error al procesar disputa cerrada: ${error.message}`,
         error.stack,
       );
     }
