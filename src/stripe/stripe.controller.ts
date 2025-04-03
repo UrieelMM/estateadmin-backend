@@ -134,14 +134,25 @@ export class StripeController {
         `Procesando webhook, tipo de cuerpo: ${typeof rawBody}, ¿es Buffer? ${Buffer.isBuffer(rawBody)}`,
       );
 
+      // Primero verificar la firma y obtener el evento
+      const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+      if (!webhookSecret) {
+        throw new BadRequestException(
+          'No se ha configurado STRIPE_WEBHOOK_SECRET',
+        );
+      }
+
       // Parsear el payload para obtener clientId y condominiumId
       const event = JSON.parse(rawBody.toString());
       const { clientId, condominiumId } = event.data?.object?.metadata || {};
 
       if (!clientId || !condominiumId) {
-        throw new BadRequestException(
-          'No se encontraron clientId o condominiumId en el evento',
+        this.logger.warn(
+          `Evento ${event.type} sin clientId o condominiumId, ignorando...`,
         );
+        return res
+          .status(HttpStatus.OK)
+          .json({ received: true, ignored: true });
       }
 
       const result = await this.stripeService.processWebhookEvent(

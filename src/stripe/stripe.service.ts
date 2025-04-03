@@ -129,7 +129,7 @@ export class StripeService {
       await admin
         .firestore()
         .collection(
-          `clients/${clientId}/condominiums/${condominiumId}/stripe_webhook_events`,
+          `clients/${clientId}/condominiums/${condominiumId}/stripeWebhookEventsClients`,
         )
         .doc(event.id)
         .set(
@@ -245,7 +245,7 @@ export class StripeService {
       const eventDoc = await admin
         .firestore()
         .collection(
-          `clients/${clientId}/condominiums/${condominiumId}/stripe_webhook_events`,
+          `clients/${clientId}/condominiums/${condominiumId}/stripeWebhookEventsClients`,
         )
         .doc(event.id)
         .get();
