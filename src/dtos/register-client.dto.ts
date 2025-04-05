@@ -1,4 +1,13 @@
-import { IsEmail, IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsArray,
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 class CondominiumInfo {
   @IsNotEmpty()
@@ -9,6 +18,12 @@ class CondominiumInfo {
   @IsString()
   @MaxLength(300)
   address: string;
+}
+
+export enum PlanType {
+  Basic = 'Basic',
+  Pro = 'Pro',
+  Enterprise = 'Enterprise',
 }
 
 export class RegisterClientDto {
@@ -37,9 +52,15 @@ export class RegisterClientDto {
   @IsString()
   phoneNumber: string;
 
-  @IsNotEmpty()
-  @IsString()
-  currentPlan: string;
+  @IsOptional()
+  @IsEnum(PlanType, {
+    message: 'El plan debe ser Basic, Pro o Enterprise',
+  })
+  plan: PlanType = PlanType.Basic;
+
+  @IsOptional()
+  @IsArray()
+  proFunctions: string[];
 
   @IsNotEmpty()
   @IsString()
