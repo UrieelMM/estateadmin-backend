@@ -30,6 +30,7 @@ import { resetPassword } from 'src/cases/users-admon-auth/reset-password.case';
 import { confirmResetPassword } from 'src/cases/users-admon-auth/confirm-reset-password.case';
 import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
 import { registerSuperAdmin } from 'src/cases/users-admon-auth/register-super-admin.case';
+import { ClientPlanDto, ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -111,6 +112,13 @@ export class FirebaseAuthService {
 
   async createSuperAdmin(registerSuperAdminDto: RegisterSuperAdminDto) {
     return await registerSuperAdmin(registerSuperAdminDto);
+  }
+
+  async getClientPlan(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<ClientPlanResponseDto> {
+    return await this.toolsService.getClientPlan(clientId, condominiumId);
   }
 
   async searchPlaces(

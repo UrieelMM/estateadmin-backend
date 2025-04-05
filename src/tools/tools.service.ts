@@ -1,5 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import axios from 'axios';
+import * as admin from 'firebase-admin';
+import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
 
 @Injectable()
 export class ToolsService {
@@ -69,6 +75,40 @@ export class ToolsService {
       return response.data;
     } catch (error) {
       throw new Error(`Error al obtener detalles del lugar: ${error.message}`);
+    }
+  }
+
+  async getClientPlan(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<ClientPlanResponseDto> {
+    try {
+      // Obtener datos del condominio desde Firestore
+      const condominiumDoc = await admin
+        .firestore()
+        .collection(`clients/${clientId}/condominiums`)
+        .doc(condominiumId)
+        .get();
+
+      if (!condominiumDoc.exists) {
+        throw new NotFoundException(
+          `Condominio con ID ${condominiumId} no encontrado`,
+        );
+      }
+
+      const condominiumData = condominiumDoc.data();
+
+      return {
+        plan: condominiumData.plan || 'Basic', // Valor por defecto si no existe
+        proFunctions: condominiumData.proFunctions || [], // Valor por defecto si no existe
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new Error(
+        `Error al obtener el plan del condominio: ${error.message}`,
+      );
     }
   }
 }

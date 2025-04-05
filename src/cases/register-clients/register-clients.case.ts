@@ -39,8 +39,6 @@ export const RegisterClientCase = async (
       email,
       companyName,
       phoneNumber,
-      plan,
-      proFunctions,
       address,
       RFC,
       country,
@@ -65,6 +63,8 @@ export const RegisterClientCase = async (
       name: condominiumInfo.name,
       address: condominiumInfo.address,
       uid: condominiumUid,
+      plan,
+      proFunctions,
       createdDate: admin.firestore.FieldValue.serverTimestamp(),
     });
 

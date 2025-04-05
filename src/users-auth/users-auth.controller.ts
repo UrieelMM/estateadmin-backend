@@ -9,14 +9,17 @@ import {
   StreamableFile,
   Put,
   Param,
+  UnauthorizedException,
+  Headers,
 } from '@nestjs/common';
 import { UsersAuthService } from './users-auth.service';
 import {
-  RegisterClientDto,
   RegisterUserDto,
+  RegisterClientDto,
   EditUserDto,
   ResetPasswordDto,
 } from 'src/dtos';
+import { ClientPlanDto } from 'src/dtos/client-plan.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 import { ConfirmResetPasswordDto } from 'src/dtos/confirm-reset-password.dto';
@@ -98,6 +101,22 @@ export class UsersAuthController {
   ) {
     return await this.usersAuthService.registerSuperAdmin(
       registerSuperAdminDto,
+    );
+  }
+
+  @Post('client-plan')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async getClientPlan(@Body() clientPlanDto: ClientPlanDto) {
+    return await this.usersAuthService.getClientPlan(
+      clientPlanDto.clientId,
+      clientPlanDto.condominiumId,
     );
   }
 

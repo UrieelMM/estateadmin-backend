@@ -7,6 +7,7 @@ import {
   ResetPasswordDto,
   ConfirmResetPasswordDto,
 } from 'src/dtos';
+import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
 
@@ -80,6 +81,16 @@ export class UsersAuthService {
   async registerSuperAdmin(registerSuperAdminDto: RegisterSuperAdminDto) {
     return await this.firebaseAuthService.createSuperAdmin(
       registerSuperAdminDto,
+    );
+  }
+
+  async getClientPlan(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<ClientPlanResponseDto> {
+    return await this.firebaseAuthService.getClientPlan(
+      clientId,
+      condominiumId,
     );
   }
 }
