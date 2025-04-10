@@ -10,7 +10,11 @@ import { mailerSend } from 'src/utils/mailerSend';
 export class RegisterCondominiumUsersCase {
   private readonly logger = new Logger(RegisterCondominiumUsersCase.name);
 
-  async execute(fileBuffer: Buffer, clientId: string, condominiumId: string): Promise<void> {
+  async execute(
+    fileBuffer: Buffer,
+    clientId: string,
+    condominiumId: string,
+  ): Promise<void> {
     if (!clientId) {
       throw new BadRequestException('ClientId es requerido.');
     }
@@ -18,10 +22,14 @@ export class RegisterCondominiumUsersCase {
       throw new BadRequestException('CondominiumId es requerido.');
     }
 
-    const usersData: UserCondominiumDto[] = readExcel(fileBuffer) as UserCondominiumDto[];
+    const usersData: UserCondominiumDto[] = readExcel(
+      fileBuffer,
+    ) as UserCondominiumDto[];
 
     if (usersData.length === 0) {
-      throw new BadRequestException('El archivo Excel está vacío o no tiene el formato correcto.');
+      throw new BadRequestException(
+        'El archivo Excel está vacío o no tiene el formato correcto.',
+      );
     }
 
     for (const userData of usersData) {
@@ -52,11 +60,21 @@ export class RegisterCondominiumUsersCase {
           role: userData.role || 'condominium',
         });
 
-        this.logger.log(`Documento creado para usuario: email=${userData.email}, uid=${uid}`);
+        this.logger.log(
+          `Documento creado para usuario: email=${userData.email}, uid=${uid}`,
+        );
 
         // Preparar y enviar el correo electrónico
-        const sentFrom = new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support');
-        const recipients = [new Recipient(userData.email || 'Sin email', userData.name || 'Sin nombre')];
+        const sentFrom = new Sender(
+          'MS_CUXpzj@estate-admin.com',
+          'EstateAdmin Support',
+        );
+        const recipients = [
+          new Recipient(
+            userData.email || 'Sin email',
+            userData.name || 'Sin nombre',
+          ),
+        ];
 
         // Función para generar la plantilla HTML del correo sin contraseña
         const htmlTemplate = (data: UserCondominiumDto) => `
@@ -89,7 +107,7 @@ export class RegisterCondominiumUsersCase {
               <link href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
             </head>
             <body style="background-color: #f6f6f6;">
-              <table width="50%" style="background-color: #ffffff; border-radius: 10px; padding: 50px 40px; margin: 40px auto 0 auto; box-shadow: 5px 5px 10px rgba(0, 0, 0, .1);" cellspacing="0" cellpadding="0">
+              <table width="90%" style="background-color: #ffffff; border-radius: 10px; padding: 50px 40px; margin: 40px auto 0 auto; box-shadow: 5px 5px 10px rgba(0, 0, 0, .1);" cellspacing="0" cellpadding="0">
                 <tr>
                   <td style="background-color: #6366F1; border-radius: 5px 5px 0 0; padding: 10px 0 0 0; text-align: center;">
                     <img style="width: 140px; height: 140px; object-fit: contain;" src="https://firebasestorage.googleapis.com/v0/b/iahub-24.appspot.com/o/app%2Fassets%2Flogo%2F2.png?alt=media&token=5fb84508-cad4-405c-af43-cd1a4f54f521" alt="EstateAdmin">
@@ -143,16 +161,20 @@ export class RegisterCondominiumUsersCase {
         const emailParams = new EmailParams()
           .setFrom(sentFrom)
           .setTo(recipients)
-          .setReplyTo(new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'))
+          .setReplyTo(
+            new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+          )
           .setSubject('Bienvenido a EstateAdmin')
           .setHtml(emailHtml);
 
         await mailerSend.email.send(emailParams);
         this.logger.log(`Correo enviado a ${userData.email}`);
-
       } catch (error) {
-        console.log(error)
-        this.logger.error(`Error al registrar el usuario ${userData.email}: ${error.message}`, error.stack);
+        console.log(error);
+        this.logger.error(
+          `Error al registrar el usuario ${userData.email}: ${error.message}`,
+          error.stack,
+        );
       }
     }
   }

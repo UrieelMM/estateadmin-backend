@@ -1,23 +1,8 @@
-import {
-  Controller,
-  Post,
-  Body,
-  Get,
-  Param,
-  UseGuards,
-  Headers,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, UseGuards } from '@nestjs/common';
 import { ToolsService } from './tools.service';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { ClientPlanDto } from 'src/dtos/client-plan.dto';
-
-class SearchPlacesDto {
-  latitude: number;
-  longitude: number;
-  keyword: string;
-  radius: number;
-}
+import { SearchPlacesDto, ContactFormDto } from 'src/dtos/tools';
 
 @Controller('tools')
 @UseGuards(ThrottlerGuard)
@@ -48,5 +33,22 @@ export class ToolsController {
       clientPlanDto.clientId,
       clientPlanDto.condominiumId,
     );
+  }
+
+  @Post('contact-form')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async submitContactForm(@Body() contactFormDto: ContactFormDto) {
+    console.log(
+      'Datos recibidos en el controlador:',
+      JSON.stringify(contactFormDto),
+    );
+
+    // Asegurarse de que los valores existen antes de pasarlos al servicio
+    const name = contactFormDto.name || '';
+    const email = contactFormDto.email || '';
+    const phone = contactFormDto.phone || '';
+    const message = contactFormDto.message || '';
+
+    return this.toolsService.submitContactForm(name, email, phone, message);
   }
 }

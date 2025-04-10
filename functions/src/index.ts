@@ -29,10 +29,15 @@ const serviceUrl = `https://${LOCATION}-${PROJECT_ID}.cloudfunctions.net/process
 // const corsHandler = cors({ origin: true });
 
 // Función auxiliar para formatear números de teléfono mexicanos
-const formatPhoneNumber = (phone: string): string => {
+const formatPhoneNumber = (phone: any): string => {
   if (!phone) return '';
+
+  // Asegurarse de que phone sea una cadena de texto
+  const phoneStr = String(phone);
+
   // Eliminar cualquier carácter que no sea número
-  const cleanPhone = phone.replace(/\D/g, '');
+  const cleanPhone = phoneStr.replace(/\D/g, '');
+
   // Si el número ya tiene el prefijo +521, lo devolvemos tal cual
   if (cleanPhone.startsWith('521')) {
     return `+${cleanPhone}`;
@@ -943,6 +948,9 @@ ${eventData.comments ? `💬 Comentarios: ${eventData.comments}` : ''}
 ////////////////////////////////////////// SEND EMAIL FOR INVOICES GENERATED//////////////////////////////////////////
 export { onInvoiceCreated } from './invoices/invoices.controller';
 
+////////////////////////////////////////// SEND EMAIL FOR CONTACT FORM//////////////////////////////////////////
+export { onContactFormSubmitted } from './contact/contact.controller';
+
 //TODO:GENERATE PUBLIC FILE
 ////////////////////////////////////////// GENERATE PUBLIC FILE//////////////////////////////////////////
 exports.makePaymentFilePublic = onObjectFinalized(
@@ -1059,7 +1067,8 @@ export const processGroupPaymentEmail = onRequest(
 
           // Calcular totales
           let totalMontoPagado = 0;
-          let totalSaldoPendiente = 0;
+          let totalCargos = 0;
+          let totalSaldo = 0;
 
           // Usar paymentsArray del registro consolidado
           let paymentsArray = [];
@@ -1072,10 +1081,20 @@ export const processGroupPaymentEmail = onRequest(
             paymentsArray.push(consolidatedPayment);
           }
 
+          // Calcular totales usando el valor de chargeValue que ahora se guarda en paymentsToSendEmail
           paymentsArray.forEach((payment) => {
             totalMontoPagado += Number(payment.amountPaid) || 0;
-            totalSaldoPendiente += Number(payment.amountPending) || 0;
+            // Usar el chargeValue que ahora se guarda en el documento
+            totalCargos += Number(payment.chargeValue) || 0;
           });
+          
+          // Si hay un chargeValue en el documento consolidado, usarlo directamente
+          if (consolidatedPayment.chargeValue) {
+            totalCargos = Number(consolidatedPayment.chargeValue) || 0;
+          }
+          
+          // Calcular saldo como la diferencia entre monto pagado y cargo
+          totalSaldo = totalMontoPagado - totalCargos;
 
           // Preparar los datos para la plantilla
           const folio =
@@ -1088,11 +1107,11 @@ export const processGroupPaymentEmail = onRequest(
           const medioPago =
             consolidatedPayment.paymentType || 'No especificado';
           const totalPagado = formatCurrency(totalMontoPagado);
-          const cargos = formatCurrency(totalMontoPagado);
-          const saldo = formatCurrency(totalSaldoPendiente);
+          const cargos = formatCurrency(totalCargos);
+          const saldo = formatCurrency(totalSaldo);
 
           // Preparar el detalle por concepto
-          const detalleConceptos = paymentsArray
+          let detalleConceptos = paymentsArray
             .map((payment) => {
               let concepto = payment.concept || 'Sin concepto';
               if (payment.startAt) {
@@ -1117,7 +1136,14 @@ export const processGroupPaymentEmail = onRequest(
               }
               return `• ${concepto}: $${(Number(payment.amountPaid) / 100).toFixed(2)}`;
             })
-            .join('\n');
+            .join(' | ');
+            
+          // Verificar si el detalle excede el límite de caracteres (1600)
+          const MAX_CHARS = 1600;
+          if (detalleConceptos.length > MAX_CHARS) {
+            // Truncar el detalle y agregar mensaje
+            detalleConceptos = detalleConceptos.substring(0, MAX_CHARS - 30) + '... Más detalles en tu correo';
+          }
 
           const accountSid = 'AC5577bf20cfdb715733d8fd1ab61505dc';
           const authToken = '0d2d04e187940f3e92798a3260476f0f';
@@ -1362,14 +1388,14 @@ export const processGroupPaymentEmail = onRequest(
         font: fontBold,
         color: rgb(1, 1, 1),
       });
-      page.drawText('Saldo Pendiente', {
+      page.drawText('Cargos', {
         x: tableX + col1Width + col2Width + 5,
         y: tableYStart + cellPadding,
         size: fontSizeText,
         font: fontBold,
         color: rgb(1, 1, 1),
       });
-      page.drawText('Saldo a favor', {
+      page.drawText('Saldo', {
         x: tableX + col1Width + col2Width + col3Width + 5,
         y: tableYStart + cellPadding,
         size: fontSizeText,
@@ -1378,8 +1404,7 @@ export const processGroupPaymentEmail = onRequest(
       });
 
       let totalMontoPagado = 0;
-      let totalSaldoPendiente = 0;
-      let totalSaldoAFavor = 0;
+      let totalCargos = 0;
       let currentY = tableYStart - cellHeight;
       let rowIndex = 0;
 
@@ -1394,11 +1419,28 @@ export const processGroupPaymentEmail = onRequest(
         paymentsArray.push(consolidatedPayment);
       }
 
+      // Calcular totales usando el valor de chargeValue que ahora se guarda en paymentsToSendEmail
+      paymentsArray.forEach((payment) => {
+        totalMontoPagado += Number(payment.amountPaid) || 0;
+        // Usar el chargeValue que ahora se guarda en el documento
+        totalCargos += Number(payment.chargeValue) || 0;
+      });
+      
+      // Si hay un chargeValue en el documento consolidado, usarlo directamente
+      if (consolidatedPayment.chargeValue) {
+        totalCargos = Number(consolidatedPayment.chargeValue) || 0;
+      }
+      
+      // Calcular el saldo total como la diferencia entre monto pagado y cargos
+      const totalSaldo = totalMontoPagado - totalCargos;
+
       // Iterar sobre cada pago individual para construir la tabla en el PDF
       for (const payment of paymentsArray) {
-        totalMontoPagado += Number(payment.amountPaid) || 0;
-        totalSaldoPendiente += Number(payment.amountPending) || 0;
-        totalSaldoAFavor += Number(payment.creditBalance) || 0;
+        // Asegurarse de que cada pago tenga un valor de cargo válido
+        // Si no existe chargeValue en el pago individual, usar una parte proporcional del total
+        if (!payment.chargeValue && totalMontoPagado > 0) {
+          payment.chargeValue = (Number(payment.amountPaid) / totalMontoPagado) * totalCargos;
+        }
 
         // Usar directamente el concepto almacenado
         let conceptoRow = payment.concept || 'Sin concepto';
@@ -1461,14 +1503,17 @@ export const processGroupPaymentEmail = onRequest(
           font: fontRegular,
           color: rgb(0, 0, 0),
         });
-        page.drawText(formatCurrency(payment.amountPending), {
+        // Mostrar el valor de chargeValue para cada fila individual
+        page.drawText(formatCurrency(payment.chargeValue || 0), {
           x: tableX + col1Width + col2Width + 5,
           y: currentY + cellPadding,
           size: tableFontSize,
           font: fontRegular,
           color: rgb(0, 0, 0),
         });
-        page.drawText(formatCurrency(payment.creditBalance), {
+        // Calcular el saldo para cada pago como la diferencia entre monto pagado y cargo
+        const saldoPago = Number(payment.amountPaid || 0) - Number(payment.chargeValue || 0);
+        page.drawText(formatCurrency(saldoPago), {
           x: tableX + col1Width + col2Width + col3Width + 5,
           y: currentY + cellPadding,
           size: tableFontSize,
@@ -1503,14 +1548,15 @@ export const processGroupPaymentEmail = onRequest(
         font: fontBold,
         color: rgb(0, 0, 0),
       });
-      page.drawText(formatCurrency(totalSaldoPendiente), {
+      page.drawText(formatCurrency(totalCargos), {
         x: tableX + col1Width + col2Width + 5,
         y: currentY + cellPadding,
         size: tableFontSizeTotals,
         font: fontBold,
         color: rgb(0, 0, 0),
       });
-      page.drawText(formatCurrency(totalSaldoAFavor), {
+      // El saldo total ya se calculó anteriormente
+      page.drawText(formatCurrency(totalSaldo), {
         x: tableX + col1Width + col2Width + col3Width + 5,
         y: currentY + cellPadding,
         size: tableFontSizeTotals,
@@ -1587,7 +1633,44 @@ export const processGroupPaymentEmail = onRequest(
       // --- GENERAR HTML DEL CORREO CON DETALLE DE PAGOS ---
       // Se elimina la columna de "Medio de pago" en la tabla y se agrega un bloque aparte con dicho dato.
       let paymentsDetailsHtml = '';
-      paymentsArray.forEach((payment) => {
+      // Calcular totales para el HTML
+      let htmlTotalMontoPagado = 0;
+      let htmlTotalCargos = 0;
+      let htmlTotalSaldo = 0;
+
+      // Usar paymentsArray del registro consolidado para el HTML
+      let htmlPaymentsArray = [];
+      if (
+        consolidatedPayment.payments &&
+        Array.isArray(consolidatedPayment.payments)
+      ) {
+        htmlPaymentsArray = consolidatedPayment.payments;
+      } else {
+        htmlPaymentsArray.push(consolidatedPayment);
+      }
+
+      // Calcular totales usando el valor de chargeValue que ahora se guarda en paymentsToSendEmail
+      htmlPaymentsArray.forEach((payment) => {
+        htmlTotalMontoPagado += Number(payment.amountPaid) || 0;
+        // Usar el chargeValue que ahora se guarda en el documento
+        htmlTotalCargos += Number(payment.chargeValue) || 0;
+      });
+      
+      // Si hay un chargeValue en el documento consolidado, usarlo directamente
+      if (consolidatedPayment.chargeValue) {
+        htmlTotalCargos = Number(consolidatedPayment.chargeValue) || 0;
+      }
+      
+      // Calcular saldo como la diferencia entre monto pagado y cargo
+      htmlTotalSaldo = htmlTotalMontoPagado - htmlTotalCargos;
+
+      htmlPaymentsArray.forEach((payment) => {
+        // Asegurarse de que cada pago tenga un valor de cargo válido
+        // Si no existe chargeValue en el pago individual, usar una parte proporcional del total
+        if (!payment.chargeValue && htmlTotalMontoPagado > 0) {
+          payment.chargeValue = (Number(payment.amountPaid) / htmlTotalMontoPagado) * htmlTotalCargos;
+        }
+        
         let concepto = payment.concept || 'Sin concepto';
         // Modificación: usar startAt para determinar el mes
         if (payment.startAt) {
@@ -1611,23 +1694,27 @@ export const processGroupPaymentEmail = onRequest(
           concepto += ` ${monthName}`;
         }
         const montoPagado = formatCurrency(payment.amountPaid);
-        const saldoPendiente = formatCurrency(payment.amountPending);
-        const saldoAFavor = formatCurrency(payment.creditBalance);
+        const montoCargo = formatCurrency(payment.chargeValue || 0);
+        const saldoIndividual = formatCurrency((Number(payment.amountPaid) || 0) - (Number(payment.chargeValue) || 0));
         paymentsDetailsHtml += `
         <tr style="border-bottom:1px solid #ddd;">
           <td style="padding:8px; text-align:left;">${concepto}</td>
           <td style="padding:8px; text-align:right;">${montoPagado}</td>
-          <td style="padding:8px; text-align:right;">${saldoPendiente}</td>
-          <td style="padding:8px; text-align:right;">${saldoAFavor}</td>
+          <td style="padding:8px; text-align:right;">${montoCargo}</td>
+          <td style="padding:8px; text-align:right;">${saldoIndividual}</td>
         </tr>
       `;
       });
+      
+      // Calcular el saldo como la diferencia entre monto pagado y cargo
+      htmlTotalSaldo = htmlTotalMontoPagado - htmlTotalCargos;
+      
       const totalsRow = `
       <tr style="font-weight:bold; border-top:2px solid #6366F1;">
         <td style="padding:8px; text-align:left;">Total:</td>
-        <td style="padding:8px; text-align:right;">${formatCurrency(totalMontoPagado)}</td>
-        <td style="padding:8px; text-align:right;">${formatCurrency(totalSaldoPendiente)}</td>
-        <td style="padding:8px; text-align:right;">${formatCurrency(totalSaldoAFavor)}</td>
+        <td style="padding:8px; text-align:right;">${formatCurrency(htmlTotalMontoPagado)}</td>
+        <td style="padding:8px; text-align:right;">${formatCurrency(htmlTotalCargos)}</td>
+        <td style="padding:8px; text-align:right;">${formatCurrency(htmlTotalSaldo)}</td>
       </tr>
     `;
 
@@ -1672,8 +1759,8 @@ export const processGroupPaymentEmail = onRequest(
                   <tr>
                     <th>Concepto</th>
                     <th>Monto Pagado</th>
-                    <th>Saldo Pendiente</th>
-                    <th>Saldo a favor</th>
+                    <th>Cargo</th>
+                    <th>Saldo</th>
                   </tr>
                   ${paymentsDetailsHtml}
                   ${totalsRow}

@@ -315,6 +315,11 @@ export const MaintenancePaymentCase = async (
       startAt: startAtsArray.length ? startAtsArray.join(', ') : '',
       // NUEVO: Agregar folio
       folio: folio,
+      // NUEVO: Agregar el valor del cargo original
+      chargeValue: assignments.reduce((sum, curr) => {
+        const originalChargeAmount = paymentsArray.find(p => p.chargeUID === curr.chargeId)?.amountPaid || 0;
+        return sum + originalChargeAmount;
+      }, 0),
     };
 
     await admin
@@ -469,6 +474,8 @@ export const MaintenancePaymentCase = async (
       startAt: startAtStr || maintenancePaymentDto.startAt || '',
       // NUEVO: Agregar folio
       folio: folio,
+      // NUEVO: Agregar el valor del cargo original
+      chargeValue: remainingAmount,
     };
 
     await chargeRef.collection('payments').doc(paymentId).set(paymentData);

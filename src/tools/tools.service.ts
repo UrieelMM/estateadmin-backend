@@ -111,4 +111,50 @@ export class ToolsService {
       );
     }
   }
+
+  async submitContactForm(
+    name: string,
+    email: string,
+    phone?: string,
+    message?: string,
+  ) {
+    try {
+      console.log('Datos recibidos en el servicio:', { name, email, phone, message });
+      
+      // Validate required fields
+      if (!name || name.trim() === '' || !email || email.trim() === '') {
+        throw new Error('El nombre y el email son campos obligatorios');
+      }
+
+      // Create a new contact form entry with the current timestamp
+      const contactFormData: Record<string, any> = {
+        name: name.trim(),
+        email: email.trim(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      
+      // Añadir campos opcionales solo si tienen valor
+      if (phone !== undefined && phone !== null && phone.trim() !== '') {
+        contactFormData.phone = phone.trim();
+      }
+      
+      if (message !== undefined && message !== null && message.trim() !== '') {
+        contactFormData.message = message.trim();
+      }
+
+      // Insert the data into the specified collection
+      const result = await admin
+        .firestore()
+        .collection('administration/users/emailsToContact')
+        .add(contactFormData);
+
+      return {
+        success: true,
+        id: result.id,
+        message: 'Contact form submitted successfully',
+      };
+    } catch (error) {
+      throw new Error(`Error submitting contact form: ${error.message}`);
+    }
+  }
 }
