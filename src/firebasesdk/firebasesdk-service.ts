@@ -12,6 +12,7 @@ import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
 import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
 import { ToolsService } from '../tools/tools.service';
 import { StripeService } from '../stripe/stripe.service';
+import { WhatsappChatBotService } from '../whatsapp-chat-bot/whatsapp-chat-bot.service';
 import {
   RegisterUserDto,
   RegisterClientDto,
@@ -30,7 +31,9 @@ import { resetPassword } from 'src/cases/users-admon-auth/reset-password.case';
 import { confirmResetPassword } from 'src/cases/users-admon-auth/confirm-reset-password.case';
 import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
 import { registerSuperAdmin } from 'src/cases/users-admon-auth/register-super-admin.case';
-import { ClientPlanDto, ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
+import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
+import { PaymentConfirmationDto } from 'src/dtos/whatsapp/payment-confirmation.dto';
+import { WhatsappMessageDto } from 'src/dtos/whatsapp/whatsapp-message.dto';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -38,6 +41,7 @@ export class FirebaseAuthService {
     private registerCondominiumUsersCase: RegisterCondominiumUsersCase,
     private toolsService: ToolsService,
     private stripeService: StripeService,
+    private whatsappChatBotService: WhatsappChatBotService,
   ) {}
 
   async createClient(registerClientCase: RegisterClientDto) {
@@ -157,5 +161,19 @@ export class FirebaseAuthService {
    */
   async checkStripeSessionStatus(sessionId: string) {
     return await this.stripeService.checkSessionStatus(sessionId);
+  }
+
+  async confirmPayment(paymentDto: PaymentConfirmationDto) {
+    return await this.whatsappChatBotService.confirmPayment(paymentDto);
+  }
+
+  async sendMessage(whatsappMessageDto: WhatsappMessageDto) {
+    return await this.whatsappChatBotService.sendAndLogMessage(
+      whatsappMessageDto,
+    );
+  }
+
+  async processWebhook(webhookData: any) {
+    return await this.whatsappChatBotService.processWebhook(webhookData);
   }
 }

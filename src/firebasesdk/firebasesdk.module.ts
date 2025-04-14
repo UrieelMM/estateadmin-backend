@@ -5,10 +5,11 @@ import { RegisterCondominiumUsersCase } from '../cases/users-condominiums-auth/r
 import * as dotenv from 'dotenv';
 import { ToolsModule } from '../tools/tools.module';
 import { StripeModule } from '../stripe/stripe.module';
+import { WhatsappChatBotModule } from '../whatsapp-chat-bot/whatsapp-chat-bot.module';
 
 dotenv.config();
 @Module({
-  imports: [ToolsModule, StripeModule],
+  imports: [ToolsModule, StripeModule, WhatsappChatBotModule],
   providers: [FirebaseAuthService, RegisterCondominiumUsersCase],
   exports: [FirebaseAuthService],
 })
@@ -32,5 +33,6 @@ export class FirebasesdkModule {
     admin.initializeApp({
       credential: admin.credential.cert(firebaseParams as admin.ServiceAccount),
     });
+    admin.firestore().settings({ ignoreUndefinedProperties: true });
   }
 }

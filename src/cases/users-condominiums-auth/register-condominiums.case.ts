@@ -58,6 +58,8 @@ export class RegisterCondominiumUsersCase {
           departament: userData.departament || '',
           uid: uid,
           role: userData.role || 'condominium',
+          condominiumId: condominiumId || '',
+          clientId: clientId || '',
         });
 
         this.logger.log(

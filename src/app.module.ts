@@ -9,6 +9,7 @@ import { MaintenanceFeesModule } from './maintenance-fees/maintenance-fees.modul
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ToolsModule } from './tools/tools.module';
 import { StripeModule } from './stripe/stripe.module';
+import { WhatsappChatBotModule } from './whatsapp-chat-bot/whatsapp-chat-bot.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { StripeModule } from './stripe/stripe.module';
     MaintenanceFeesModule,
     ToolsModule,
     StripeModule,
+    WhatsappChatBotModule,
   ],
   controllers: [AppController],
   providers: [AppService],
