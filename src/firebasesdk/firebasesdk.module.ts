@@ -1,15 +1,31 @@
 import * as admin from 'firebase-admin';
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { FirebaseAuthService } from './firebasesdk-service';
 import { RegisterCondominiumUsersCase } from '../cases/users-condominiums-auth/register-condominiums.case';
 import * as dotenv from 'dotenv';
 import { ToolsModule } from '../tools/tools.module';
 import { StripeModule } from '../stripe/stripe.module';
 import { WhatsappChatBotModule } from '../whatsapp-chat-bot/whatsapp-chat-bot.module';
+import { GeminiModule } from '../gemini/gemini.module';
 
 dotenv.config();
+/**
+ * The `FirebasesdkModule` is responsible for initializing the Firebase Admin SDK
+ * using environment variables for configuration. It imports various modules like
+ * ConfigModule, ToolsModule, StripeModule, WhatsappChatBotModule, and GeminiModule
+ * to integrate their functionalities. It provides and exports the FirebaseAuthService
+ * to be used across the application, and sets Firestore settings to ignore undefined
+ * properties in documents.
+ */
 @Module({
-  imports: [ToolsModule, StripeModule, WhatsappChatBotModule],
+  imports: [
+    ConfigModule,
+    ToolsModule,
+    StripeModule,
+    WhatsappChatBotModule,
+    GeminiModule,
+  ],
   providers: [FirebaseAuthService, RegisterCondominiumUsersCase],
   exports: [FirebaseAuthService],
 })

@@ -1,5 +1,5 @@
 // src/firebasesdk/firebase-auth.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { EditUnidentifiedPaymentCase } from 'src/cases/maintenance-fees/edit-unidentified-payment.case';
 import { MaintenancePaymentCase } from 'src/cases/maintenance-fees/maintenance-fees.case';
@@ -13,6 +13,7 @@ import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/
 import { ToolsService } from '../tools/tools.service';
 import { StripeService } from '../stripe/stripe.service';
 import { WhatsappChatBotService } from '../whatsapp-chat-bot/whatsapp-chat-bot.service';
+import { GeminiService } from 'src/gemini/gemini.service';
 import {
   RegisterUserDto,
   RegisterClientDto,
@@ -37,12 +38,21 @@ import { WhatsappMessageDto } from 'src/dtos/whatsapp/whatsapp-message.dto';
 
 @Injectable()
 export class FirebaseAuthService {
+  private firestore: admin.firestore.Firestore;
+  private readonly logger = new Logger(FirebaseAuthService.name);
+
   constructor(
     private registerCondominiumUsersCase: RegisterCondominiumUsersCase,
     private toolsService: ToolsService,
     private stripeService: StripeService,
     private whatsappChatBotService: WhatsappChatBotService,
-  ) {}
+    private readonly geminiService: GeminiService,
+  ) {
+    if (!admin.apps.length) {
+      admin.initializeApp();
+    }
+    this.firestore = admin.firestore();
+  }
 
   async createClient(registerClientCase: RegisterClientDto) {
     return await RegisterClientCase(registerClientCase);
@@ -175,5 +185,18 @@ export class FirebaseAuthService {
 
   async processWebhook(webhookData: any) {
     return await this.whatsappChatBotService.processWebhook(webhookData);
+  }
+
+  async generateTextWithGemini(prompt: string): Promise<string> {
+    const context = 'FirebaseAuthService | generateTextWithGemini';
+    try {
+      this.logger.log(`Generating text with Gemini for prompt: "${prompt.substring(0, 30)}..."`, context);
+      const result = await this.geminiService.generateContent(prompt);
+      this.logger.log(`Successfully generated text with Gemini`, context);
+      return result;
+    } catch (error) {
+      this.logger.error(`Error generating text with Gemini: ${error.message}`, error.stack, context);
+      throw error; // Re-throw the error to be handled by the caller
+    }
   }
 }

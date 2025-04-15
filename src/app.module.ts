@@ -10,13 +10,14 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { ToolsModule } from './tools/tools.module';
 import { StripeModule } from './stripe/stripe.module';
 import { WhatsappChatBotModule } from './whatsapp-chat-bot/whatsapp-chat-bot.module';
+import { GeminiModule } from './gemini/gemini.module';
 
 @Module({
   imports: [
     ThrottlerModule.forRoot([
       {
         ttl: 60000, // tiempo en segundos
-        limit: 15, // número máximo de peticiones en el período ttl
+        limit: 10, // número máximo de peticiones en el período ttl
       },
     ]),
     FirebasesdkModule,
@@ -27,6 +28,7 @@ import { WhatsappChatBotModule } from './whatsapp-chat-bot/whatsapp-chat-bot.mod
     ToolsModule,
     StripeModule,
     WhatsappChatBotModule,
+    GeminiModule,
   ],
   controllers: [AppController],
   providers: [AppService],
