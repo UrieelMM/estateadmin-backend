@@ -31,8 +31,13 @@ async function bootstrap() {
     credentials: true,
   });
 
-  const port = process.env.PORT || 3000;
-  await app.listen(port);
-  logger.log(`Aplicación ejecutándose en: ${await app.getUrl()}`);
+  // Obtener el puerto de la variable de entorno o usar 8080 como predeterminado para Cloud Run
+  const port = process.env.PORT || 8080;
+
+  // Escuchar en todas las interfaces de red (0.0.0.0) es importante para contenedores
+  await app.listen(port, '0.0.0.0');
+
+  logger.log(`Aplicación ejecutándose en puerto: ${port}`);
+  logger.log(`URL completa: ${await app.getUrl()}`);
 }
 bootstrap();

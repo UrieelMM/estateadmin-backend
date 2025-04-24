@@ -1,5 +1,5 @@
-# Utiliza una imagen ligera de Node.js 18
-FROM node:18-alpine
+# Etapa de construcción
+FROM node:18-alpine AS build
 
 # Establece el directorio de trabajo
 WORKDIR /app
@@ -7,17 +7,35 @@ WORKDIR /app
 # Copia los archivos de definición de dependencias
 COPY package*.json ./
 
-# Instala las dependencias (para producción)
-RUN npm install --production
+# Instala todas las dependencias (incluyendo devDependencies para compilar)
+RUN npm install
 
 # Copia el resto del código fuente
 COPY . .
 
-# Ejecuta la compilación de la aplicación (asegúrate de tener el script "build")
+# Ejecuta la compilación de la aplicación
 RUN npm run build
 
-# Expone el puerto (ajusta si tu app escucha en otro puerto)
+# Etapa de producción
+FROM node:18-alpine
+
+# Establece el directorio de trabajo
+WORKDIR /app
+
+# Copia los archivos de package.json
+COPY package*.json ./
+
+# Instala solo las dependencias de producción
+RUN npm install --omit=dev
+
+# Copia el código compilado desde la etapa de build
+COPY --from=build /app/dist ./dist
+
+# Expone el puerto que usa Cloud Run (8080)
 EXPOSE 8080
 
-# Comando para iniciar la aplicación (usa el script "start" definido en package.json)
-CMD ["npm", "run", "start"]
+# Variable de entorno para indicar que estamos en producción
+ENV NODE_ENV=production
+
+# Comando para iniciar la aplicación
+CMD ["node", "dist/main.js"]
