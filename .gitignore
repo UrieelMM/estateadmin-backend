@@ -3,8 +3,7 @@
 /node_modules
 /build
 /functions
-/functions/index.ts
-/functions/src/index.ts
+
 
 src/firebase/firebase-config.json
 

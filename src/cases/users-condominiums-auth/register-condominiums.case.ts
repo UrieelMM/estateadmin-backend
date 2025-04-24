@@ -34,6 +34,46 @@ export class RegisterCondominiumUsersCase {
 
     for (const userData of usersData) {
       try {
+        // Verificar si el rol es administrativo (no permitido)
+        const forbiddenRoles = [
+          'admin',
+          'admin-assistant',
+          'super-admin',
+          'superAdmin',
+          'superadmin',
+          'superAdmin',
+          'super-admin',
+          'superAdmin',
+          'super-admin',
+          'superAdmin',
+          'super-admin',
+          'editor',
+          'editor-assistant',
+          'editorAssistant',
+          'editor-assistant',
+          'editorAssistant',
+          'editor-assistant',
+          'editorAssistant',
+          'viewer',
+          'viewer-assistant',
+          'viewerAssistant',
+          'viewer-assistant',
+          'viewerAssistant',
+          'viewer-assistant',
+          'viewerAssistant',
+        ];
+        if (
+          userData.role &&
+          forbiddenRoles.some((role) =>
+            userData.role.toLowerCase().includes(role.toLowerCase()),
+          )
+        ) {
+          this.logger.warn(
+            `Intento de registro con rol administrativo no permitido: email=${userData.email}, role=${userData.role}`,
+          );
+          continue; // Saltar este usuario y continuar con el siguiente
+        }
+
         // Registrar el documento en Firestore sin crear cuenta en Firebase Auth
         const profilePath = `clients/${clientId}/condominiums/${condominiumId}/users`;
         const docRef = admin.firestore().collection(profilePath).doc();
@@ -60,6 +100,10 @@ export class RegisterCondominiumUsersCase {
           role: userData.role || 'condominium',
           condominiumId: condominiumId || '',
           clientId: clientId || '',
+          notifications: {
+            email: true,
+            whatsapp: true,
+          },
         });
 
         this.logger.log(
