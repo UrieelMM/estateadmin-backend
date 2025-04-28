@@ -2,7 +2,6 @@
 /dist
 /node_modules
 /build
-/functions
 
 
 src/firebase/firebase-config.json
