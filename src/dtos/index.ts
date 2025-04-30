@@ -10,3 +10,4 @@ export * from './edit-user.dto';
 export * from './reset-password.dto';
 export * from './confirm-reset-password.dto';
 export * from './client-plan.dto';
+export * from './update-parcel.dto';

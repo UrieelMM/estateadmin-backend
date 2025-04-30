@@ -25,6 +25,7 @@ import {
   EditUserDto,
   ResetPasswordDto,
   ConfirmResetPasswordDto,
+  UpdateParcelDto,
 } from 'src/dtos';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 import { editUser } from 'src/cases/users-admon-auth/edit-user.case';
@@ -35,6 +36,7 @@ import { registerSuperAdmin } from 'src/cases/users-admon-auth/register-super-ad
 import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
 import { PaymentConfirmationDto } from 'src/dtos/whatsapp/payment-confirmation.dto';
 import { WhatsappMessageDto } from 'src/dtos/whatsapp/whatsapp-message.dto';
+import { UpdateParcelCase } from 'src/cases/parcel/update-parcel.case';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -198,5 +200,9 @@ export class FirebaseAuthService {
       this.logger.error(`Error generating text with Gemini: ${error.message}`, error.stack, context);
       throw error; // Re-throw the error to be handled by the caller
     }
+  }
+
+  async updateParcelDelivery(updateParcelDto: UpdateParcelDto, files: any) {
+    return await UpdateParcelCase(updateParcelDto, files);
   }
 }

@@ -122,6 +122,8 @@ export const resetPassword = async (resetPasswordDto: ResetPasswordDto) => {
     await mailerSend.email.send(emailParams);
 
     return {
+      status: true,
+      code: 200,
       message:
         'Se ha enviado un correo con las instrucciones para restablecer tu contraseña.',
     };
