@@ -1069,3 +1069,12 @@ export {
   validateSuperAdminSession,
   superAdminOperation,
 } from './super-admin/super-admin.controller';
+
+// Exportar las funciones para reportes de comité
+export {
+  onCommitteeMemberCreated,
+  onCommitteeMemberUpdated,
+  sendScheduledReports,
+  sendTestReport,
+  sendTestFinancialReport,
+} from './committee-reports/committee-reports.controller';
