@@ -1,5 +1,9 @@
 import { IsEmail, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { CondominiumLimitDto, CondominiumLimitResponseDto } from './condominium-limit.dto';
+import { NewCustomerInfoDto, CondominiumInfoDto } from './new-customer-info.dto';
+import { FormExpirationDto, FormExpirationResponseDto } from './form-expiration.dto';
+import { FormUrlDto, FormUrlResponseDto } from './form-url.dto';
+import { PaginationQueryDto, PaginatedResponseDto } from './pagination.dto';
 
 export class SearchPlacesDto {
   latitude: number;
@@ -26,4 +30,15 @@ export class ContactFormDto {
   message?: string;
 }
 
-export { CondominiumLimitDto, CondominiumLimitResponseDto };
+export { 
+  CondominiumLimitDto, 
+  CondominiumLimitResponseDto,
+  NewCustomerInfoDto,
+  CondominiumInfoDto,
+  FormExpirationDto,
+  FormExpirationResponseDto,
+  FormUrlDto,
+  FormUrlResponseDto,
+  PaginationQueryDto,
+  PaginatedResponseDto
+};

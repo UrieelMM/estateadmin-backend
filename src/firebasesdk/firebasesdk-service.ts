@@ -36,6 +36,13 @@ import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
 import { registerSuperAdmin } from 'src/cases/users-admon-auth/register-super-admin.case';
 import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
 import { CondominiumLimitResponseDto } from 'src/dtos/tools/condominium-limit.dto';
+import { 
+  NewCustomerInfoDto, 
+  FormExpirationResponseDto, 
+  FormUrlDto, 
+  FormUrlResponseDto,
+  PaginatedResponseDto
+} from 'src/dtos/tools';
 import { PaymentConfirmationDto } from 'src/dtos/whatsapp/payment-confirmation.dto';
 import { WhatsappMessageDto } from 'src/dtos/whatsapp/whatsapp-message.dto';
 import { UpdateParcelCase } from 'src/cases/parcel/update-parcel.case';
@@ -221,5 +228,167 @@ export class FirebaseAuthService {
 
   async updateParcelDelivery(updateParcelDto: UpdateParcelDto, files: any) {
     return await UpdateParcelCase(updateParcelDto, files);
+  }
+
+  /**
+   * Registra información de nuevos clientes en el sistema
+   * @param newCustomerInfoDto Información del nuevo cliente
+   * @returns Resultado de la operación
+   */
+  async submitNewCustomerInfo(newCustomerInfoDto: NewCustomerInfoDto) {
+    const context = 'FirebaseAuthService | submitNewCustomerInfo';
+    try {
+      this.logger.log(
+        `Registrando información de nuevo cliente: ${newCustomerInfoDto.name} ${newCustomerInfoDto.lastName}`,
+        context,
+      );
+      
+      // Delega la operación al servicio de herramientas
+      const result = await this.toolsService.submitNewCustomerInfo(newCustomerInfoDto);
+      
+      this.logger.log(
+        `Cliente registrado exitosamente con ID: ${result.id}`,
+        context,
+      );
+      
+      return result;
+    } catch (error) {
+      this.logger.error(
+        `Error al registrar información de nuevo cliente: ${error.message}`,
+        error.stack,
+        context,
+      );
+      throw error; // Re-throw the error to be handled by the caller
+    }
+  }
+  
+  /**
+   * Verifica si un formulario de registro de cliente ha expirado
+   * @param formId ID del formulario a verificar
+   * @returns Información sobre el estado de expiración del formulario
+   */
+  async checkFormExpiration(formId: string): Promise<FormExpirationResponseDto> {
+    const context = 'FirebaseAuthService | checkFormExpiration';
+    try {
+      this.logger.log(
+        `Verificando expiración del formulario con ID: ${formId}`,
+        context,
+      );
+      
+      // Delega la operación al servicio de herramientas
+      const result = await this.toolsService.checkFormExpiration(formId);
+      
+      this.logger.log(
+        `Estado de expiración verificado: ${result.expired ? 'Expirado' : 'Válido'}`,
+        context,
+      );
+      
+      return result;
+    } catch (error) {
+      this.logger.error(
+        `Error al verificar expiración del formulario: ${error.message}`,
+        error.stack,
+        context,
+      );
+      throw error; // Re-throw the error to be handled by the caller
+    }
+  }
+  
+  /**
+   * Obtiene información de clientes paginada
+   * @param page Número de página a obtener
+   * @param perPage Cantidad de elementos por página
+   * @returns Información de clientes paginada
+   */
+  async getCustomerInformation(page: number = 1, perPage: number = 10): Promise<PaginatedResponseDto<any>> {
+    const context = 'FirebaseAuthService | getCustomerInformation';
+    try {
+      this.logger.log(
+        `Obteniendo información de clientes: página ${page}, ${perPage} por página`,
+        context,
+      );
+      
+      // Delega la operación al servicio de herramientas
+      const result = await this.toolsService.getCustomerInformation(page, perPage);
+      
+      this.logger.log(
+        `Obtenidos ${result.data.length} registros de clientes de un total de ${result.meta.totalItems}`,
+        context,
+      );
+      
+      return result;
+    } catch (error) {
+      this.logger.error(
+        `Error al obtener información de clientes: ${error.message}`,
+        error.stack,
+        context,
+      );
+      throw error; // Re-throw the error to be handled by the caller
+    }
+  }
+  
+  /**
+   * Obtiene URLs de formularios paginadas
+   * @param page Número de página a obtener
+   * @param perPage Cantidad de elementos por página
+   * @returns URLs de formularios paginadas
+   */
+  async getFormUrls(page: number = 1, perPage: number = 10): Promise<PaginatedResponseDto<any>> {
+    const context = 'FirebaseAuthService | getFormUrls';
+    try {
+      this.logger.log(
+        `Obteniendo URLs de formularios: página ${page}, ${perPage} por página`,
+        context,
+      );
+      
+      // Delega la operación al servicio de herramientas
+      const result = await this.toolsService.getFormUrls(page, perPage);
+      
+      this.logger.log(
+        `Obtenidas ${result.data.length} URLs de formularios de un total de ${result.meta.totalItems}`,
+        context,
+      );
+      
+      return result;
+    } catch (error) {
+      this.logger.error(
+        `Error al obtener URLs de formularios: ${error.message}`,
+        error.stack,
+        context,
+      );
+      throw error; // Re-throw the error to be handled by the caller
+    }
+  }
+  
+  /**
+   * Genera y registra una URL de formulario para compartir con clientes
+   * @param formUrlDto DTO con la información de la URL a generar
+   * @returns Información sobre la URL generada
+   */
+  async generateFormUrl(formUrlDto: FormUrlDto): Promise<FormUrlResponseDto> {
+    const context = 'FirebaseAuthService | generateFormUrl';
+    try {
+      this.logger.log(
+        `Generando URL para el formulario con ID: ${formUrlDto.formId}`,
+        context,
+      );
+      
+      // Delega la operación al servicio de herramientas
+      const result = await this.toolsService.generateFormUrl(formUrlDto);
+      
+      this.logger.log(
+        `URL de formulario generada exitosamente para: ${formUrlDto.formId}`,
+        context,
+      );
+      
+      return result;
+    } catch (error) {
+      this.logger.error(
+        `Error al generar URL del formulario: ${error.message}`,
+        error.stack,
+        context,
+      );
+      throw error; // Re-throw the error to be handled by the caller
+    }
   }
 }
