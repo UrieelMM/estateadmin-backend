@@ -8,6 +8,7 @@ import {
   UseInterceptors,
   Put,
   Param,
+  Res,
 } from '@nestjs/common';
 import { UsersAuthService } from './users-auth.service';
 import {
@@ -175,18 +176,37 @@ export class UsersAuthController {
   }
 
   @Post('register-condominiums')
-  @Throttle({ default: { limit: 1, ttl: 320000 } })
+  @Throttle({ default: { limit: 250, ttl: 600000 } }) // Aumentado a 100 peticiones en 10 minutos
   @UseInterceptors(FileInterceptor('file'))
   async registerCondominiums(
     @UploadedFile() file: any,
     @Body() body: { clientId: string; condominiumId: string },
-  ): Promise<{ message: string }> {
-    await this.usersAuthService.registerCondominiumUsers(
-      file.buffer,
-      body.clientId,
-      body.condominiumId,
-    );
-    return { message: 'Usuarios registrados correctamente.' };
+    @Res() res: any,
+  ): Promise<void> {
+    try {
+      const resultExcelBuffer =
+        await this.usersAuthService.registerCondominiumUsers(
+          file.buffer,
+          body.clientId,
+          body.condominiumId,
+        );
+
+      // Configurar las cabeceras para descargar el archivo Excel
+      res.set({
+        'Content-Type':
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition':
+          'attachment; filename="resultado-registro-condominos.xlsx"',
+        'Content-Length': resultExcelBuffer.length,
+      });
+
+      // Enviar el archivo como respuesta
+      res.send(resultExcelBuffer);
+    } catch (error) {
+      res.status(400).json({
+        message: `Error durante el registro de condominios: ${error.message}`,
+      });
+    }
   }
 
   @Post('register-condominium')

@@ -6,6 +6,13 @@ import { UserCondominiumDto } from 'src/dtos/register-user-condominium.dto';
 import { EmailParams, Sender, Recipient } from 'mailersend';
 import { mailerSend } from 'src/utils/mailerSend';
 
+interface RegistrationResult {
+  name: string;
+  email: string;
+  status: 'success' | 'error';
+  message: string;
+}
+
 @Injectable()
 export class RegisterCondominiumUsersCase {
   private readonly logger = new Logger(RegisterCondominiumUsersCase.name);
@@ -14,26 +21,78 @@ export class RegisterCondominiumUsersCase {
     fileBuffer: Buffer,
     clientId: string,
     condominiumId: string,
-  ): Promise<void> {
-    if (!clientId) {
-      throw new BadRequestException('ClientId es requerido.');
-    }
-    if (!condominiumId) {
-      throw new BadRequestException('CondominiumId es requerido.');
-    }
+  ): Promise<Buffer> {
+    try {
+      if (!clientId) {
+        throw new BadRequestException('ClientId es requerido.');
+      }
+      if (!condominiumId) {
+        throw new BadRequestException('CondominiumId es requerido.');
+      }
 
-    const usersData: UserCondominiumDto[] = readExcel(
-      fileBuffer,
-    ) as UserCondominiumDto[];
+      // Obtener los datos del archivo Excel (omitiendo la primera fila de encabezados)
+      const rawUsersData: UserCondominiumDto[] = readExcel(
+        fileBuffer,
+      ) as UserCondominiumDto[];
 
-    if (usersData.length === 0) {
-      throw new BadRequestException(
-        'El archivo Excel está vacío o no tiene el formato correcto.',
-      );
-    }
+      if (rawUsersData.length === 0) {
+        throw new BadRequestException(
+          'El archivo Excel está vacío o no tiene el formato correcto.',
+        );
+      }
 
-    for (const userData of usersData) {
-      try {
+      // Obtener el límite de condominios para este cliente
+      const condominiumRef = await admin
+        .firestore()
+        .collection(`clients/${clientId}/condominiums`)
+        .doc(condominiumId)
+        .get();
+
+      if (!condominiumRef.exists) {
+        throw new BadRequestException('Condominio no encontrado.');
+      }
+
+      const condominiumData = condominiumRef.data();
+      const condominiumLimit = condominiumData?.condominiumLimit || 50; // Valor por defecto si no se encuentra
+
+      this.logger.log(`Límite de condominios para el cliente: ${condominiumLimit}`);
+
+      // Preparar un array para registrar los resultados de cada registro
+      const registrationResults = [];
+      
+      // Limitar la cantidad de usuarios a procesar según el límite del plan
+      const usersData = rawUsersData.slice(0, condominiumLimit);
+      
+      // Registramos cuántos usuarios fueron omitidos debido al límite
+      const omittedUsers = Math.max(0, rawUsersData.length - condominiumLimit);
+      if (omittedUsers > 0) {
+        this.logger.warn(
+          `Se omitieron ${omittedUsers} usuarios debido al límite del plan (${condominiumLimit}).`,
+        );
+      }
+
+      // Procesar cada usuario del archivo Excel
+      for (const userData of usersData) {
+        const result: RegistrationResult = {
+          name: userData.name || '',
+          email: userData.email || '',
+          status: 'error',
+          message: '',
+        };
+
+        try {
+          // Validar datos mínimos requeridos
+          if (!userData.email) {
+            result.message = 'El correo electrónico es obligatorio.';
+            registrationResults.push(result);
+            continue;
+          }
+
+          if (!userData.name) {
+            result.message = 'El nombre es obligatorio.';
+            registrationResults.push(result);
+            continue;
+          }
         // Verificar si el rol es administrativo (no permitido)
         const forbiddenRoles = [
           'admin',
@@ -71,11 +130,26 @@ export class RegisterCondominiumUsersCase {
           this.logger.warn(
             `Intento de registro con rol administrativo no permitido: email=${userData.email}, role=${userData.role}`,
           );
-          continue; // Saltar este usuario y continuar con el siguiente
+          result.message = 'Rol administrativo no permitido.';
+          registrationResults.push(result);
+          continue;
+        }
+
+        // Verificar si el usuario ya existe
+        const profilePath = `clients/${clientId}/condominiums/${condominiumId}/users`;
+        const existingUsers = await admin
+          .firestore()
+          .collection(profilePath)
+          .where('email', '==', userData.email)
+          .get();
+
+        if (!existingUsers.empty) {
+          result.message = 'El usuario con este correo electrónico ya existe.';
+          registrationResults.push(result);
+          continue;
         }
 
         // Registrar el documento en Firestore sin crear cuenta en Firebase Auth
-        const profilePath = `clients/${clientId}/condominiums/${condominiumId}/users`;
         const docRef = admin.firestore().collection(profilePath).doc();
         const uid = docRef.id;
 
@@ -215,13 +289,55 @@ export class RegisterCondominiumUsersCase {
 
         await mailerSend.email.send(emailParams);
         this.logger.log(`Correo enviado a ${userData.email}`);
+
+        // Actualizar resultado como exitoso
+        result.status = 'success';
+        result.message = 'Usuario registrado correctamente.';
+        registrationResults.push(result);
       } catch (error) {
         console.log(error);
         this.logger.error(
           `Error al registrar el usuario ${userData.email}: ${error.message}`,
           error.stack,
         );
+        result.message = `Error: ${error.message || 'Error desconocido al procesar el usuario.'}`;
+        registrationResults.push(result);
       }
+    }
+
+    // Si hay usuarios omitidos por el límite, añadirlos al resultado
+    if (omittedUsers > 0) {
+      for (let i = condominiumLimit; i < rawUsersData.length; i++) {
+        const omittedUser = rawUsersData[i];
+        registrationResults.push({
+          name: omittedUser.name || '',
+          email: omittedUser.email || '',
+          status: 'error',
+          message: `Usuario omitido debido al límite del plan (${condominiumLimit}).`,
+        });
+      }
+    }
+
+    // Crear un archivo Excel con los resultados
+    const worksheet = XLSX.utils.json_to_sheet(registrationResults);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Resultados');
+    
+    // Convertir el libro de Excel a un buffer
+    const excelBuffer = XLSX.write(workbook, {
+      bookType: 'xlsx',
+      type: 'buffer',
+    });
+
+    return excelBuffer;
+    } catch (error) {
+      this.logger.error(
+        `Error durante el proceso de registro de condominios: ${error.message}`,
+        error.stack,
+      );
+      throw new BadRequestException(
+        `Error durante el registro de condominios: ${error.message}`,
+      );
     }
   }
 }

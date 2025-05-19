@@ -8,6 +8,7 @@ import { ToolsModule } from '../tools/tools.module';
 import { StripeModule } from '../stripe/stripe.module';
 import { WhatsappChatBotModule } from '../whatsapp-chat-bot/whatsapp-chat-bot.module';
 import { GeminiModule } from '../gemini/gemini.module';
+import { CondominiumUsersModule } from '../condominium-users/condominium-users.module';
 
 dotenv.config();
 /**
@@ -25,6 +26,7 @@ dotenv.config();
     StripeModule,
     WhatsappChatBotModule,
     GeminiModule,
+    CondominiumUsersModule,
   ],
   providers: [FirebaseAuthService, RegisterCondominiumUsersCase],
   exports: [FirebaseAuthService],

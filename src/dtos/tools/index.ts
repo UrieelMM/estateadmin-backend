@@ -1,4 +1,5 @@
 import { IsEmail, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { CondominiumLimitDto, CondominiumLimitResponseDto } from './condominium-limit.dto';
 
 export class SearchPlacesDto {
   latitude: number;
@@ -24,3 +25,5 @@ export class ContactFormDto {
   @IsString()
   message?: string;
 }
+
+export { CondominiumLimitDto, CondominiumLimitResponseDto };

@@ -14,6 +14,7 @@ import { ToolsService } from '../tools/tools.service';
 import { StripeService } from '../stripe/stripe.service';
 import { WhatsappChatBotService } from '../whatsapp-chat-bot/whatsapp-chat-bot.service';
 import { GeminiService } from 'src/gemini/gemini.service';
+import { CondominiumUsersService } from '../condominium-users/condominium-users.service';
 import {
   RegisterUserDto,
   RegisterClientDto,
@@ -34,6 +35,7 @@ import { confirmResetPassword } from 'src/cases/users-admon-auth/confirm-reset-p
 import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
 import { registerSuperAdmin } from 'src/cases/users-admon-auth/register-super-admin.case';
 import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
+import { CondominiumLimitResponseDto } from 'src/dtos/tools/condominium-limit.dto';
 import { PaymentConfirmationDto } from 'src/dtos/whatsapp/payment-confirmation.dto';
 import { WhatsappMessageDto } from 'src/dtos/whatsapp/whatsapp-message.dto';
 import { UpdateParcelCase } from 'src/cases/parcel/update-parcel.case';
@@ -49,6 +51,7 @@ export class FirebaseAuthService {
     private stripeService: StripeService,
     private whatsappChatBotService: WhatsappChatBotService,
     private readonly geminiService: GeminiService,
+    private readonly condominiumUsersService: CondominiumUsersService,
   ) {
     if (!admin.apps.length) {
       admin.initializeApp();
@@ -137,6 +140,13 @@ export class FirebaseAuthService {
     return await this.toolsService.getClientPlan(clientId, condominiumId);
   }
 
+  async getCondominiumLimit(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<CondominiumLimitResponseDto> {
+    return await this.condominiumUsersService.getCondominiumLimit(clientId, condominiumId);
+  }
+
   async searchPlaces(
     latitude: number,
     longitude: number,
@@ -192,12 +202,19 @@ export class FirebaseAuthService {
   async generateTextWithGemini(prompt: string): Promise<string> {
     const context = 'FirebaseAuthService | generateTextWithGemini';
     try {
-      this.logger.log(`Generating text with Gemini for prompt: "${prompt.substring(0, 30)}..."`, context);
+      this.logger.log(
+        `Generating text with Gemini for prompt: "${prompt.substring(0, 30)}..."`,
+        context,
+      );
       const result = await this.geminiService.generateContent(prompt);
       this.logger.log(`Successfully generated text with Gemini`, context);
       return result;
     } catch (error) {
-      this.logger.error(`Error generating text with Gemini: ${error.message}`, error.stack, context);
+      this.logger.error(
+        `Error generating text with Gemini: ${error.message}`,
+        error.stack,
+        context,
+      );
       throw error; // Re-throw the error to be handled by the caller
     }
   }
