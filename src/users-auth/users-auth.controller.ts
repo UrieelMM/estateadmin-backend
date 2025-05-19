@@ -6,11 +6,8 @@ import {
   ValidationPipe,
   UploadedFile,
   UseInterceptors,
-  StreamableFile,
   Put,
   Param,
-  UnauthorizedException,
-  Headers,
 } from '@nestjs/common';
 import { UsersAuthService } from './users-auth.service';
 import {
@@ -46,17 +43,24 @@ export class UsersAuthController {
       {
         name: registerClientDto.name,
         lastName: registerClientDto.lastName,
-        companyName: registerClientDto.companyName,
-        condominiumName: registerClientDto.condominiumName,
+        companyName: registerClientDto.companyName, // Razón social
         phoneNumber: registerClientDto.phoneNumber,
         plan: registerClientDto.plan,
         proFunctions: registerClientDto.proFunctions,
         address: registerClientDto.address,
+        fullFiscalAddress: registerClientDto.fullFiscalAddress, // Domicilio fiscal completo
         RFC: registerClientDto.RFC,
         country: registerClientDto.country,
         businessName: registerClientDto.businessName,
-        taxResidence: registerClientDto.taxResidence,
-        taxRegime: registerClientDto.taxRegime,
+        taxRegime: registerClientDto.taxRegime, // Régimen fiscal
+        businessActivity: registerClientDto.businessActivity, // Giro o actividad económica
+        responsiblePersonName: registerClientDto.responsiblePersonName, // Responsable
+        responsiblePersonPosition: registerClientDto.responsiblePersonPosition, // Cargo
+        cfdiUse: registerClientDto.cfdiUse, // Uso de CFDI
+        serviceStartDate: registerClientDto.serviceStartDate, // Fecha de inicio
+        billingFrequency: registerClientDto.billingFrequency, // Periodicidad
+        condominiumLimit: registerClientDto.condominiumLimit, // Límite de condominios
+        termsAccepted: registerClientDto.termsAccepted, // Aceptación términos
         condominiumInfo: registerClientDto.condominiumInfo,
       },
     );
