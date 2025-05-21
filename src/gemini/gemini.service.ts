@@ -13,7 +13,8 @@ import {
 export class GeminiService implements OnModuleInit {
   private genAI: GoogleGenerativeAI;
   private readonly logger = new Logger(GeminiService.name);
-  private readonly modelName = 'gemini-1.5-flash-latest';
+  private readonly modelName = 'gemini-2.0-flash';
+  private readonly embeddingModelName = 'embedding-001';
 
   constructor(private configService: ConfigService) {}
 
@@ -151,6 +152,22 @@ export class GeminiService implements OnModuleInit {
       throw new Error(
         `Failed to generate content stream via Gemini: ${error.message}`,
       );
+    }
+  }
+
+  /**
+   * Returns the embedding model to generate text embeddings
+   * @returns The embedding model instance
+   */
+  getEmbeddingModel() {
+    try {
+      return this.genAI.getGenerativeModel({ model: this.embeddingModelName });
+    } catch (error) {
+      this.logger.error(
+        `Error getting embedding model: ${error.message}`,
+        error.stack,
+      );
+      throw new Error(`Failed to get embedding model: ${error.message}`);
     }
   }
 }

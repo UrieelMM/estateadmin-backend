@@ -12,6 +12,8 @@ import { StripeModule } from './stripe/stripe.module';
 import { WhatsappChatBotModule } from './whatsapp-chat-bot/whatsapp-chat-bot.module';
 import { GeminiModule } from './gemini/gemini.module';
 import { CondominiumUsersModule } from './condominium-users/condominium-users.module';
+import { AiContextModule } from './ai-context/ai-context.module';
+import { MpcModule } from './mpc/mpc.module';
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { CondominiumUsersModule } from './condominium-users/condominium-users.mo
     WhatsappChatBotModule,
     GeminiModule,
     CondominiumUsersModule,
+    AiContextModule,
+    MpcModule,
   ],
   controllers: [AppController],
   providers: [AppService],

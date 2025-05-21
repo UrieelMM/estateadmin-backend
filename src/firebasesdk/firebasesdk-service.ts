@@ -15,6 +15,7 @@ import { StripeService } from '../stripe/stripe.service';
 import { WhatsappChatBotService } from '../whatsapp-chat-bot/whatsapp-chat-bot.service';
 import { GeminiService } from 'src/gemini/gemini.service';
 import { CondominiumUsersService } from '../condominium-users/condominium-users.service';
+import { AiContextService } from '../ai-context/ai-context.service';
 import {
   RegisterUserDto,
   RegisterClientDto,
@@ -59,6 +60,7 @@ export class FirebaseAuthService {
     private whatsappChatBotService: WhatsappChatBotService,
     private readonly geminiService: GeminiService,
     private readonly condominiumUsersService: CondominiumUsersService,
+    private readonly aiContextService: AiContextService,
   ) {
     if (!admin.apps.length) {
       admin.initializeApp();
