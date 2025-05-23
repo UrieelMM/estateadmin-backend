@@ -257,6 +257,7 @@ export const MaintenancePaymentCase = async (
         startAt: startAtsArray[index] || '',
         // NUEVO: Agregar folio
         folio: folio,
+        paymentAmountReference: assignedAmount,
       };
       console.log('individual paymentRecord', paymentRecord);
       await assignmentChargeRef
@@ -476,6 +477,7 @@ export const MaintenancePaymentCase = async (
       folio: folio,
       // NUEVO: Agregar el valor del cargo original
       chargeValue: remainingAmount,
+      paymentAmountReference: effectivePayment,
     };
 
     await chargeRef.collection('payments').doc(paymentId).set(paymentData);

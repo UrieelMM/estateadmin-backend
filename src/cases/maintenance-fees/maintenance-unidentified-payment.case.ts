@@ -97,6 +97,7 @@ export const MaintenanceUnidentifiedPaymentCase = async (
     isUnidentifiedPayment: true,
     appliedToUser: false,
     appliedToCondomino: appliedToCondomino || '',
+    paymentAmountReference: amountPaid,
   };
 
   // Actualizar (o crear si no existe) el pago en la colección de pagos no identificados
