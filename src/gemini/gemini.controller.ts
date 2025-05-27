@@ -14,6 +14,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { GeminiService } from './gemini.service';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { Response } from 'express';
+import { ExtractReceiptDataDto } from './dto/extract-receipt-data.dto';
 
 import {
   ApiTags,
@@ -129,6 +130,59 @@ export class GeminiController {
         res.end();
         this.logger.log('Response stream ended.');
       }
+    }
+  }
+
+  @Post('extract-receipt')
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Extraer datos estructurados de comprobantes de pago',
+    description:
+      'Procesa una imagen o PDF de un comprobante de pago y extrae información como monto, fecha, y más.',
+  })
+  @ApiBody({
+    description: 'Archivo de comprobante de pago (imagen o PDF)',
+    type: ExtractReceiptDataDto,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Datos extraídos del comprobante',
+    schema: {
+      type: 'object',
+      properties: {
+        amount: { type: 'number', description: 'Monto del pago' },
+        currency: { type: 'string', description: 'Moneda (MXN, USD, etc)' },
+        date: { type: 'string', description: 'Fecha del pago (YYYY-MM-DD)' },
+        description: { type: 'string', description: 'Concepto o descripción del pago' },
+        recipient: { type: 'string', description: 'Emisor o entidad que recibe el pago' },
+        reference: { type: 'string', description: 'Número de referencia o folio' },
+        paymentMethod: { type: 'string', description: 'Método de pago utilizado' },
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Solicitud inválida o archivo no soportado' })
+  @ApiResponse({ status: 429, description: 'Demasiadas solicitudes' })
+  @ApiResponse({ status: 500, description: 'Error interno del servidor' })
+  @UseInterceptors(FileInterceptor('file'))
+  async extractReceiptData(
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 })],
+        fileIsRequired: true,
+      }),
+    )
+    file: Express.Multer.File,
+  ) {
+    try {
+      this.logger.log(`Recibida solicitud para extraer datos de comprobante: ${file?.originalname}`);
+      const extractedData = await this.geminiService.extractReceiptData(file);
+      return extractedData;
+    } catch (error) {
+      this.logger.error(
+        `Error al procesar la solicitud de extracción de datos: ${error.message}`,
+        error.stack,
+      );
+      throw error;
     }
   }
 }
