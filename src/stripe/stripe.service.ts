@@ -555,7 +555,7 @@ export class StripeService {
       const mailerSend = new MailerSend({
         apiKey:
           process.env.MAILERSEND_API_KEY ||
-          'mlsn.0cda1e684fe67e14b7b569d23fc3d66bcb1950417ef2eb9f18007246c6e5a57a',
+          'mlsn.3611aa51c08f244faf71131ceb627e193d3f57183323b0cb39538532bd6abfa7',
       });
 
       // Formatear el monto a pesos
@@ -662,11 +662,17 @@ export class StripeService {
 
       const emailParams = new EmailParams()
         .setFrom(
-          new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+          new Sender(
+            'MS_Fpa0aS@notifications.estate-admin.com',
+            'EstateAdmin Notifications',
+          ),
         )
         .setTo([new Recipient(email, name || 'Residente')])
         .setReplyTo(
-          new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+          new Sender(
+            'MS_Fpa0aS@notifications.estate-admin.com',
+            'EstateAdmin Notifications',
+          ),
         )
         .setSubject(`Pago Confirmado - Factura #${invoiceNumber}`)
         .setHtml(emailHtml);

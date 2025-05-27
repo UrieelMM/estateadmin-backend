@@ -8,7 +8,7 @@ export class ChargeNotificationService {
     this.mailerSend = new MailerSend({
       apiKey:
         process.env.MAILERSEND_API_KEY ||
-        'mlsn.f2c00dfb3c09f09eb41eaaa73a9ec599aa03fe4e62de1c64e3c1fc7c73af4eaa',
+        'mlsn.3611aa51c08f244faf71131ceb627e193d3f57183323b0cb39538532bd6abfa7',
     });
   }
 
@@ -189,7 +189,9 @@ export class ChargeNotificationService {
 
       // Configurar los parámetros del correo
       const emailParams = new EmailParams()
-        .setFrom(new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin'))
+        .setFrom(
+          new Sender('MS_Fpa0aS@notifications.estate-admin.com', 'EstateAdmin'),
+        )
         .setTo([new Recipient(email, userName)])
         .setSubject('Nuevo Cargo en tu Cuenta - EstateAdmin')
         .setHtml(emailHtml);

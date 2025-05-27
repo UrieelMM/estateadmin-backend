@@ -100,16 +100,22 @@ export const onContactFormSubmitted = onDocumentCreated(
       const mailerSend = new MailerSend({
         apiKey:
           process.env.MAILERSEND_API_KEY ||
-          'mlsn.c5c1b7f2e0f0d7c32a8c5f1e6f1a7b0b9c3c5c7b0e2e4e6f1a3a5a7a9b1b3b5b7',
+          'mlsn.3611aa51c08f244faf71131ceb627e193d3f57183323b0cb39538532bd6abfa7',
       });
 
       const emailParams = new EmailParams()
         .setFrom(
-          new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+          new Sender(
+            'MS_Fpa0aS@notifications.estate-admin.com',
+            'EstateAdmin Notifications',
+          ),
         )
         .setTo([new Recipient('urieel.mm@gmail.com', 'EstateAdmin Admin')])
         .setReplyTo(
-          new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+          new Sender(
+            'MS_Fpa0aS@notifications.estate-admin.com',
+            'EstateAdmin Notifications',
+          ),
         )
         .setSubject(`Nuevo Formulario de Contacto de ${name}`)
         .setHtml(emailHtml);

@@ -22,8 +22,8 @@ export const resetPassword = async (resetPasswordDto: ResetPasswordDto) => {
 
     // Configurar el correo
     const sentFrom = new Sender(
-      'MS_CUXpzj@estate-admin.com',
-      'EstateAdmin Support',
+      'MS_Fpa0aS@notifications.estate-admin.com',
+      'EstateAdmin Notifications',
     );
     const recipients = [new Recipient(email)];
 
@@ -113,7 +113,10 @@ export const resetPassword = async (resetPasswordDto: ResetPasswordDto) => {
       .setFrom(sentFrom)
       .setTo(recipients)
       .setReplyTo(
-        new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
+        new Sender(
+          'MS_Fpa0aS@notifications.estate-admin.com',
+          'EstateAdmin Notifications',
+        ),
       )
       .setSubject('Recupera tu contraseña - EstateAdmin')
       .setHtml(htmlTemplate);

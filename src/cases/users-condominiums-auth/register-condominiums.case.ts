@@ -55,14 +55,16 @@ export class RegisterCondominiumUsersCase {
       const condominiumData = condominiumRef.data();
       const condominiumLimit = condominiumData?.condominiumLimit || 50; // Valor por defecto si no se encuentra
 
-      this.logger.log(`Límite de condominios para el cliente: ${condominiumLimit}`);
+      this.logger.log(
+        `Límite de condominios para el cliente: ${condominiumLimit}`,
+      );
 
       // Preparar un array para registrar los resultados de cada registro
       const registrationResults = [];
-      
+
       // Limitar la cantidad de usuarios a procesar según el límite del plan
       const usersData = rawUsersData.slice(0, condominiumLimit);
-      
+
       // Registramos cuántos usuarios fueron omitidos debido al límite
       const omittedUsers = Math.max(0, rawUsersData.length - condominiumLimit);
       if (omittedUsers > 0) {
@@ -93,111 +95,112 @@ export class RegisterCondominiumUsersCase {
             registrationResults.push(result);
             continue;
           }
-        // Verificar si el rol es administrativo (no permitido)
-        const forbiddenRoles = [
-          'admin',
-          'admin-assistant',
-          'super-admin',
-          'superAdmin',
-          'superadmin',
-          'superAdmin',
-          'super-admin',
-          'superAdmin',
-          'super-admin',
-          'superAdmin',
-          'super-admin',
-          'editor',
-          'editor-assistant',
-          'editorAssistant',
-          'editor-assistant',
-          'editorAssistant',
-          'editor-assistant',
-          'editorAssistant',
-          'viewer',
-          'viewer-assistant',
-          'viewerAssistant',
-          'viewer-assistant',
-          'viewerAssistant',
-          'viewer-assistant',
-          'viewerAssistant',
-        ];
-        if (
-          userData.role &&
-          forbiddenRoles.some((role) =>
-            userData.role.toLowerCase().includes(role.toLowerCase()),
-          )
-        ) {
-          this.logger.warn(
-            `Intento de registro con rol administrativo no permitido: email=${userData.email}, role=${userData.role}`,
+          // Verificar si el rol es administrativo (no permitido)
+          const forbiddenRoles = [
+            'admin',
+            'admin-assistant',
+            'super-admin',
+            'superAdmin',
+            'superadmin',
+            'superAdmin',
+            'super-admin',
+            'superAdmin',
+            'super-admin',
+            'superAdmin',
+            'super-admin',
+            'editor',
+            'editor-assistant',
+            'editorAssistant',
+            'editor-assistant',
+            'editorAssistant',
+            'editor-assistant',
+            'editorAssistant',
+            'viewer',
+            'viewer-assistant',
+            'viewerAssistant',
+            'viewer-assistant',
+            'viewerAssistant',
+            'viewer-assistant',
+            'viewerAssistant',
+          ];
+          if (
+            userData.role &&
+            forbiddenRoles.some((role) =>
+              userData.role.toLowerCase().includes(role.toLowerCase()),
+            )
+          ) {
+            this.logger.warn(
+              `Intento de registro con rol administrativo no permitido: email=${userData.email}, role=${userData.role}`,
+            );
+            result.message = 'Rol administrativo no permitido.';
+            registrationResults.push(result);
+            continue;
+          }
+
+          // Verificar si el usuario ya existe
+          const profilePath = `clients/${clientId}/condominiums/${condominiumId}/users`;
+          const existingUsers = await admin
+            .firestore()
+            .collection(profilePath)
+            .where('email', '==', userData.email)
+            .get();
+
+          if (!existingUsers.empty) {
+            result.message =
+              'El usuario con este correo electrónico ya existe.';
+            registrationResults.push(result);
+            continue;
+          }
+
+          // Registrar el documento en Firestore sin crear cuenta en Firebase Auth
+          const docRef = admin.firestore().collection(profilePath).doc();
+          const uid = docRef.id;
+
+          await docRef.set({
+            name: userData.name,
+            email: userData.email,
+            lastName: userData.lastName || '',
+            phone: userData.phone || '',
+            RFC: userData.RFC || '',
+            CP: userData.CP || '',
+            address: userData.address || '',
+            city: userData.city || '',
+            state: userData.state || '',
+            country: userData.country || '',
+            number: String(userData.number || ''),
+            businessName: userData.businessName || '',
+            taxResidence: userData.taxResidence || '',
+            taxtRegime: userData.taxtRegime || '',
+            photoURL: userData.photoURL || '',
+            departament: userData.departament || '',
+            uid: uid,
+            role: userData.role || 'condominium',
+            condominiumId: condominiumId || '',
+            clientId: clientId || '',
+            notifications: {
+              email: true,
+              whatsapp: true,
+            },
+          });
+
+          this.logger.log(
+            `Documento creado para usuario: email=${userData.email}, uid=${uid}`,
           );
-          result.message = 'Rol administrativo no permitido.';
-          registrationResults.push(result);
-          continue;
-        }
 
-        // Verificar si el usuario ya existe
-        const profilePath = `clients/${clientId}/condominiums/${condominiumId}/users`;
-        const existingUsers = await admin
-          .firestore()
-          .collection(profilePath)
-          .where('email', '==', userData.email)
-          .get();
+          // Preparar y enviar el correo electrónico
+          const sentFrom = new Sender(
+            'MS_Fpa0aS@notifications.estate-admin.com',
+            'EstateAdmin Notifications',
+          );
+          const recipients = [
+            new Recipient(
+              userData.email || 'Sin email',
+              userData.name || 'Sin nombre',
+            ),
+          ];
 
-        if (!existingUsers.empty) {
-          result.message = 'El usuario con este correo electrónico ya existe.';
-          registrationResults.push(result);
-          continue;
-        }
-
-        // Registrar el documento en Firestore sin crear cuenta en Firebase Auth
-        const docRef = admin.firestore().collection(profilePath).doc();
-        const uid = docRef.id;
-
-        await docRef.set({
-          name: userData.name,
-          email: userData.email,
-          lastName: userData.lastName || '',
-          phone: userData.phone || '',
-          RFC: userData.RFC || '',
-          CP: userData.CP || '',
-          address: userData.address || '',
-          city: userData.city || '',
-          state: userData.state || '',
-          country: userData.country || '',
-          number: String(userData.number || ''),
-          businessName: userData.businessName || '',
-          taxResidence: userData.taxResidence || '',
-          taxtRegime: userData.taxtRegime || '',
-          photoURL: userData.photoURL || '',
-          departament: userData.departament || '',
-          uid: uid,
-          role: userData.role || 'condominium',
-          condominiumId: condominiumId || '',
-          clientId: clientId || '',
-          notifications: {
-            email: true,
-            whatsapp: true,
-          },
-        });
-
-        this.logger.log(
-          `Documento creado para usuario: email=${userData.email}, uid=${uid}`,
-        );
-
-        // Preparar y enviar el correo electrónico
-        const sentFrom = new Sender(
-          'MS_CUXpzj@estate-admin.com',
-          'EstateAdmin Support',
-        );
-        const recipients = [
-          new Recipient(
-            userData.email || 'Sin email',
-            userData.name || 'Sin nombre',
-          ),
-        ];
-
-        // Función para generar la plantilla HTML del correo sin contraseña
-        const htmlTemplate = (data: UserCondominiumDto) => `
+          // Función para generar la plantilla HTML del correo sin contraseña
+          const htmlTemplate = (data: UserCondominiumDto) => `
           <html>
             <head>
               <style>
@@ -276,60 +279,63 @@ export class RegisterCondominiumUsersCase {
           </html>
         `;
 
-        const emailHtml = htmlTemplate(userData);
+          const emailHtml = htmlTemplate(userData);
 
-        const emailParams = new EmailParams()
-          .setFrom(sentFrom)
-          .setTo(recipients)
-          .setReplyTo(
-            new Sender('MS_CUXpzj@estate-admin.com', 'EstateAdmin Support'),
-          )
-          .setSubject('Bienvenido a EstateAdmin')
-          .setHtml(emailHtml);
+          const emailParams = new EmailParams()
+            .setFrom(sentFrom)
+            .setTo(recipients)
+            .setReplyTo(
+              new Sender(
+                'MS_Fpa0aS@notifications.estate-admin.com',
+                'EstateAdmin Notifications',
+              ),
+            )
+            .setSubject('Bienvenido a EstateAdmin')
+            .setHtml(emailHtml);
 
-        await mailerSend.email.send(emailParams);
-        this.logger.log(`Correo enviado a ${userData.email}`);
+          await mailerSend.email.send(emailParams);
+          this.logger.log(`Correo enviado a ${userData.email}`);
 
-        // Actualizar resultado como exitoso
-        result.status = 'success';
-        result.message = 'Usuario registrado correctamente.';
-        registrationResults.push(result);
-      } catch (error) {
-        console.log(error);
-        this.logger.error(
-          `Error al registrar el usuario ${userData.email}: ${error.message}`,
-          error.stack,
-        );
-        result.message = `Error: ${error.message || 'Error desconocido al procesar el usuario.'}`;
-        registrationResults.push(result);
+          // Actualizar resultado como exitoso
+          result.status = 'success';
+          result.message = 'Usuario registrado correctamente.';
+          registrationResults.push(result);
+        } catch (error) {
+          console.log(error);
+          this.logger.error(
+            `Error al registrar el usuario ${userData.email}: ${error.message}`,
+            error.stack,
+          );
+          result.message = `Error: ${error.message || 'Error desconocido al procesar el usuario.'}`;
+          registrationResults.push(result);
+        }
       }
-    }
 
-    // Si hay usuarios omitidos por el límite, añadirlos al resultado
-    if (omittedUsers > 0) {
-      for (let i = condominiumLimit; i < rawUsersData.length; i++) {
-        const omittedUser = rawUsersData[i];
-        registrationResults.push({
-          name: omittedUser.name || '',
-          email: omittedUser.email || '',
-          status: 'error',
-          message: `Usuario omitido debido al límite del plan (${condominiumLimit}).`,
-        });
+      // Si hay usuarios omitidos por el límite, añadirlos al resultado
+      if (omittedUsers > 0) {
+        for (let i = condominiumLimit; i < rawUsersData.length; i++) {
+          const omittedUser = rawUsersData[i];
+          registrationResults.push({
+            name: omittedUser.name || '',
+            email: omittedUser.email || '',
+            status: 'error',
+            message: `Usuario omitido debido al límite del plan (${condominiumLimit}).`,
+          });
+        }
       }
-    }
 
-    // Crear un archivo Excel con los resultados
-    const worksheet = XLSX.utils.json_to_sheet(registrationResults);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Resultados');
-    
-    // Convertir el libro de Excel a un buffer
-    const excelBuffer = XLSX.write(workbook, {
-      bookType: 'xlsx',
-      type: 'buffer',
-    });
+      // Crear un archivo Excel con los resultados
+      const worksheet = XLSX.utils.json_to_sheet(registrationResults);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Resultados');
 
-    return excelBuffer;
+      // Convertir el libro de Excel a un buffer
+      const excelBuffer = XLSX.write(workbook, {
+        bookType: 'xlsx',
+        type: 'buffer',
+      });
+
+      return excelBuffer;
     } catch (error) {
       this.logger.error(
         `Error durante el proceso de registro de condominios: ${error.message}`,
