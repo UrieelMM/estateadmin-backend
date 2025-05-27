@@ -8,22 +8,30 @@ const validateCondominiumLimit = (plan: PlanType, condominiumLimit: number) => {
   switch (plan) {
     case PlanType.Basic:
       if (condominiumLimit < 1 || condominiumLimit > 50) {
-        throw new BadRequestException('El plan Basic permite entre 1 y 50 condominios');
+        throw new BadRequestException(
+          'El plan Basic permite entre 1 y 50 condominios',
+        );
       }
       break;
     case PlanType.Essential:
       if (condominiumLimit < 51 || condominiumLimit > 100) {
-        throw new BadRequestException('El plan Essential permite entre 51 y 100 condominios');
+        throw new BadRequestException(
+          'El plan Essential permite entre 51 y 100 condominios',
+        );
       }
       break;
     case PlanType.Professional:
       if (condominiumLimit < 101 || condominiumLimit > 250) {
-        throw new BadRequestException('El plan Professional permite entre 101 y 250 condominios');
+        throw new BadRequestException(
+          'El plan Professional permite entre 101 y 250 condominios',
+        );
       }
       break;
     case PlanType.Premium:
       if (condominiumLimit < 251 || condominiumLimit > 500) {
-        throw new BadRequestException('El plan Premium permite entre 251 y 500 condominios');
+        throw new BadRequestException(
+          'El plan Premium permite entre 251 y 500 condominios',
+        );
       }
       break;
     default:
@@ -39,6 +47,8 @@ export const RegisterCondominiumCase = async (condominiumData: {
   condominiumLimit: number;
   status: CondominiumStatus;
   proFunctions?: string[];
+  currency?: string;
+  language?: string;
 }) => {
   try {
     const {
@@ -49,8 +59,10 @@ export const RegisterCondominiumCase = async (condominiumData: {
       condominiumLimit,
       status = CondominiumStatus.Pending,
       proFunctions = [],
+      currency = 'MXN',
+      language = 'es-MX',
     } = condominiumData;
-    
+
     // Validar el límite de condominios según el plan
     validateCondominiumLimit(plan, condominiumLimit);
     const uid = uuidv4(); // Generamos el UID único
@@ -81,6 +93,8 @@ export const RegisterCondominiumCase = async (condominiumData: {
         condominiumLimit,
         status,
         proFunctions,
+        currency,
+        language,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -102,6 +116,8 @@ export const RegisterCondominiumCase = async (condominiumData: {
       condominiumLimit,
       status,
       proFunctions,
+      currency,
+      language,
       message: 'Condominio creado exitosamente',
     };
   } catch (error) {
