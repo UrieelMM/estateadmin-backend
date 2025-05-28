@@ -165,4 +165,14 @@ export class RegisterClientDto {
   @IsOptional()
   @IsString()
   address: string;
+
+  // Moneda predeterminada para el cliente
+  @IsOptional()
+  @IsString()
+  currency: string = 'MXN';
+
+  // Idioma predeterminado para el cliente
+  @IsOptional()
+  @IsString()
+  language: string = 'es';
 }

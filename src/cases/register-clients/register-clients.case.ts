@@ -1,6 +1,14 @@
 import * as admin from 'firebase-admin';
-import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
-import { RegisterClientDto, PlanType, BillingFrequency, CondominiumStatus } from 'src/dtos/register-client.dto';
+import {
+  BadRequestException,
+  InternalServerErrorException,
+} from '@nestjs/common';
+import {
+  RegisterClientDto,
+  PlanType,
+  BillingFrequency,
+  CondominiumStatus,
+} from 'src/dtos/register-client.dto';
 import { v4 as uuidv4 } from 'uuid';
 
 // Función de validación para límites de condominios según el plan
@@ -8,22 +16,30 @@ const validateCondominiumLimit = (plan: PlanType, condominiumLimit: number) => {
   switch (plan) {
     case PlanType.Basic:
       if (condominiumLimit < 1 || condominiumLimit > 50) {
-        throw new BadRequestException('El plan Basic permite entre 1 y 50 condominios');
+        throw new BadRequestException(
+          'El plan Basic permite entre 1 y 50 condominios',
+        );
       }
       break;
     case PlanType.Essential:
       if (condominiumLimit < 51 || condominiumLimit > 100) {
-        throw new BadRequestException('El plan Essential permite entre 51 y 100 condominios');
+        throw new BadRequestException(
+          'El plan Essential permite entre 51 y 100 condominios',
+        );
       }
       break;
     case PlanType.Professional:
       if (condominiumLimit < 101 || condominiumLimit > 250) {
-        throw new BadRequestException('El plan Professional permite entre 101 y 250 condominios');
+        throw new BadRequestException(
+          'El plan Professional permite entre 101 y 250 condominios',
+        );
       }
       break;
     case PlanType.Premium:
       if (condominiumLimit < 251 || condominiumLimit > 500) {
-        throw new BadRequestException('El plan Premium permite entre 251 y 500 condominios');
+        throw new BadRequestException(
+          'El plan Premium permite entre 251 y 500 condominios',
+        );
       }
       break;
     default:
@@ -56,8 +72,10 @@ export const RegisterClientCase = async (
     condominiumLimit,
     termsAccepted = true,
     condominiumInfo,
+    currency = 'MXN',
+    language = 'es-MX',
   } = registerClientDto;
-  
+
   // Validar el límite de condominios según el plan
   validateCondominiumLimit(plan, condominiumLimit);
 
@@ -76,10 +94,12 @@ export const RegisterClientCase = async (
       // Si falla la creación del usuario en Auth, lanzar error sin crear datos en Firestore
       console.error('Error al crear usuario en Firebase Auth:', authError);
       if (authError.code === 'auth/email-already-exists') {
-        throw new BadRequestException('El correo electrónico ya está registrado.');
+        throw new BadRequestException(
+          'El correo electrónico ya está registrado.',
+        );
       } else {
         throw new BadRequestException(
-          `Error al crear la cuenta: ${authError.message}`
+          `Error al crear la cuenta: ${authError.message}`,
         );
       }
     }
@@ -113,6 +133,8 @@ export const RegisterClientCase = async (
       termsAccepted, // Aceptación de términos y condiciones
       createdDate: admin.firestore.FieldValue.serverTimestamp(),
       condominiumsUids: [condominiumUid],
+      currency, // Utilizamos la variable extraída de la desestructuración
+      language, // Utilizamos la variable extraída de la desestructuración
     };
     await clientProfileRef.set(clientData);
 
@@ -153,33 +175,44 @@ export const RegisterClientCase = async (
       createdDate: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-// Función de validación para límites de condominios según el plan
-const validateCondominiumLimit = (plan: PlanType, condominiumLimit: number) => {
-  switch (plan) {
-    case PlanType.Basic:
-      if (condominiumLimit < 1 || condominiumLimit > 50) {
-        throw new BadRequestException('El plan Basic permite entre 1 y 50 condominios');
+    // Función de validación para límites de condominios según el plan
+    const validateCondominiumLimit = (
+      plan: PlanType,
+      condominiumLimit: number,
+    ) => {
+      switch (plan) {
+        case PlanType.Basic:
+          if (condominiumLimit < 1 || condominiumLimit > 50) {
+            throw new BadRequestException(
+              'El plan Basic permite entre 1 y 50 condominios',
+            );
+          }
+          break;
+        case PlanType.Essential:
+          if (condominiumLimit < 51 || condominiumLimit > 100) {
+            throw new BadRequestException(
+              'El plan Essential permite entre 51 y 100 condominios',
+            );
+          }
+          break;
+        case PlanType.Professional:
+          if (condominiumLimit < 101 || condominiumLimit > 250) {
+            throw new BadRequestException(
+              'El plan Professional permite entre 101 y 250 condominios',
+            );
+          }
+          break;
+        case PlanType.Premium:
+          if (condominiumLimit < 251 || condominiumLimit > 500) {
+            throw new BadRequestException(
+              'El plan Premium permite entre 251 y 500 condominios',
+            );
+          }
+          break;
+        default:
+          throw new BadRequestException('Plan no válido');
       }
-      break;
-    case PlanType.Essential:
-      if (condominiumLimit < 51 || condominiumLimit > 100) {
-        throw new BadRequestException('El plan Essential permite entre 51 y 100 condominios');
-      }
-      break;
-    case PlanType.Professional:
-      if (condominiumLimit < 101 || condominiumLimit > 250) {
-        throw new BadRequestException('El plan Professional permite entre 101 y 250 condominios');
-      }
-      break;
-    case PlanType.Premium:
-      if (condominiumLimit < 251 || condominiumLimit > 500) {
-        throw new BadRequestException('El plan Premium permite entre 251 y 500 condominios');
-      }
-      break;
-    default:
-      throw new BadRequestException('Plan no válido');
-  }
-};
+    };
     await adminProfileRef.set(adminProfileData);
 
     return { clientData, adminProfileData, condominiumInfo };
@@ -188,8 +221,8 @@ const validateCondominiumLimit = (plan: PlanType, condominiumLimit: number) => {
       'Error al registrar el cliente y su cuenta administrativa',
       error,
     );
-    
-    // Si ya se creó el usuario de autenticación pero falló algo más, 
+
+    // Si ya se creó el usuario de autenticación pero falló algo más,
     // intentamos eliminar el usuario para evitar inconsistencias
     try {
       if (error.response && error.response.data && error.response.data.uid) {
@@ -198,7 +231,7 @@ const validateCondominiumLimit = (plan: PlanType, condominiumLimit: number) => {
     } catch (cleanupError) {
       console.error('Error al limpiar usuario de autenticación:', cleanupError);
     }
-    
+
     if (error instanceof BadRequestException) {
       throw error; // Rethrow validation errors
     } else {
