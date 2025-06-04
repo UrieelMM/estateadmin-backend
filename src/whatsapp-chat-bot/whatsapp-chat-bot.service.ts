@@ -175,8 +175,23 @@ export class WhatsappChatBotService implements OnModuleInit {
     const condominiumId =
       context?.selectedCondominium?.condominiumId || details.condominiumId;
 
-    // Solo audita en la ruta específica si tenemos clientId y condominiumId
-    if (clientId && condominiumId) {
+    // Validación estricta: solo audita en la ruta específica si tenemos clientId y condominiumId válidos
+    const isValidClientId =
+      clientId &&
+      typeof clientId === 'string' &&
+      clientId.trim().length > 0 &&
+      clientId !== 'undefined' &&
+      clientId !== 'null';
+
+    const isValidCondominiumId =
+      condominiumId &&
+      typeof condominiumId === 'string' &&
+      condominiumId.trim().length > 0 &&
+      condominiumId !== 'undefined' &&
+      condominiumId !== 'null';
+
+    if (isValidClientId && isValidCondominiumId) {
+      // Usuario registrado: guardar en la ruta específica del condominio
       const auditPath = `${AUDIT_COLLECTION_BASE}/${clientId}/condominiums/${condominiumId}/whatsAppBotAudit`;
       try {
         const auditLog = {
@@ -186,6 +201,7 @@ export class WhatsappChatBotService implements OnModuleInit {
           state: context?.state || 'UNKNOWN',
           timestamp: admin.firestore.FieldValue.serverTimestamp(),
           userId: context?.userId, // Incluir userId si está disponible
+          userType: 'registered', // Marcar como usuario registrado
           ...details, // Añadir cualquier detalle extra
         };
         await this.firestore.collection(auditPath).add(auditLog);
@@ -199,12 +215,32 @@ export class WhatsappChatBotService implements OnModuleInit {
         );
       }
     } else {
-      // Opcional: Podrías tener un log general si la ruta específica no es posible aún
-      this.logger.warn(
-        `No se pudo registrar auditoría detallada para ${phoneNumber} (faltan clientId/condominiumId). Dirección: ${direction}`,
-      );
-      // Aquí podrías loguear a una colección genérica si lo necesitas:
-      // await this.firestore.collection('genericWhatsappAudit').add({ ... });
+      // Usuario no registrado: guardar en colección genérica para análisis
+      try {
+        const genericAuditLog = {
+          phoneNumber: phoneNumber,
+          direction: direction,
+          message: messageContent,
+          state: context?.state || 'UNKNOWN',
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          userType: 'unregistered', // Marcar como usuario no registrado
+          attemptedClientId: clientId || null, // Guardar lo que se intentó usar
+          attemptedCondominiumId: condominiumId || null, // Guardar lo que se intentó usar
+          ...details,
+        };
+
+        await this.firestore
+          .collection('whatsAppBotAudit_Unregistered')
+          .add(genericAuditLog);
+        this.logger.log(
+          `Auditoría de usuario no registrado guardada para ${phoneNumber}`,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Error al registrar auditoría genérica para ${phoneNumber}: ${error.message}`,
+          error.stack,
+        );
+      }
     }
   }
 
