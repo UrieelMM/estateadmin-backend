@@ -4,6 +4,11 @@ import * as admin from 'firebase-admin';
 import { PaymentConfirmationDto } from 'src/dtos/whatsapp/payment-confirmation.dto';
 import { WhatsappMessageDto } from 'src/dtos/whatsapp/whatsapp-message.dto';
 import { normalizeMexNumber } from './formatNumber';
+import {
+  PublicDocumentsService,
+  DocumentsConfig,
+  PublicDocument,
+} from './public-documents.service';
 
 // Asegúrate de inicializar Firebase Admin en tu módulo principal (e.g., app.module.ts)
 // import * as admin from 'firebase-admin';
@@ -14,14 +19,25 @@ import { normalizeMexNumber } from './formatNumber';
  */
 enum ConversationState {
   INITIAL = 'INITIAL',
-  AWAITING_EMAIL = 'AWAITING_EMAIL',
-  AWAITING_DEPARTMENT = 'AWAITING_DEPARTMENT',
-  MULTIPLE_CONDOMINIUMS = 'MULTIPLE_CONDOMINIUMS',
-  AWAITING_CONDOMINIUM_SELECTION = 'AWAITING_CONDOMINIUM_SELECTION',
-  AWAITING_CHARGE_SELECTION = 'AWAITING_CHARGE_SELECTION',
-  AWAITING_FILE = 'AWAITING_FILE',
+  MENU_SELECTION = 'MENU_SELECTION',
+
+  // Estados para registrar comprobante (flujo original)
+  PAYMENT_AWAITING_EMAIL = 'PAYMENT_AWAITING_EMAIL',
+  PAYMENT_AWAITING_DEPARTMENT = 'PAYMENT_AWAITING_DEPARTMENT',
+  PAYMENT_MULTIPLE_CONDOMINIUMS = 'PAYMENT_MULTIPLE_CONDOMINIUMS',
+  PAYMENT_AWAITING_CONDOMINIUM_SELECTION = 'PAYMENT_AWAITING_CONDOMINIUM_SELECTION',
+  PAYMENT_AWAITING_CHARGE_SELECTION = 'PAYMENT_AWAITING_CHARGE_SELECTION',
+  PAYMENT_AWAITING_FILE = 'PAYMENT_AWAITING_FILE',
+
+  // Estados para consultar documentos (nuevo flujo)
+  DOCUMENTS_AWAITING_EMAIL = 'DOCUMENTS_AWAITING_EMAIL',
+  DOCUMENTS_AWAITING_DEPARTMENT = 'DOCUMENTS_AWAITING_DEPARTMENT',
+  DOCUMENTS_MULTIPLE_CONDOMINIUMS = 'DOCUMENTS_MULTIPLE_CONDOMINIUMS',
+  DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION = 'DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION',
+  DOCUMENTS_AWAITING_DOCUMENT_SELECTION = 'DOCUMENTS_AWAITING_DOCUMENT_SELECTION',
+
   COMPLETED = 'COMPLETED',
-  ERROR = 'ERROR', // Nuevo estado para manejar errores inesperados
+  ERROR = 'ERROR',
 }
 
 /**
@@ -35,23 +51,25 @@ interface ConversationContext {
   possibleCondominiums?: Array<{
     clientId: string;
     condominiumId: string;
-    // Opcional: podríamos añadir el nombre del condominio si está disponible
     condominiumName?: string;
   }>;
   selectedCondominium?: {
     clientId: string;
     condominiumId: string;
-    condominiumName?: string; // Guardar también el nombre si se obtiene
+    condominiumName?: string;
   };
+  // Para flujo de pagos
   pendingCharges?: Array<{
     index: number;
     id: string;
     concept: string;
-    amount: number; // En centavos
+    amount: number;
   }>;
-  selectedChargeIds?: string[]; // IDs de los cargos seleccionados
-  lastInteractionTimestamp?: admin.firestore.Timestamp; // Para seguimiento
-  // Añadimos un campo para el userId una vez encontrado
+  selectedChargeIds?: string[];
+  // Para flujo de documentos
+  availableDocuments?: DocumentsConfig;
+  documentKeys?: string[];
+  lastInteractionTimestamp?: admin.firestore.Timestamp;
   userId?: string;
 }
 
@@ -63,6 +81,10 @@ const AUDIT_COLLECTION_BASE = 'clients'; // Base para la ruta de auditoría
 export class WhatsappChatBotService implements OnModuleInit {
   private readonly logger = new Logger(WhatsappChatBotService.name);
   private firestore: admin.firestore.Firestore;
+
+  constructor(
+    private readonly publicDocumentsService: PublicDocumentsService,
+  ) {}
 
   onModuleInit() {
     // Asegura que tenemos la instancia de Firestore disponible
@@ -303,7 +325,7 @@ export class WhatsappChatBotService implements OnModuleInit {
         const mimeType = messageObj.image.mime_type || 'image/jpeg'; // Default a jpeg si no viene
 
         if (
-          context.state === ConversationState.AWAITING_FILE &&
+          context.state === ConversationState.PAYMENT_AWAITING_FILE &&
           context.selectedCondominium
         ) {
           const { clientId, condominiumId } = context.selectedCondominium;
@@ -355,7 +377,7 @@ export class WhatsappChatBotService implements OnModuleInit {
         const mimeType = messageObj.document.mime_type || 'application/pdf'; // Default a pdf
 
         if (
-          context.state === ConversationState.AWAITING_FILE &&
+          context.state === ConversationState.PAYMENT_AWAITING_FILE &&
           context.selectedCondominium
         ) {
           const { clientId, condominiumId } = context.selectedCondominium;
@@ -455,26 +477,17 @@ export class WhatsappChatBotService implements OnModuleInit {
         `Usuario ${phoneNumber} solicitó reiniciar conversación.`,
       );
       // Reiniciar contexto
-      context.state = ConversationState.INITIAL;
-      context.email = undefined;
-      context.departmentNumber = undefined;
-      context.possibleCondominiums = undefined;
-      context.selectedCondominium = undefined;
-      context.pendingCharges = undefined;
-      context.selectedChargeIds = undefined;
-      context.userId = undefined; // Limpiar userId también
-      // No es necesario llamar a saveConversationContext aquí, se llamará al final de processWebhook
+      this.resetContext(context);
     }
 
     switch (context.state) {
       case ConversationState.INITIAL:
         if (this.isGreeting(text)) {
-          context.state = ConversationState.AWAITING_EMAIL;
+          context.state = ConversationState.MENU_SELECTION;
           await this.sendAndLogMessage(
             {
               phoneNumber,
-              message:
-                '👋 ¡Hola! Qué gusto saludarte. Estoy aquí para ayudarte a registrar tu comprobante de pago. Para empezar, ¿podrías por favor indicarme tu correo electrónico registrado en la plataforma?',
+              message: this.getMenuMessage(),
             },
             context,
           );
@@ -483,251 +496,35 @@ export class WhatsappChatBotService implements OnModuleInit {
             {
               phoneNumber,
               message:
-                '🤖 Mmm, no estoy seguro de cómo ayudarte con eso. Si quieres registrar un comprobante de pago, simplemente escribe "Hola" o "Iniciar". ¡Estoy listo para ayudarte! 😊',
+                '🤖 ¡Hola! Para comenzar, simplemente escribe "Hola" y te mostraré las opciones disponibles. ¡Estoy aquí para ayudarte! 😊',
             },
             context,
           );
         }
         break;
 
-      case ConversationState.AWAITING_EMAIL:
-        // Validación básica de email
-        if (!this.isValidEmail(text)) {
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                '📧 Parece que el correo electrónico no tiene un formato válido. ¿Podrías verificarlo e ingresarlo de nuevo, por favor? Asegúrate de que incluya un "@" y un dominio (ej. ".com").',
-            },
-            context,
-          );
-          // No cambiamos de estado, esperamos de nuevo el email
-          return; // Salir del switch para esta iteración
-        }
-        context.email = this.cleanInputKeepArroba(text); // Guardar email limpio
-        context.state = ConversationState.AWAITING_DEPARTMENT;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message:
-              '👍 ¡Correo recibido! Ahora, por favor, indícame tu número de departamento o casa (tal como está registrado en la plataforma).',
-          },
-          context,
-        );
+      case ConversationState.MENU_SELECTION:
+        await this.handleMenuSelection(context, text);
         break;
 
-      case ConversationState.AWAITING_DEPARTMENT:
-        // Podríamos añadir validación si los números de depto tienen un formato específico
-        context.departmentNumber = text; // Guardar número de depto (ya limpio por cleanInput)
-
-        try {
-          const possibleCondos = await this.findUserCondominiums(
-            context.phoneNumber, // Usar el número original con prefijo
-            context.email,
-            context.departmentNumber,
-          );
-
-          if (!possibleCondos || possibleCondos.length === 0) {
-            // IMPORTANTE: No reiniciar el estado aquí directamente. Permitir al usuario corregir.
-            // context.state = ConversationState.INITIAL; // <- No hacer esto aquí
-            await this.sendAndLogMessage(
-              {
-                phoneNumber,
-                message:
-                  '⚠️ No logré encontrar condominios asociados con la información que proporcionaste (correo y número de departamento/casa). Por favor, verifica que los datos sean correctos e inténtalo de nuevo. Si prefieres, escribe "Hola" para empezar desde cero.',
-              },
-              context,
-            );
-            // Mantener el estado AWAITING_DEPARTMENT para que pueda reintentar
-            // O podríamos volver a AWAITING_EMAIL si queremos que corrija ambos. Decidimos mantener AWAITING_DEPARTMENT.
-            context.state = ConversationState.AWAITING_EMAIL; // Volver a pedir email, quizás se equivocó ahí.
-            await this.sendAndLogMessage(
-              {
-                phoneNumber,
-                message:
-                  'Vamos a intentarlo de nuevo. ¿Podrías darme tu correo electrónico registrado, por favor?',
-              },
-              context,
-            );
-            return; // Salir para esperar nueva entrada
-          }
-
-          // Guardar userId si lo encontramos (asumimos que es el mismo para todos los condominios si hay varios)
-          context.userId = possibleCondos[0].userId; // Guardamos el userId encontrado
-
-          if (possibleCondos.length === 1) {
-            context.selectedCondominium = possibleCondos[0];
-            context.state = ConversationState.AWAITING_CHARGE_SELECTION;
-            await this.sendAndLogMessage(
-              {
-                phoneNumber,
-                message: `✅ ¡Encontrado! Estás registrado en el condominio: ${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}. Ahora buscaré tus cargos pendientes...`,
-              },
-              context,
-            );
-            await this.showPendingCharges(context); // Muestra cargos
-          } else {
-            context.possibleCondominiums = possibleCondos;
-            context.state = ConversationState.AWAITING_CONDOMINIUM_SELECTION;
-
-            let msg =
-              '🔎 ¡Perfecto! Veo que estás registrado en más de un condominio. Por favor, selecciona a cuál corresponde el pago que quieres registrar:\n\n';
-            possibleCondos.forEach((condo, index) => {
-              // Usar nombre si está disponible, si no, el ID
-              const name = condo.condominiumName
-                ? `"${condo.condominiumName}"`
-                : `(ID: ${condo.condominiumId})`;
-              msg += `${index + 1}. Condominio ${name}\n`;
-            });
-            msg +=
-              '\nSimplemente escribe el número de la opción que deseas. 🙏';
-
-            await this.sendAndLogMessage(
-              { phoneNumber, message: msg },
-              context,
-            );
-          }
-        } catch (error) {
-          this.logger.error(
-            `Error buscando condominios para ${phoneNumber}: ${error.message}`,
-            error.stack,
-          );
-          context.state = ConversationState.ERROR;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                '😥 Hubo un problema buscando tu información en nuestros registros. Por favor, intenta de nuevo más tarde escribiendo "Hola".',
-            },
-            context,
-          );
-        }
+      // Estados del flujo de pagos (mantener lógica original)
+      case ConversationState.PAYMENT_AWAITING_EMAIL:
+        await this.handlePaymentEmailInput(context, text);
         break;
 
-      case ConversationState.AWAITING_CONDOMINIUM_SELECTION: {
-        const index = parseInt(text, 10);
-        if (
-          isNaN(index) ||
-          !context.possibleCondominiums ||
-          index < 1 ||
-          index > context.possibleCondominiums.length
-        ) {
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                '🚫 Opción inválida. Por favor, escribe solo el número correspondiente a uno de los condominios de la lista (por ejemplo: 1).',
-            },
-            context,
-          );
-          // Mantenemos el estado para que reintente
-          return;
-        }
-        // Guardamos el condominio seleccionado (asegurándonos de que userId ya esté en el contexto)
-        const selected = context.possibleCondominiums[index - 1];
-        context.selectedCondominium = {
-          clientId: selected.clientId,
-          condominiumId: selected.condominiumId,
-          condominiumName: selected.condominiumName, // Guardar nombre también
-        };
-        context.state = ConversationState.AWAITING_CHARGE_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `✔️ Seleccionado: ${selected.condominiumName || selected.condominiumId}. Ahora, déjame buscar tus cargos pendientes en este condominio...`,
-          },
-          context,
-        );
-        await this.showPendingCharges(context);
+      case ConversationState.PAYMENT_AWAITING_DEPARTMENT:
+        await this.handlePaymentDepartmentInput(context, text);
         break;
-      }
 
-      case ConversationState.AWAITING_CHARGE_SELECTION: {
-        if (!context.pendingCharges || context.pendingCharges.length === 0) {
-          // Esto no debería pasar si showPendingCharges funcionó, pero es una salvaguarda
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                'Parece que no tenías cargos pendientes o ya los seleccionaste. Si quieres adjuntar tu comprobante, envíalo ahora. Si no, escribe "Hola" para empezar de nuevo.',
-            },
-            context,
-          );
-          // Podríamos ir a AWAITING_FILE si es el flujo esperado, o reiniciar.
-          // Por seguridad, reiniciamos si llega aquí inesperadamente.
-          context.state = ConversationState.INITIAL;
-          return;
-        }
-
-        const selectedIndexes = text
-          .split(',')
-          .map((s) => parseInt(s.trim(), 10));
-        const validIndexes = selectedIndexes.filter((idx) => !isNaN(idx));
-
-        if (validIndexes.length === 0 || selectedIndexes.some(isNaN)) {
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                '🤔 Formato incorrecto. Por favor, ingresa solo los números de los cargos que quieres pagar, separados por comas si son varios (ej: "1" o "1, 3"). Inténtalo de nuevo.',
-            },
-            context,
-          );
-          return; // Mantener estado y esperar de nuevo
-        }
-
-        const selectedIds: string[] = [];
-        const invalidSelections: number[] = [];
-        validIndexes.forEach((idxNum) => {
-          const foundCharge = context.pendingCharges?.find(
-            (c) => c.index === idxNum,
-          );
-          if (foundCharge) {
-            selectedIds.push(foundCharge.id);
-          } else {
-            invalidSelections.push(idxNum);
-          }
-        });
-
-        if (invalidSelections.length > 0) {
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: `⚠️ Los números ${invalidSelections.join(', ')} no corresponden a ningún cargo de la lista. Por favor, revisa los números e inténtalo de nuevo.`,
-            },
-            context,
-          );
-          return; // Mantener estado y esperar
-        }
-
-        if (selectedIds.length === 0) {
-          // Esto podría pasar si solo ingresan números inválidos
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                '❌ No seleccionaste ningún cargo válido de la lista. Por favor, elige al menos un número de la lista de cargos pendientes.',
-            },
-            context,
-          );
-          return; // Mantener estado y esperar
-        }
-
-        context.selectedChargeIds = selectedIds;
-        context.state = ConversationState.AWAITING_FILE;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message:
-              '📝 ¡Excelente! Ya seleccionaste los cargos. Ahora, por favor, adjunta tu comprobante de pago. Puede ser una imagen (foto o captura de pantalla en formato JPG/PNG) o un archivo PDF. ¡Solo tienes que enviarlo directamente aquí!',
-          },
-          context,
-        );
+      case ConversationState.PAYMENT_AWAITING_CONDOMINIUM_SELECTION:
+        await this.handlePaymentCondominiumSelection(context, text);
         break;
-      }
 
-      case ConversationState.AWAITING_FILE:
-        // Si el usuario envía texto en lugar de un archivo
+      case ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION:
+        await this.handlePaymentChargeSelection(context, text);
+        break;
+
+      case ConversationState.PAYMENT_AWAITING_FILE:
         await this.sendAndLogMessage(
           {
             phoneNumber,
@@ -736,7 +533,23 @@ export class WhatsappChatBotService implements OnModuleInit {
           },
           context,
         );
-        // No cambiamos de estado, seguimos esperando el archivo
+        break;
+
+      // Estados del flujo de documentos (nuevo)
+      case ConversationState.DOCUMENTS_AWAITING_EMAIL:
+        await this.handleDocumentsEmailInput(context, text);
+        break;
+
+      case ConversationState.DOCUMENTS_AWAITING_DEPARTMENT:
+        await this.handleDocumentsDepartmentInput(context, text);
+        break;
+
+      case ConversationState.DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION:
+        await this.handleDocumentsCondominiumSelection(context, text);
+        break;
+
+      case ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION:
+        await this.handleDocumentSelection(context, text);
         break;
 
       case ConversationState.COMPLETED:
@@ -744,7 +557,7 @@ export class WhatsappChatBotService implements OnModuleInit {
           {
             phoneNumber,
             message:
-              '🎉 ¡Ya completaste el registro de tu comprobante anteriormente! Si necesitas registrar otro pago o realizar una consulta diferente, simplemente escribe "Hola" para comenzar de nuevo. ¡Estoy para servirte!',
+              '🎉 ¡Ya completaste tu consulta anterior! Si necesitas algo más, simplemente escribe "Hola" para ver el menú de opciones. ¡Estoy aquí para ayudarte!',
           },
           context,
         );
@@ -759,30 +572,688 @@ export class WhatsappChatBotService implements OnModuleInit {
           },
           context,
         );
-        // Forzar reinicio del estado para el siguiente intento
-        context.state = ConversationState.INITIAL;
-        context.email = undefined;
-        context.departmentNumber = undefined;
-        // ... limpiar otros campos ...
-        context.userId = undefined;
+        this.resetContext(context);
         break;
 
       default:
         this.logger.warn(
           `Estado desconocido ${context.state} para ${phoneNumber}`,
         );
-        context.state = ConversationState.INITIAL; // Reiniciar si el estado es inválido
+        this.resetContext(context);
         await this.sendAndLogMessage(
           {
             phoneNumber,
             message:
-              '🤔 Algo inesperado ocurrió. Vamos a empezar de nuevo. Escribe "Hola" para iniciar.',
+              '🤔 Algo inesperado ocurrió. Vamos a empezar de nuevo. Escribe "Hola" para ver el menú.',
           },
           context,
         );
         break;
     }
-    // El guardado final se hace en processWebhook después de llamar a handleConversation
+  }
+
+  // --- Nuevas funciones para el manejo del menú ---
+
+  private getMenuMessage(): string {
+    return `👋 ¡Hola! Bienvenido al asistente virtual de tu condominio. 
+
+¿En qué puedo ayudarte hoy?
+
+1️⃣ *Registrar comprobante de pago*
+   📸 Sube tu comprobante de pago para registro
+
+2️⃣ *Consultar documentos*
+   📄 Accede al reglamento, manual de convivencia y políticas
+
+Por favor, responde con el *número* de la opción que deseas (1 o 2). ✨`;
+  }
+
+  private async handleMenuSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const option = parseInt(text.trim(), 10);
+    const { phoneNumber } = context;
+
+    switch (option) {
+      case 1:
+        // Flujo de registro de comprobante
+        context.state = ConversationState.PAYMENT_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '💳 *Registro de Comprobante de Pago*\n\n¡Perfecto! Vamos a registrar tu comprobante. Para empezar, ¿podrías proporcionarme tu correo electrónico registrado en la plataforma?',
+          },
+          context,
+        );
+        break;
+
+      case 2:
+        // Flujo de consulta de documentos
+        context.state = ConversationState.DOCUMENTS_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '📚 *Consulta de Documentos*\n\n¡Excelente! Te ayudo a acceder a los documentos de tu condominio. Primero, necesito tu correo electrónico registrado en la plataforma.',
+          },
+          context,
+        );
+        break;
+
+      default:
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '🤔 Opción no válida. Por favor, responde con:\n\n*1* para registrar comprobante\n*2* para consultar documentos\n\nO escribe "Hola" para ver el menú completo.',
+          },
+          context,
+        );
+        break;
+    }
+  }
+
+  private resetContext(context: ConversationContext) {
+    context.state = ConversationState.INITIAL;
+    context.email = undefined;
+    context.departmentNumber = undefined;
+    context.possibleCondominiums = undefined;
+    context.selectedCondominium = undefined;
+    context.pendingCharges = undefined;
+    context.selectedChargeIds = undefined;
+    context.availableDocuments = undefined;
+    context.documentKeys = undefined;
+    context.userId = undefined;
+  }
+
+  // --- Funciones para el flujo de pagos (adaptadas del código original) ---
+
+  private async handlePaymentEmailInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (!this.isValidEmail(text)) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '📧 Parece que el correo electrónico no tiene un formato válido. ¿Podrías verificarlo e ingresarlo de nuevo, por favor? Asegúrate de que incluya un "@" y un dominio (ej. ".com").',
+        },
+        context,
+      );
+      return;
+    }
+
+    context.email = this.cleanInputKeepArroba(text);
+    context.state = ConversationState.PAYMENT_AWAITING_DEPARTMENT;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          '👍 ¡Correo recibido! Ahora, por favor, indícame tu número de departamento o casa (tal como está registrado en la plataforma).',
+      },
+      context,
+    );
+  }
+
+  private async handlePaymentDepartmentInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    context.departmentNumber = text;
+
+    try {
+      const possibleCondos = await this.findUserCondominiums(
+        context.phoneNumber,
+        context.email,
+        context.departmentNumber,
+      );
+
+      if (!possibleCondos || possibleCondos.length === 0) {
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '⚠️ No logré encontrar condominios asociados con la información que proporcionaste. Por favor, verifica que los datos sean correctos.',
+          },
+          context,
+        );
+        context.state = ConversationState.PAYMENT_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              'Vamos a intentarlo de nuevo. ¿Podrías darme tu correo electrónico registrado, por favor?',
+          },
+          context,
+        );
+        return;
+      }
+
+      context.userId = possibleCondos[0].userId;
+
+      if (possibleCondos.length === 1) {
+        context.selectedCondominium = possibleCondos[0];
+        context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `✅ ¡Encontrado! Estás registrado en el condominio: ${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}. Ahora buscaré tus cargos pendientes...`,
+          },
+          context,
+        );
+        await this.showPendingCharges(context);
+      } else {
+        context.possibleCondominiums = possibleCondos;
+        context.state =
+          ConversationState.PAYMENT_AWAITING_CONDOMINIUM_SELECTION;
+        await this.showCondominiumOptions(context, possibleCondos);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error buscando condominios para pagos en ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema buscando tu información. Por favor, intenta de nuevo más tarde escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  private async handlePaymentCondominiumSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const index = parseInt(text, 10);
+
+    if (
+      isNaN(index) ||
+      !context.possibleCondominiums ||
+      index < 1 ||
+      index > context.possibleCondominiums.length
+    ) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🚫 Opción inválida. Por favor, escribe solo el número correspondiente a uno de los condominios de la lista.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const selected = context.possibleCondominiums[index - 1];
+    context.selectedCondominium = selected;
+    context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
+
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `✔️ Seleccionado: ${selected.condominiumName || selected.condominiumId}. Ahora buscaré tus cargos pendientes...`,
+      },
+      context,
+    );
+    await this.showPendingCharges(context);
+  }
+
+  private async handlePaymentChargeSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (!context.pendingCharges || context.pendingCharges.length === 0) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            'Parece que no tienes cargos pendientes. Si quieres adjuntar tu comprobante, envíalo ahora. Si no, escribe "Hola" para empezar de nuevo.',
+        },
+        context,
+      );
+      context.state = ConversationState.INITIAL;
+      return;
+    }
+
+    const selectedIndexes = text.split(',').map((s) => parseInt(s.trim(), 10));
+    const validIndexes = selectedIndexes.filter((idx) => !isNaN(idx));
+
+    if (validIndexes.length === 0 || selectedIndexes.some(isNaN)) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 Formato incorrecto. Por favor, ingresa solo los números de los cargos que quieres pagar, separados por comas si son varios (ej: "1" o "1, 3").',
+        },
+        context,
+      );
+      return;
+    }
+
+    const selectedIds: string[] = [];
+    const invalidSelections: number[] = [];
+
+    validIndexes.forEach((idxNum) => {
+      const foundCharge = context.pendingCharges?.find(
+        (c) => c.index === idxNum,
+      );
+      if (foundCharge) {
+        selectedIds.push(foundCharge.id);
+      } else {
+        invalidSelections.push(idxNum);
+      }
+    });
+
+    if (invalidSelections.length > 0) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `⚠️ Los números ${invalidSelections.join(', ')} no corresponden a ningún cargo de la lista. Por favor, revisa los números.`,
+        },
+        context,
+      );
+      return;
+    }
+
+    if (selectedIds.length === 0) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '❌ No seleccionaste ningún cargo válido. Por favor, elige al menos un número de la lista.',
+        },
+        context,
+      );
+      return;
+    }
+
+    context.selectedChargeIds = selectedIds;
+    context.state = ConversationState.PAYMENT_AWAITING_FILE;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          '📝 ¡Excelente! Ya seleccionaste los cargos. Ahora, por favor, adjunta tu comprobante de pago. Puede ser una imagen (JPG/PNG) o un archivo PDF. ¡Solo envíalo directamente aquí!',
+      },
+      context,
+    );
+  }
+
+  // --- Funciones para el flujo de documentos (nuevo) ---
+
+  private async handleDocumentsEmailInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (!this.isValidEmail(text)) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '📧 El formato del correo no parece correcto. ¿Podrías verificarlo e ingresarlo nuevamente? Debe incluir "@" y un dominio válido.',
+        },
+        context,
+      );
+      return;
+    }
+
+    context.email = this.cleanInputKeepArroba(text);
+    context.state = ConversationState.DOCUMENTS_AWAITING_DEPARTMENT;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          '👍 ¡Perfecto! Ahora necesito tu número de departamento o casa (como está registrado en la plataforma).',
+      },
+      context,
+    );
+  }
+
+  private async handleDocumentsDepartmentInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    context.departmentNumber = text;
+
+    try {
+      const possibleCondos = await this.findUserCondominiums(
+        context.phoneNumber,
+        context.email,
+        context.departmentNumber,
+      );
+
+      if (!possibleCondos || possibleCondos.length === 0) {
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '⚠️ No encontré información con los datos proporcionados. Verifiquemos tu correo electrónico.',
+          },
+          context,
+        );
+        context.state = ConversationState.DOCUMENTS_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              'Por favor, proporciona nuevamente tu correo electrónico registrado.',
+          },
+          context,
+        );
+        return;
+      }
+
+      context.userId = possibleCondos[0].userId;
+
+      if (possibleCondos.length === 1) {
+        context.selectedCondominium = possibleCondos[0];
+        context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `✅ ¡Perfecto! Te encuentro registrado en: ${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}. Buscando documentos disponibles...`,
+          },
+          context,
+        );
+        await this.showAvailableDocuments(context);
+      } else {
+        context.possibleCondominiums = possibleCondos;
+        context.state =
+          ConversationState.DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION;
+        await this.showCondominiumOptions(context, possibleCondos);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error buscando condominios para documentos en ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Ocurrió un problema al buscar tu información. Intenta nuevamente escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  private async handleDocumentsCondominiumSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const index = parseInt(text, 10);
+
+    if (
+      isNaN(index) ||
+      !context.possibleCondominiums ||
+      index < 1 ||
+      index > context.possibleCondominiums.length
+    ) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🚫 Opción no válida. Escribe el número correspondiente al condominio de la lista.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const selected = context.possibleCondominiums[index - 1];
+    context.selectedCondominium = selected;
+    context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
+
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `✔️ Seleccionado: ${selected.condominiumName || selected.condominiumId}. Consultando documentos disponibles...`,
+      },
+      context,
+    );
+    await this.showAvailableDocuments(context);
+  }
+
+  private async showAvailableDocuments(context: ConversationContext) {
+    const { phoneNumber, selectedCondominium } = context;
+
+    if (!selectedCondominium) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    try {
+      const { clientId, condominiumId } = selectedCondominium;
+      const documents = await this.publicDocumentsService.getPublicDocuments(
+        clientId,
+        condominiumId,
+      );
+
+      if (!documents) {
+        context.state = ConversationState.COMPLETED;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '📄 Lo siento, no hay documentos públicos disponibles para tu condominio en este momento. Si necesitas algo más, escribe "Hola".',
+          },
+          context,
+        );
+        return;
+      }
+
+      context.availableDocuments = documents;
+      const { text, documentKeys } =
+        this.publicDocumentsService.formatDocumentsList(documents);
+      context.documentKeys = documentKeys;
+
+      if (documentKeys.length === 0) {
+        context.state = ConversationState.COMPLETED;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: text,
+          },
+          context,
+        );
+        return;
+      }
+
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: text,
+        },
+        context,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Error obteniendo documentos para ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema obteniendo los documentos. Intenta nuevamente escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  private async handleDocumentSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const selection = parseInt(text.trim(), 10);
+
+    if (!context.documentKeys || !context.availableDocuments) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    if (
+      isNaN(selection) ||
+      selection < 1 ||
+      selection > context.documentKeys.length
+    ) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🤔 Opción no válida. Por favor, responde con un número del 1 al ${context.documentKeys.length}.`,
+        },
+        context,
+      );
+      return;
+    }
+
+    const selectedKey = context.documentKeys[selection - 1];
+    const document = this.publicDocumentsService.getDocumentByKey(
+      context.availableDocuments,
+      selectedKey,
+    );
+
+    if (!document) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '❌ No pude encontrar el documento seleccionado. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    try {
+      // Validar que la URL del documento sea accesible
+      const isUrlValid = await this.publicDocumentsService.validateDocumentUrl(
+        document.fileUrl,
+      );
+
+      if (!isUrlValid) {
+        this.logger.warn(`URL del documento no accesible: ${document.fileUrl}`);
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '😥 El documento solicitado no está disponible temporalmente. Por favor, intenta más tarde o contacta al administrador.',
+          },
+          context,
+        );
+        return;
+      }
+
+      // Intentar enviar el documento directamente
+      const result = await this.sendDocumentMessage(
+        phoneNumber,
+        document,
+        context,
+      );
+
+      if (result.success) {
+        context.state = ConversationState.COMPLETED;
+
+        // Mensaje adicional de confirmación
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '🎉 ¡Listo! Si necesitas otro documento o algo más, simplemente escribe "Hola" para ver el menú nuevamente.',
+          },
+          context,
+        );
+      } else {
+        // Si falló tanto el envío directo como la URL acortada
+        context.state = ConversationState.ERROR;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '😥 Ocurrió un error al enviar el documento. Por favor, intenta nuevamente escribiendo "Hola".',
+          },
+          context,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error procesando documento para ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Ocurrió un error al procesar tu solicitud. Escribe "Hola" para intentar de nuevo.',
+        },
+        context,
+      );
+    }
+  }
+
+  // --- Funciones auxiliares ---
+
+  private async showCondominiumOptions(
+    context: ConversationContext,
+    condominiums: Array<{
+      clientId: string;
+      condominiumId: string;
+      condominiumName?: string;
+    }>,
+  ) {
+    const { phoneNumber } = context;
+
+    let msg =
+      '🔎 Tienes registro en múltiples condominios. Selecciona el correcto:\n\n';
+    condominiums.forEach((condo, index) => {
+      const name = condo.condominiumName
+        ? `"${condo.condominiumName}"`
+        : `(ID: ${condo.condominiumId})`;
+      msg += `${index + 1}. Condominio ${name}\n`;
+    });
+    msg += '\nEscribe el número de la opción deseada. 🙏';
+
+    await this.sendAndLogMessage({ phoneNumber, message: msg }, context);
   }
 
   // --- Funciones Auxiliares (Firestore, Media, Limpieza) ---
@@ -832,7 +1303,7 @@ export class WhatsappChatBotService implements OnModuleInit {
         );
         throw new Error('Configuración de almacenamiento incompleta.');
       }
-      const bucket = admin.storage().bucket(bucketName); // admin.storage() también funciona si lo importas
+      const bucket = admin.storage().bucket(bucketName);
 
       const fileExtension = this.getExtensionFromMime(mimeType);
       // Nombre de archivo más descriptivo y único
@@ -844,29 +1315,12 @@ export class WhatsappChatBotService implements OnModuleInit {
       // Subir el buffer a Storage
       await file.save(fileResponse.data, {
         metadata: { contentType: mimeType },
-        // Podrías añadir metadata adicional aquí si es necesario
-        // customMetadata: { uploadedBy: 'whatsapp-bot', mediaId: mediaId }
       });
       this.logger.log(`Archivo subido a Firebase Storage en: ${filePath}`);
 
-      // (Opcional pero recomendado) Hacer el archivo público si necesitas acceso web directo
-      // Si solo lo accederás vía SDKs de Firebase o con URLs firmadas, este paso no es estrictamente necesario
-      // await file.makePublic();
-
-      // Obtener la URL firmada (más segura que pública) o la URL pública
-      // Usaremos la URL pública por simplicidad como en el código original
-      await file.makePublic(); // Asegurarse de que sea público si se usa la URL de abajo
+      // Hacer el archivo público
+      await file.makePublic();
       const publicUrl = `https://storage.googleapis.com/${bucketName}/${filePath}`;
-
-      // Alternativa: URL Firmada (expira, más segura)
-      /*
-      const [signedUrl] = await file.getSignedUrl({
-          action: 'read',
-          expires: '03-09-2491' // Fecha de expiración muy lejana o una más corta
-      });
-      this.logger.log(`URL firmada generada: ${signedUrl.substring(0,50)}...`);
-      return signedUrl;
-      */
 
       this.logger.log(`Archivo subido y hecho público: ${publicUrl}`);
       return publicUrl;
@@ -878,7 +1332,6 @@ export class WhatsappChatBotService implements OnModuleInit {
       if (axios.isAxiosError(err) && err.response) {
         this.logger.error('Axios error details:', err.response.data);
       }
-      // Relanzar el error para que sea manejado por la función que llamó
       throw new Error(`Fallo al procesar archivo de WhatsApp: ${err.message}`);
     }
   }
@@ -891,9 +1344,8 @@ export class WhatsappChatBotService implements OnModuleInit {
     if (type.includes('pdf')) return 'pdf';
     if (type.includes('png')) return 'png';
     if (type.includes('jpeg') || type.includes('jpg')) return 'jpg';
-    if (type.includes('gif')) return 'gif'; // Añadir otros si son comunes
+    if (type.includes('gif')) return 'gif';
     if (type.includes('webp')) return 'webp';
-    // Fallback genérico si no se reconoce
     this.logger.warn(`MimeType no reconocido: ${mimeType}, usando 'bin'`);
     return 'bin';
   }
@@ -913,11 +1365,11 @@ export class WhatsappChatBotService implements OnModuleInit {
     userId: string;
     condominiumName?: string;
   }> | null> {
-    if (!email || !departmentNumber) return null; // Necesitamos email y depto
+    if (!email || !departmentNumber) return null;
 
-    const phoneForDB = this.toTenDigits(originalPhoneWithPrefix); // Convertir a 10 dígitos para la búsqueda
+    const phoneForDB = this.toTenDigits(originalPhoneWithPrefix);
     const cleanedEmail = this.cleanInputKeepArroba(email);
-    const cleanedDept = this.cleanInput(departmentNumber); // Limpiar número de depto también
+    const cleanedDept = this.cleanInput(departmentNumber);
 
     this.logger.log('Buscando condominios para usuario con datos:', {
       phoneForDB,
@@ -928,9 +1380,9 @@ export class WhatsappChatBotService implements OnModuleInit {
     try {
       const snapshot = await this.firestore
         .collectionGroup('users')
-        .where('phone', '==', phoneForDB) // Usar el número de 10 dígitos
-        .where('email', '==', cleanedEmail) // Usar el email limpio
-        .where('number', '==', cleanedDept) // Usar el número de depto limpio
+        .where('phone', '==', phoneForDB)
+        .where('email', '==', cleanedEmail)
+        .where('number', '==', cleanedDept)
         .get();
 
       this.logger.log(
@@ -938,7 +1390,7 @@ export class WhatsappChatBotService implements OnModuleInit {
       );
 
       if (snapshot.empty) {
-        return []; // Devolver array vacío si no se encuentra
+        return [];
       }
 
       const results: Array<{
@@ -947,15 +1399,13 @@ export class WhatsappChatBotService implements OnModuleInit {
         userId: string;
         condominiumName?: string;
       }> = [];
-      // Usamos un Set para evitar duplicados si la estructura permite al mismo usuario en la misma ruta por error
       const uniquePaths = new Set<string>();
 
       for (const doc of snapshot.docs) {
-        if (uniquePaths.has(doc.ref.path)) continue; // Saltar si ya procesamos esta ruta exacta
+        if (uniquePaths.has(doc.ref.path)) continue;
         uniquePaths.add(doc.ref.path);
 
         const pathSegments = doc.ref.path.split('/');
-        // Validar estructura de ruta: clients/{clientId}/condominiums/{condominiumId}/users/{userId}
         if (
           pathSegments.length >= 6 &&
           pathSegments[0] === 'clients' &&
@@ -964,9 +1414,8 @@ export class WhatsappChatBotService implements OnModuleInit {
         ) {
           const clientId = pathSegments[1];
           const condominiumId = pathSegments[3];
-          const userId = doc.id; // El ID del documento del usuario
+          const userId = doc.id;
 
-          // Intentar obtener el nombre del condominio (opcional)
           let condominiumName: string | undefined = undefined;
           try {
             const condoDocRef = this.firestore.doc(
@@ -1000,8 +1449,7 @@ export class WhatsappChatBotService implements OnModuleInit {
         `Error en Firestore al buscar usuarios: ${error.message}`,
         error.stack,
       );
-      // Podríamos relanzar el error o devolver null/vacío para indicar fallo
-      throw error; // Relanzar para que sea capturado por el llamador (handleConversation)
+      throw error;
     }
   }
 
@@ -1011,7 +1459,7 @@ export class WhatsappChatBotService implements OnModuleInit {
   private async showPendingCharges(
     context: ConversationContext,
   ): Promise<void> {
-    const { phoneNumber, selectedCondominium, userId } = context; // Usar userId guardado
+    const { phoneNumber, selectedCondominium, userId } = context;
 
     if (!selectedCondominium || !userId) {
       this.logger.error(
@@ -1025,7 +1473,7 @@ export class WhatsappChatBotService implements OnModuleInit {
         },
         context,
       );
-      context.state = ConversationState.ERROR; // Marcar como error
+      context.state = ConversationState.ERROR;
       return;
     }
 
@@ -1035,9 +1483,6 @@ export class WhatsappChatBotService implements OnModuleInit {
 
     try {
       const chargesRef = this.firestore.collection(chargesPath);
-      // Buscar cargos donde 'paid' es false o no existe (por si acaso)
-      // Nota: Firestore no soporta consulta OR directamente (paid == false OR paid != true).
-      // La forma más común es consultar por 'paid == false'. Asegúrate de que los cargos pagados tengan 'paid: true'.
       const chargesSnap = await chargesRef.where('paid', '==', false).get();
 
       this.logger.log(
@@ -1046,7 +1491,7 @@ export class WhatsappChatBotService implements OnModuleInit {
 
       if (chargesSnap.empty) {
         context.pendingCharges = [];
-        context.state = ConversationState.AWAITING_FILE; // Si no hay cargos, igual puede subir un comprobante (ej. pago anticipado?) - O REINICIAR? Preguntar lógica de negocio. Vamos a ir a AWAITING_FILE por ahora.
+        context.state = ConversationState.PAYMENT_AWAITING_FILE;
         await this.sendAndLogMessage(
           {
             phoneNumber,
@@ -1067,13 +1512,12 @@ export class WhatsappChatBotService implements OnModuleInit {
       let idx = 1;
       chargesSnap.forEach((doc) => {
         const data = doc.data();
-        // Validar que el cargo tenga concepto y monto
         if (data.concept && typeof data.amount === 'number') {
           charges.push({
             index: idx,
             id: doc.id,
             concept: data.concept,
-            amount: data.amount, // Asumimos que está en centavos
+            amount: data.amount,
           });
           idx++;
         } else {
@@ -1084,9 +1528,8 @@ export class WhatsappChatBotService implements OnModuleInit {
       });
 
       if (charges.length === 0) {
-        // Si todos los documentos filtrados tenían datos incompletos
         context.pendingCharges = [];
-        context.state = ConversationState.AWAITING_FILE;
+        context.state = ConversationState.PAYMENT_AWAITING_FILE;
         await this.sendAndLogMessage(
           {
             phoneNumber,
@@ -1098,7 +1541,7 @@ export class WhatsappChatBotService implements OnModuleInit {
         return;
       }
 
-      context.pendingCharges = charges; // Guardar cargos en el contexto
+      context.pendingCharges = charges;
 
       let replyText =
         'Aquí tienes los cargos pendientes que encontré asociados a tu cuenta 🧾:\n\n';
@@ -1106,13 +1549,12 @@ export class WhatsappChatBotService implements OnModuleInit {
         const pesos = (c.amount / 100).toLocaleString('es-MX', {
           style: 'currency',
           currency: 'MXN',
-        }); // Formato de moneda
+        });
         replyText += `${c.index}. ${c.concept} - ${pesos}\n`;
       });
       replyText +=
         '\nPor favor, respóndeme con el número (o números separados por coma) del cargo(s) que corresponden a tu pago. Ejemplo: "1" o si son varios "1, 2".';
 
-      // El estado ya es AWAITING_CHARGE_SELECTION, solo enviamos el mensaje
       await this.sendAndLogMessage(
         { phoneNumber, message: replyText },
         context,
@@ -1147,7 +1589,7 @@ export class WhatsappChatBotService implements OnModuleInit {
       departmentNumber,
       selectedCondominium,
       selectedChargeIds,
-      userId, // Usar userId del contexto
+      userId,
     } = context;
 
     if (
@@ -1173,20 +1615,19 @@ export class WhatsappChatBotService implements OnModuleInit {
     }
 
     const { clientId, condominiumId } = selectedCondominium;
-    const phoneForDB = this.toTenDigits(phoneNumber); // Guardar 10 dígitos por consistencia
+    const phoneForDB = this.toTenDigits(phoneNumber);
 
     const voucherData = {
-      phoneNumber: phoneForDB, // 10 dígitos
-      originalPhoneNumber: phoneNumber, // Mantener el original con prefijo si es útil
+      phoneNumber: phoneForDB,
+      originalPhoneNumber: phoneNumber,
       email: this.cleanInputKeepArroba(email),
       departmentNumber: this.cleanInput(departmentNumber),
-      userId: userId, // ID del usuario encontrado
+      userId: userId,
       paymentProofUrl: fileUrl,
       selectedChargeIds: selectedChargeIds,
-      status: 'pending_review', // Estado inicial del comprobante
+      status: 'pending_review',
       uploadedBy: 'whatsapp-bot',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      // Podrías añadir el nombre del condominio si lo tienes en el contexto
       condominiumName: selectedCondominium.condominiumName || null,
     };
 
@@ -1206,9 +1647,6 @@ export class WhatsappChatBotService implements OnModuleInit {
       this.logger.log(
         `Comprobante registrado con ID: ${voucherRef.id} para usuario ${userId}`,
       );
-
-      // IMPORTANTE: Aquí NO se marcan los cargos como pagados automáticamente.
-      // Eso debería hacerse en un proceso de revisión/conciliación posterior.
     } catch (error) {
       this.logger.error(
         `Error al guardar comprobante en Firestore para ${userId}: ${error.message}`,
@@ -1222,12 +1660,11 @@ export class WhatsappChatBotService implements OnModuleInit {
         },
         context,
       );
-      context.state = ConversationState.ERROR; // Marcar error y esperar reintento o reinicio
+      context.state = ConversationState.ERROR;
     }
   }
 
   // --- Endpoint Opcional (Confirmación Externa) ---
-  // Esta función parece ser un endpoint separado, lo mantenemos pero aseguramos consistencia
 
   /**
    * Confirma el pago (posiblemente llamado desde otro sistema/endpoint).
@@ -1260,7 +1697,6 @@ export class WhatsappChatBotService implements OnModuleInit {
         );
       }
 
-      // Encontrar al usuario usando la misma lógica que en el chat
       const userCondos = await this.findUserCondominiums(
         phoneNumber,
         email,
@@ -1273,8 +1709,6 @@ export class WhatsappChatBotService implements OnModuleInit {
         );
       }
 
-      // Asumimos que la combinación es única o tomamos el primer resultado
-      // En un caso real, se necesitaría lógica adicional si hay múltiples resultados
       const userMatch = userCondos[0];
       const { clientId, condominiumId, userId } = userMatch;
 
@@ -1292,10 +1726,10 @@ export class WhatsappChatBotService implements OnModuleInit {
         email: this.cleanInputKeepArroba(email),
         departmentNumber: this.cleanInput(departmentNumber),
         userId: userId,
-        paymentProofUrl: paymentProofUrl || null, // URL puede ser opcional si la confirmación es manual
+        paymentProofUrl: paymentProofUrl || null,
         selectedChargeIds: selectedChargeIds,
-        status: 'confirmed_external', // Estado específico para este método
-        uploadedBy: 'external_api', // Indicar origen
+        status: 'confirmed_external',
+        uploadedBy: 'external_api',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         condominiumName: userMatch.condominiumName || null,
       };
@@ -1308,26 +1742,17 @@ export class WhatsappChatBotService implements OnModuleInit {
         `Comprobante (externo) almacenado con ID: ${voucherDocRef.id}`,
       );
 
-      // Aquí TAMPOCO se marcan los cargos como pagados automáticamente.
-
-      // Opcional: Enviar un mensaje de WhatsApp al usuario notificando la confirmación
-      // await this.sendAndLogMessage({
-      //    phoneNumber: phoneNumber,
-      //    message: `✅ Hemos confirmado manualmente el registro de tu pago para los cargos: ${selectedChargeIds.join(', ')}. ¡Gracias!`
-      // });
-
       return {
         success: true,
         message:
           'Comprobante de pago confirmado y almacenado correctamente vía externa.',
-        data: { voucherId: voucherDocRef.id }, // No devolver toda la data por seguridad
+        data: { voucherId: voucherDocRef.id },
       };
     } catch (error) {
       this.logger.error(
         `Error en confirmPayment externo: ${error.message}`,
         error.stack,
       );
-      // No lanzar error necesariamente, devolver una respuesta de fallo
       return {
         success: false,
         message: `Error al confirmar pago externo: ${error.message}`,
@@ -1341,24 +1766,17 @@ export class WhatsappChatBotService implements OnModuleInit {
    * Convierte un número de teléfono mexicano (ej. '52155...' o '5255...') a 10 dígitos (ej. '55...').
    */
   private toTenDigits(num: string): string {
-    let digits = num.replace(/\D/g, ''); // Quitar todo lo no numérico
-    // Caso común México: Si empieza con 521 (móvil) y tiene 12 dígitos -> quitar el 1 después de 52
+    let digits = num.replace(/\D/g, '');
     if (digits.startsWith('521') && digits.length === 12) {
       digits = '52' + digits.substring(3);
     }
-    // Si empieza con 52 y tiene 12 dígitos (a veces pasa con fijos?) -> quitar 52
-    // O si tiene 10 dígitos (ya está bien)
-    // O si tiene más de 10 (tomar últimos 10, asumiendo LADA + número)
     if (digits.startsWith('52') && digits.length === 12) {
-      // Podría ser un número fijo con 52 + 10 dígitos, quitar 52
       return digits.substring(2);
     } else if (digits.length === 10) {
-      return digits; // Ya tiene 10 dígitos
+      return digits;
     } else if (digits.length > 10) {
-      // Tomar los últimos 10 dígitos (heurística común)
       return digits.slice(-10);
     } else {
-      // Si tiene menos de 10, devolver como está (puede ser un error)
       this.logger.warn(
         `Número ${num} resultó en ${digits}, que tiene menos de 10 dígitos.`,
       );
@@ -1372,8 +1790,6 @@ export class WhatsappChatBotService implements OnModuleInit {
   private cleanInput(input: string): string {
     if (!input) return '';
     let text = input.toLowerCase();
-    // NFD: Normalization Form Canonical Decomposition -> separa tildes
-    // \u0300-\u036f: Rango Unicode para combinar marcas diacríticas (tildes, etc.)
     text = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     text = text.trim();
     return text;
@@ -1385,7 +1801,6 @@ export class WhatsappChatBotService implements OnModuleInit {
   private cleanInputKeepArroba(input: string): string {
     if (!input) return '';
     let text = input.toLowerCase().trim();
-    // Normalizar para quitar tildes, pero sin quitar '@' o '.'
     text = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     return text;
   }
@@ -1395,7 +1810,6 @@ export class WhatsappChatBotService implements OnModuleInit {
    */
   private isValidEmail(email: string): boolean {
     if (!email) return false;
-    // Regex simple: algo@algo.algo (no perfecto, pero filtra errores comunes)
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(email);
   }
@@ -1404,7 +1818,6 @@ export class WhatsappChatBotService implements OnModuleInit {
    * Verifica si el texto es un saludo o palabra clave para iniciar/reiniciar.
    */
   private isGreeting(text: string): boolean {
-    // Usamos el texto ya limpiado (minúsculas, sin tildes)
     const greetings = [
       'hola',
       'ola',
@@ -1421,17 +1834,131 @@ export class WhatsappChatBotService implements OnModuleInit {
       'buena noche',
       'hey',
       'buenas',
-      'k onda', // Ejemplo informal
+      'k onda',
       'ayuda',
       'soporte',
-      'info', // Podrían indicar intención de iniciar
+      'info',
       'pago',
       'pagar',
       'comprobante',
-      'recibo', // Relacionado al flujo
+      'recibo',
     ];
-    // Devolver true si el texto *contiene* alguna de las palabras clave
-    // O si es exactamente una de ellas (más estricto) - usaremos `includes` por flexibilidad
     return greetings.some((g) => text.includes(g));
+  }
+
+  /**
+   * Envía un documento directamente a través de WhatsApp API
+   */
+  private async sendDocumentMessage(
+    phoneNumber: string,
+    document: PublicDocument,
+    context?: ConversationContext,
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      this.logger.log(`Enviando documento "${document.name}" a ${phoneNumber}`);
+
+      const apiUrl = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+      const recipientPhoneNumber = normalizeMexNumber(phoneNumber);
+
+      const payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: recipientPhoneNumber,
+        type: 'document',
+        document: {
+          link: document.fileUrl,
+          caption: `📄 *${document.name}*\n\n${document.description}\n\n✅ ¡Aquí tienes el documento solicitado!`,
+          filename: `${document.name}.pdf`, // Usar el name como filename
+        },
+      };
+
+      const response = await axios.post(apiUrl, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        },
+      });
+
+      // Registrar en auditoría
+      await this.logToAudit(
+        context || null,
+        'out',
+        {
+          type: 'document',
+          documentName: document.name,
+          documentId: document.id,
+        },
+        { phoneNumber },
+      );
+
+      this.logger.log(`Documento enviado exitosamente a ${phoneNumber}`);
+      return {
+        success: true,
+        message: 'Documento enviado correctamente.',
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error enviando documento a ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+
+      if (error.response) {
+        this.logger.error('WhatsApp API error data:', error.response.data);
+      }
+
+      // Si falla el envío directo, intentar con URL acortada
+      return await this.sendDocumentWithShortenedUrl(
+        phoneNumber,
+        document,
+        context,
+      );
+    }
+  }
+
+  /**
+   * Fallback: Envía documento usando URL acortada
+   */
+  private async sendDocumentWithShortenedUrl(
+    phoneNumber: string,
+    document: PublicDocument,
+    context?: ConversationContext,
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      this.logger.log(
+        `Enviando documento con URL acortada para ${phoneNumber}`,
+      );
+
+      // Acortar la URL
+      const shortUrl = await this.publicDocumentsService.shortenUrl(
+        document.fileUrl,
+      );
+
+      // Formatear mensaje con URL acortada
+      const messageText = this.publicDocumentsService
+        .formatDocumentMessage(document)
+        .replace('{URL_PLACEHOLDER}', shortUrl);
+
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: messageText,
+        },
+        context,
+      );
+
+      return {
+        success: true,
+        message: 'Documento enviado con URL acortada.',
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error enviando documento con URL acortada: ${error.message}`,
+        error.stack,
+      );
+      return {
+        success: false,
+        message: `Error al enviar documento: ${error.message}`,
+      };
+    }
   }
 }
