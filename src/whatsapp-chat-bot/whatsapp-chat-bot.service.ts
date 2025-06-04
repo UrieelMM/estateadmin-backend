@@ -9,6 +9,10 @@ import {
   DocumentsConfig,
   PublicDocument,
 } from './public-documents.service';
+import {
+  AccountStatementService,
+  ProcessedAccountData,
+} from './account-statement.service';
 
 // Asegúrate de inicializar Firebase Admin en tu módulo principal (e.g., app.module.ts)
 // import * as admin from 'firebase-admin';
@@ -35,6 +39,13 @@ enum ConversationState {
   DOCUMENTS_MULTIPLE_CONDOMINIUMS = 'DOCUMENTS_MULTIPLE_CONDOMINIUMS',
   DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION = 'DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION',
   DOCUMENTS_AWAITING_DOCUMENT_SELECTION = 'DOCUMENTS_AWAITING_DOCUMENT_SELECTION',
+
+  // Estados para estado de cuenta (nuevo flujo)
+  ACCOUNT_AWAITING_EMAIL = 'ACCOUNT_AWAITING_EMAIL',
+  ACCOUNT_AWAITING_DEPARTMENT = 'ACCOUNT_AWAITING_DEPARTMENT',
+  ACCOUNT_MULTIPLE_CONDOMINIUMS = 'ACCOUNT_MULTIPLE_CONDOMINIUMS',
+  ACCOUNT_AWAITING_CONDOMINIUM_SELECTION = 'ACCOUNT_AWAITING_CONDOMINIUM_SELECTION',
+  ACCOUNT_GENERATING = 'ACCOUNT_GENERATING',
 
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR',
@@ -84,6 +95,7 @@ export class WhatsappChatBotService implements OnModuleInit {
 
   constructor(
     private readonly publicDocumentsService: PublicDocumentsService,
+    private readonly accountStatementService: AccountStatementService,
   ) {}
 
   onModuleInit() {
@@ -552,6 +564,27 @@ export class WhatsappChatBotService implements OnModuleInit {
         await this.handleDocumentSelection(context, text);
         break;
 
+      // Estados para estado de cuenta (nuevo flujo)
+      case ConversationState.ACCOUNT_AWAITING_EMAIL:
+        await this.handleAccountEmailInput(context, text);
+        break;
+
+      case ConversationState.ACCOUNT_AWAITING_DEPARTMENT:
+        await this.handleAccountDepartmentInput(context, text);
+        break;
+
+      case ConversationState.ACCOUNT_MULTIPLE_CONDOMINIUMS:
+        await this.handleAccountMultipleCondominiums(context, text);
+        break;
+
+      case ConversationState.ACCOUNT_AWAITING_CONDOMINIUM_SELECTION:
+        await this.handleAccountCondominiumSelection(context, text);
+        break;
+
+      case ConversationState.ACCOUNT_GENERATING:
+        await this.handleAccountGenerating(context);
+        break;
+
       case ConversationState.COMPLETED:
         await this.sendAndLogMessage(
           {
@@ -600,12 +633,15 @@ export class WhatsappChatBotService implements OnModuleInit {
 ¿En qué puedo ayudarte hoy?
 
 1️⃣ *Registrar comprobante de pago*
-   📸 Sube tu comprobante de pago para registro
+     Sube tu comprobante de pago para registro
 
 2️⃣ *Consultar documentos*
-   📄 Accede al reglamento, manual de convivencia y políticas
+     Accede al reglamento, manual de convivencia y políticas
 
-Por favor, responde con el *número* de la opción que deseas (1 o 2). ✨`;
+3️⃣ *Estado de cuenta*
+     Consulta tu estado de cuenta
+
+Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
   }
 
   private async handleMenuSelection(
@@ -642,12 +678,25 @@ Por favor, responde con el *número* de la opción que deseas (1 o 2). ✨`;
         );
         break;
 
+      case 3:
+        // Flujo de consulta de estado de cuenta
+        context.state = ConversationState.ACCOUNT_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '💵 *Consulta de Estado de Cuenta*\n\n¡Perfecto! Te ayudo a consultar tu estado de cuenta. Primero, necesito tu correo electrónico registrado en la plataforma.',
+          },
+          context,
+        );
+        break;
+
       default:
         await this.sendAndLogMessage(
           {
             phoneNumber,
             message:
-              '🤔 Opción no válida. Por favor, responde con:\n\n*1* para registrar comprobante\n*2* para consultar documentos\n\nO escribe "Hola" para ver el menú completo.',
+              '🤔 Opción no válida. Por favor, responde con:\n\n*1* para registrar comprobante\n*2* para consultar documentos\n*3* para consultar estado de cuenta\n\nO escribe "Hola" para ver el menú completo.',
           },
           context,
         );
@@ -1228,6 +1277,395 @@ Por favor, responde con el *número* de la opción que deseas (1 o 2). ✨`;
         },
         context,
       );
+    }
+  }
+
+  // --- Funciones para el flujo de estado de cuenta (nuevo) ---
+
+  private async handleAccountEmailInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (!this.isValidEmail(text)) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '📧 El formato del correo no parece correcto. ¿Podrías verificarlo e ingresarlo nuevamente? Debe incluir "@" y un dominio válido.',
+        },
+        context,
+      );
+      return;
+    }
+
+    context.email = this.cleanInputKeepArroba(text);
+    context.state = ConversationState.ACCOUNT_AWAITING_DEPARTMENT;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          '👍 ¡Perfecto! Ahora necesito tu número de departamento o casa (como está registrado en la plataforma).',
+      },
+      context,
+    );
+  }
+
+  private async handleAccountDepartmentInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    context.departmentNumber = text;
+
+    try {
+      const possibleCondos = await this.findUserCondominiums(
+        context.phoneNumber,
+        context.email,
+        context.departmentNumber,
+      );
+
+      if (!possibleCondos || possibleCondos.length === 0) {
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '⚠️ No encontré información con los datos proporcionados. Verifiquemos tu correo electrónico.',
+          },
+          context,
+        );
+        context.state = ConversationState.ACCOUNT_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              'Por favor, proporciona nuevamente tu correo electrónico registrado.',
+          },
+          context,
+        );
+        return;
+      }
+
+      context.userId = possibleCondos[0].userId;
+
+      if (possibleCondos.length === 1) {
+        context.selectedCondominium = possibleCondos[0];
+        context.state = ConversationState.ACCOUNT_GENERATING;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `✅ ¡Perfecto! Te encuentro registrado en: ${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}. Generando tu estado de cuenta... 📄`,
+          },
+          context,
+        );
+        await this.handleAccountGenerating(context);
+      } else {
+        context.possibleCondominiums = possibleCondos;
+        context.state =
+          ConversationState.ACCOUNT_AWAITING_CONDOMINIUM_SELECTION;
+        await this.showCondominiumOptions(context, possibleCondos);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error buscando condominios para estado de cuenta en ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Ocurrió un problema al buscar tu información. Intenta nuevamente escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  private async handleAccountMultipleCondominiums(
+    context: ConversationContext,
+    text: string,
+  ) {
+    // Esta función puede ser similar a handleAccountCondominiumSelection
+    await this.handleAccountCondominiumSelection(context, text);
+  }
+
+  private async handleAccountCondominiumSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const index = parseInt(text, 10);
+
+    if (
+      isNaN(index) ||
+      !context.possibleCondominiums ||
+      index < 1 ||
+      index > context.possibleCondominiums.length
+    ) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🚫 Opción no válida. Escribe el número correspondiente al condominio de la lista.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const selected = context.possibleCondominiums[index - 1];
+    context.selectedCondominium = selected;
+    context.state = ConversationState.ACCOUNT_GENERATING;
+
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `✔️ Seleccionado: ${selected.condominiumName || selected.condominiumId}. Generando tu estado de cuenta... 📄`,
+      },
+      context,
+    );
+    await this.handleAccountGenerating(context);
+  }
+
+  private async handleAccountGenerating(context: ConversationContext) {
+    const {
+      phoneNumber,
+      selectedCondominium,
+      userId,
+      email,
+      departmentNumber,
+    } = context;
+
+    if (!selectedCondominium || !userId || !email || !departmentNumber) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    try {
+      const { clientId, condominiumId } = selectedCondominium;
+
+      // Obtener datos de la cuenta
+      const accountData = await this.accountStatementService.getAccountData(
+        clientId,
+        condominiumId,
+        userId,
+      );
+
+      if (
+        accountData.charges.length === 0 &&
+        accountData.payments.length === 0
+      ) {
+        context.state = ConversationState.COMPLETED;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '📄 No se encontraron cargos ni pagos registrados en tu cuenta en este momento. Si necesitas algo más, escribe "Hola".',
+          },
+          context,
+        );
+        return;
+      }
+
+      // Obtener información del usuario desde el primer cargo o pago
+      const userName =
+        accountData.charges.length > 0
+          ? accountData.charges[0].name
+          : 'Usuario';
+
+      // Obtener información adicional del usuario desde Firestore (incluyendo lastName)
+      let userFullName = userName;
+      try {
+        const userDocRef = this.firestore.doc(
+          `clients/${clientId}/condominiums/${condominiumId}/users/${userId}`,
+        );
+        const userDoc = await userDocRef.get();
+
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          const firstName = userData.name || userName;
+          const lastName = userData.lastName || '';
+          userFullName = lastName ? `${firstName} ${lastName}` : firstName;
+        }
+      } catch (userError) {
+        this.logger.warn(
+          `No se pudo obtener lastName del usuario ${userId}: ${userError.message}`,
+        );
+        // Mantener solo el nombre original si hay error
+      }
+
+      const userInfo = {
+        name: userFullName,
+        email: email,
+        departmentNumber: departmentNumber,
+        condominiumName: selectedCondominium.condominiumName,
+      };
+
+      // Generar PDF
+      const pdfBuffer =
+        await this.accountStatementService.generateAccountStatementPDF(
+          accountData,
+          userInfo,
+        );
+
+      // Enviar PDF como documento
+      const result = await this.sendAccountStatementPDF(
+        phoneNumber,
+        pdfBuffer,
+        context,
+      );
+
+      if (result.success) {
+        context.state = ConversationState.COMPLETED;
+
+        // Mensaje adicional de confirmación
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '🎉 ¡Listo! Tu estado de cuenta ha sido generado y enviado. Si necesitas algo más, simplemente escribe "Hola" para ver el menú.',
+          },
+          context,
+        );
+      } else {
+        context.state = ConversationState.ERROR;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '😥 Ocurrió un error al enviar tu estado de cuenta. Por favor, intenta nuevamente escribiendo "Hola".',
+          },
+          context,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error generando estado de cuenta para ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Ocurrió un error al generar tu estado de cuenta. Escribe "Hola" para intentar de nuevo.',
+        },
+        context,
+      );
+    }
+  }
+
+  /**
+   * Envía el PDF del estado de cuenta a través de WhatsApp
+   */
+  private async sendAccountStatementPDF(
+    phoneNumber: string,
+    pdfBuffer: Buffer,
+    context?: ConversationContext,
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      this.logger.log(`Enviando estado de cuenta PDF a ${phoneNumber}`);
+
+      // Para WhatsApp necesitamos subir el archivo a Firebase Storage primero
+      const fileName = `estado_cuenta_${Date.now()}.pdf`;
+      const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
+
+      if (!bucketName) {
+        throw new Error('FIREBASE_STORAGE_BUCKET no está configurado');
+      }
+
+      const bucket = admin.storage().bucket(bucketName);
+      const filePath = `temp/account-statements/${fileName}`;
+      const file = bucket.file(filePath);
+
+      // Subir PDF a Storage
+      await file.save(pdfBuffer, {
+        metadata: { contentType: 'application/pdf' },
+      });
+
+      // Hacer público temporalmente
+      await file.makePublic();
+      const publicUrl = `https://storage.googleapis.com/${bucketName}/${filePath}`;
+
+      // Enviar documento via WhatsApp API
+      const apiUrl = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+      const recipientPhoneNumber = normalizeMexNumber(phoneNumber);
+
+      const payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: recipientPhoneNumber,
+        type: 'document',
+        document: {
+          link: publicUrl,
+          caption:
+            '📄 *Estado de Cuenta*\n\nAquí tienes tu estado de cuenta detallado con todos tus cargos y pagos registrados.\n\n⏰ *Importante:* Este documento estará disponible por 30 minutos por motivos de seguridad. Si necesitas generar otro después de este tiempo, simplemente escribe "Hola" nuevamente.\n\n✅ ¡Generado automáticamente por Estate Admin!',
+          filename: 'Estado_de_Cuenta.pdf',
+        },
+      };
+
+      // CRÍTICO: Enviar el documento a través de WhatsApp API
+      const response = await axios.post(apiUrl, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        },
+      });
+
+      // Registrar en auditoría
+      await this.logToAudit(
+        context || null,
+        'out',
+        {
+          type: 'account_statement',
+          fileName: fileName,
+        },
+        { phoneNumber },
+      );
+
+      // Eliminar el archivo temporal después de 30 minutos por motivos de seguridad
+      setTimeout(async () => {
+        try {
+          await file.delete();
+          this.logger.log(
+            `Archivo temporal eliminado por seguridad después de 30 minutos: ${filePath}`,
+          );
+        } catch (deleteError) {
+          this.logger.warn(
+            `No se pudo eliminar archivo temporal: ${deleteError.message}`,
+          );
+        }
+      }, 1800000); // 30 minutos (30 * 60 * 1000 ms)
+
+      this.logger.log(`Estado de cuenta enviado exitosamente a ${phoneNumber}`);
+      return {
+        success: true,
+        message: 'Estado de cuenta enviado correctamente.',
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error enviando estado de cuenta a ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+
+      if (error.response) {
+        this.logger.error('WhatsApp API error data:', error.response.data);
+      }
+
+      return {
+        success: false,
+        message: `Error al enviar estado de cuenta: ${error.message}`,
+      };
     }
   }
 
@@ -1872,7 +2310,8 @@ Por favor, responde con el *número* de la opción que deseas (1 o 2). ✨`;
         },
       };
 
-      const response = await axios.post(apiUrl, payload, {
+      // CRÍTICO: Enviar el documento a través de WhatsApp API
+      await axios.post(apiUrl, payload, {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
