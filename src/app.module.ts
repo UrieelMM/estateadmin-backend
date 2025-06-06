@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { FirebasesdkModule } from './firebasesdk/firebasesdk.module';
@@ -15,6 +16,7 @@ import { CondominiumUsersModule } from './condominium-users/condominium-users.mo
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
         ttl: 60000, // tiempo en segundos

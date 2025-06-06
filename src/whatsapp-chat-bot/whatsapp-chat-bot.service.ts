@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import axios from 'axios';
 import * as admin from 'firebase-admin';
 import { PaymentConfirmationDto } from 'src/dtos/whatsapp/payment-confirmation.dto';
@@ -1602,7 +1603,7 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
   }
 
   /**
-   * Envía el PDF del estado de cuenta a través de WhatsApp
+   * Envía un PDF de estado de cuenta por WhatsApp
    */
   private async sendAccountStatementPDF(
     phoneNumber: string,
@@ -1610,43 +1611,47 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     context?: ConversationContext,
   ): Promise<{ success: boolean; message: string }> {
     try {
-      this.logger.log(`Enviando estado de cuenta PDF a ${phoneNumber}`);
+      this.logger.log(
+        `Enviando estado de cuenta PDF a ${phoneNumber}, tamaño: ${pdfBuffer.length} bytes`,
+      );
 
-      // Para WhatsApp necesitamos subir el archivo a Firebase Storage primero
-      const fileName = `estado_cuenta_${Date.now()}.pdf`;
+      // Subir el PDF a Firebase Storage
       const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
-
       if (!bucketName) {
         throw new Error('FIREBASE_STORAGE_BUCKET no está configurado');
       }
 
       const bucket = admin.storage().bucket(bucketName);
+      const fileName = `estado_cuenta_${Date.now()}.pdf`;
       const filePath = `temp/account-statements/${fileName}`;
       const file = bucket.file(filePath);
 
-      // Subir PDF a Storage
+      // Subir el archivo
       await file.save(pdfBuffer, {
         metadata: { contentType: 'application/pdf' },
       });
 
-      // Hacer público temporalmente
+      // Hacer el archivo público temporalmente
       await file.makePublic();
       const publicUrl = `https://storage.googleapis.com/${bucketName}/${filePath}`;
 
-      // Enviar documento via WhatsApp API
-      const apiUrl = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
-      const recipientPhoneNumber = normalizeMexNumber(phoneNumber);
+      this.logger.log(`PDF subido temporalmente: ${publicUrl}`);
 
+      // NUEVA IMPLEMENTACIÓN: Guardar información para eliminación automática
+      await this.scheduleFileForDeletion(filePath, bucketName);
+
+      // ... resto del código de envío de WhatsApp ...
+
+      const apiUrl = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
       const payload = {
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
-        to: recipientPhoneNumber,
+        to: phoneNumber.replace(/^\+/, ''),
         type: 'document',
         document: {
           link: publicUrl,
-          caption:
-            '📄 *Estado de Cuenta*\n\nAquí tienes tu estado de cuenta detallado con todos tus cargos y pagos registrados.\n\n⏰ *Importante:* Este documento estará disponible por 30 minutos por motivos de seguridad. Si necesitas generar otro después de este tiempo, simplemente escribe "Hola" nuevamente.\n\n✅ ¡Generado automáticamente por Estate Admin!',
-          filename: 'Estado_de_Cuenta.pdf',
+          filename: fileName,
+          caption: 'Tu estado de cuenta está listo 📄',
         },
       };
 
@@ -1669,20 +1674,6 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
         { phoneNumber },
       );
 
-      // Eliminar el archivo temporal después de 30 minutos por motivos de seguridad
-      setTimeout(async () => {
-        try {
-          await file.delete();
-          this.logger.log(
-            `Archivo temporal eliminado por seguridad después de 30 minutos: ${filePath}`,
-          );
-        } catch (deleteError) {
-          this.logger.warn(
-            `No se pudo eliminar archivo temporal: ${deleteError.message}`,
-          );
-        }
-      }, 1800000); // 30 minutos (30 * 60 * 1000 ms)
-
       this.logger.log(`Estado de cuenta enviado exitosamente a ${phoneNumber}`);
       return {
         success: true,
@@ -1702,6 +1693,161 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
         success: false,
         message: `Error al enviar estado de cuenta: ${error.message}`,
       };
+    }
+  }
+
+  /**
+   * Programa un archivo para eliminación automática
+   * NUEVO: Tiempo reducido a 10 minutos para optimizar recursos del servidor
+   */
+  private async scheduleFileForDeletion(
+    filePath: string,
+    bucketName: string,
+  ): Promise<void> {
+    try {
+      const deletionTime = new Date();
+      deletionTime.setMinutes(deletionTime.getMinutes() + 10); // Reducido de 30 a 10 minutos
+
+      const scheduleData = {
+        filePath,
+        bucketName,
+        scheduledDeletionTime: admin.firestore.Timestamp.fromDate(deletionTime),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: 'pending',
+      };
+
+      await this.firestore
+        .collection('scheduledFileDeletions')
+        .add(scheduleData);
+
+      this.logger.log(
+        `Archivo programado para eliminación automática en 10 minutos: ${filePath}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Error programando eliminación de archivo: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Job que se ejecuta cada 5 minutos para eliminar archivos temporales vencidos
+   * NUEVO: Método robusto y persistente para limpieza automática
+   */
+  @Cron('0 */5 * * * *') // Cada 5 minutos
+  async cleanupExpiredFiles(): Promise<void> {
+    try {
+      const now = admin.firestore.Timestamp.now();
+
+      // Buscar archivos programados para eliminación que ya vencieron
+      const expiredFilesSnapshot = await this.firestore
+        .collection('scheduledFileDeletions')
+        .where('scheduledDeletionTime', '<=', now)
+        .where('status', '==', 'pending')
+        .limit(20) // Procesar máximo 20 archivos por vez para no sobrecargar
+        .get();
+
+      if (expiredFilesSnapshot.empty) {
+        this.logger.debug('No hay archivos temporales para eliminar');
+        return;
+      }
+
+      this.logger.log(
+        `Procesando ${expiredFilesSnapshot.size} archivos temporales para eliminación`,
+      );
+
+      const batch = this.firestore.batch();
+      let deletedCount = 0;
+      let errorCount = 0;
+
+      for (const doc of expiredFilesSnapshot.docs) {
+        const data = doc.data();
+        const { filePath, bucketName } = data;
+
+        try {
+          // Eliminar el archivo de Firebase Storage
+          const bucket = admin.storage().bucket(bucketName);
+          const file = bucket.file(filePath);
+
+          // Verificar si el archivo existe antes de intentar eliminarlo
+          const [exists] = await file.exists();
+          if (exists) {
+            await file.delete();
+            this.logger.log(`Archivo temporal eliminado: ${filePath}`);
+          } else {
+            this.logger.warn(`Archivo ya no existe: ${filePath}`);
+          }
+
+          // Marcar como completado en batch
+          batch.update(doc.ref, {
+            status: 'completed',
+            deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          deletedCount++;
+        } catch (deleteError) {
+          this.logger.error(
+            `Error eliminando archivo ${filePath}: ${deleteError.message}`,
+          );
+
+          // Marcar como error en batch
+          batch.update(doc.ref, {
+            status: 'error',
+            errorMessage: deleteError.message,
+            lastAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          errorCount++;
+        }
+      }
+
+      // Ejecutar todas las actualizaciones en batch
+      await batch.commit();
+
+      this.logger.log(
+        `Limpieza completada: ${deletedCount} archivos eliminados, ${errorCount} errores`,
+      );
+
+      // Limpiar registros antiguos completados (mayores a 24 horas)
+      await this.cleanupOldDeletionRecords();
+    } catch (error) {
+      this.logger.error(
+        `Error en limpieza automática de archivos: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  /**
+   * Limpia registros antiguos de eliminaciones completadas
+   */
+  private async cleanupOldDeletionRecords(): Promise<void> {
+    try {
+      const oneDayAgo = new Date();
+      oneDayAgo.setHours(oneDayAgo.getHours() - 24);
+      const cutoffTime = admin.firestore.Timestamp.fromDate(oneDayAgo);
+
+      const oldRecordsSnapshot = await this.firestore
+        .collection('scheduledFileDeletions')
+        .where('status', 'in', ['completed', 'error'])
+        .where('deletedAt', '<=', cutoffTime)
+        .limit(50)
+        .get();
+
+      if (!oldRecordsSnapshot.empty) {
+        const batch = this.firestore.batch();
+        oldRecordsSnapshot.docs.forEach((doc) => {
+          batch.delete(doc.ref);
+        });
+        await batch.commit();
+
+        this.logger.log(
+          `Limpiados ${oldRecordsSnapshot.size} registros antiguos de eliminación`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(`Error limpiando registros antiguos: ${error.message}`);
     }
   }
 
