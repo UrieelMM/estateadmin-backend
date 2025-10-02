@@ -10,6 +10,8 @@ import { RegisterClientCase } from 'src/cases/register-clients/register-clients.
 import { RegisterCondominiumCase } from 'src/cases/register-condominium-case/register-condominium.case';
 import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
 import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
+import { CreateMaintenanceUserCase } from 'src/cases/maintenance-users/create-maintenance-user.case';
+import { UpdateMaintenanceUserCase } from 'src/cases/maintenance-users/update-maintenance-user.case';
 import { ToolsService } from '../tools/tools.service';
 import { StripeService } from '../stripe/stripe.service';
 import { WhatsappChatBotService } from '../whatsapp-chat-bot/whatsapp-chat-bot.service';
@@ -27,6 +29,8 @@ import {
   ResetPasswordDto,
   ConfirmResetPasswordDto,
   UpdateParcelDto,
+  CreateMaintenanceUserDto,
+  UpdateMaintenanceUserDto,
 } from 'src/dtos';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 import { editUser } from 'src/cases/users-admon-auth/edit-user.case';
@@ -390,5 +394,19 @@ export class FirebaseAuthService {
       );
       throw error; // Re-throw the error to be handled by the caller
     }
+  }
+
+  async createMaintenanceUser(
+    createMaintenanceUserDto: CreateMaintenanceUserDto,
+    photoFile?: Express.Multer.File,
+  ) {
+    return await CreateMaintenanceUserCase(createMaintenanceUserDto, photoFile);
+  }
+
+  async updateMaintenanceUser(
+    updateMaintenanceUserDto: UpdateMaintenanceUserDto,
+    photoFile?: Express.Multer.File,
+  ) {
+    return await UpdateMaintenanceUserCase(updateMaintenanceUserDto, photoFile);
   }
 }

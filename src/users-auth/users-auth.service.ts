@@ -6,6 +6,8 @@ import {
   EditUserDto,
   ResetPasswordDto,
   ConfirmResetPasswordDto,
+  CreateMaintenanceUserDto,
+  UpdateMaintenanceUserDto,
 } from 'src/dtos';
 import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
@@ -91,6 +93,26 @@ export class UsersAuthService {
     return await this.firebaseAuthService.getClientPlan(
       clientId,
       condominiumId,
+    );
+  }
+
+  async createMaintenanceUser(
+    createMaintenanceUserDto: CreateMaintenanceUserDto,
+    photoFile?: Express.Multer.File,
+  ) {
+    return await this.firebaseAuthService.createMaintenanceUser(
+      createMaintenanceUserDto,
+      photoFile,
+    );
+  }
+
+  async updateMaintenanceUser(
+    updateMaintenanceUserDto: UpdateMaintenanceUserDto,
+    photoFile?: Express.Multer.File,
+  ) {
+    return await this.firebaseAuthService.updateMaintenanceUser(
+      updateMaintenanceUserDto,
+      photoFile,
     );
   }
 }

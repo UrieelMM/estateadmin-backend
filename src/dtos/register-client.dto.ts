@@ -175,4 +175,8 @@ export class RegisterClientDto {
   @IsOptional()
   @IsString()
   language: string = 'es';
+
+  // Indica si el cliente tiene la app de mantenimiento
+  @IsOptional()
+  hasMaintenanceApp: boolean;
 }

@@ -9,6 +9,7 @@ import {
   Put,
   Param,
   Res,
+  BadRequestException,
 } from '@nestjs/common';
 import { UsersAuthService } from './users-auth.service';
 import {
@@ -16,6 +17,8 @@ import {
   RegisterClientDto,
   EditUserDto,
   ResetPasswordDto,
+  CreateMaintenanceUserDto,
+  UpdateMaintenanceUserDto,
 } from 'src/dtos';
 import { ClientPlanDto } from 'src/dtos/client-plan.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -63,6 +66,7 @@ export class UsersAuthController {
         condominiumLimit: registerClientDto.condominiumLimit, // Límite de condominios
         termsAccepted: registerClientDto.termsAccepted, // Aceptación términos
         condominiumInfo: registerClientDto.condominiumInfo,
+        hasMaintenanceApp: registerClientDto.hasMaintenanceApp, // App de mantenimiento
       },
     );
   }
@@ -224,5 +228,84 @@ export class UsersAuthController {
     return await this.usersAuthService.registerCondominium(
       registerCondominiumDto,
     );
+  }
+
+  @Post('create-maintenance-user')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @UseInterceptors(FileInterceptor('photo'))
+  async createMaintenanceUser(
+    @UploadedFile() photo: Express.Multer.File,
+    @Body() body: any,
+  ) {
+    try {
+      // Parse assignedCondominiums if it's a string
+      let assignedCondominiums = body.assignedCondominiums;
+      if (typeof assignedCondominiums === 'string') {
+        try {
+          assignedCondominiums = JSON.parse(assignedCondominiums);
+        } catch (e) {
+          throw new BadRequestException('assignedCondominiums debe ser un array válido');
+        }
+      }
+
+      const createMaintenanceUserDto: CreateMaintenanceUserDto = {
+        email: body.email,
+        password: body.password,
+        clientId: body.clientId,
+        name: body.name,
+        phone: body.phone,
+        company: body.company,
+        responsibleName: body.responsibleName,
+        responsiblePhone: body.responsiblePhone,
+        emergencyNumber: body.emergencyNumber,
+        assignedCondominiums,
+      };
+
+      return await this.usersAuthService.createMaintenanceUser(
+        createMaintenanceUserDto,
+        photo,
+      );
+    } catch (error) {
+      throw new BadRequestException(error.message || 'Error al crear usuario de mantenimiento');
+    }
+  }
+
+  @Put('update-maintenance-user')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @UseInterceptors(FileInterceptor('photo'))
+  async updateMaintenanceUser(
+    @UploadedFile() photo: Express.Multer.File,
+    @Body() body: any,
+  ) {
+    try {
+      // Parse assignedCondominiums if it's a string
+      let assignedCondominiums = body.assignedCondominiums;
+      if (typeof assignedCondominiums === 'string') {
+        try {
+          assignedCondominiums = JSON.parse(assignedCondominiums);
+        } catch (e) {
+          throw new BadRequestException('assignedCondominiums debe ser un array válido');
+        }
+      }
+
+      const updateMaintenanceUserDto: UpdateMaintenanceUserDto = {
+        userId: body.userId,
+        clientId: body.clientId,
+        name: body.name,
+        phone: body.phone,
+        company: body.company,
+        responsibleName: body.responsibleName,
+        responsiblePhone: body.responsiblePhone,
+        emergencyNumber: body.emergencyNumber,
+        assignedCondominiums,
+      };
+
+      return await this.usersAuthService.updateMaintenanceUser(
+        updateMaintenanceUserDto,
+        photo,
+      );
+    } catch (error) {
+      throw new BadRequestException(error.message || 'Error al actualizar usuario de mantenimiento');
+    }
   }
 }

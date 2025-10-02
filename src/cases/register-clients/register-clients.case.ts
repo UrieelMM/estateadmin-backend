@@ -74,6 +74,7 @@ export const RegisterClientCase = async (
     condominiumInfo,
     currency = 'MXN',
     language = 'es-MX',
+    hasMaintenanceApp,
   } = registerClientDto;
 
   // Validar el límite de condominios según el plan
@@ -135,6 +136,7 @@ export const RegisterClientCase = async (
       condominiumsUids: [condominiumUid],
       currency, // Utilizamos la variable extraída de la desestructuración
       language, // Utilizamos la variable extraída de la desestructuración
+      hasMaintenanceApp, // Indica si el cliente tiene la app de mantenimiento
     };
     await clientProfileRef.set(clientData);
 

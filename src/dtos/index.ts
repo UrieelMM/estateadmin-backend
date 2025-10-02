@@ -11,3 +11,4 @@ export * from './reset-password.dto';
 export * from './confirm-reset-password.dto';
 export * from './client-plan.dto';
 export * from './update-parcel.dto';
+export * from './maintenance-user.dto';
