@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { UserCondominiumDto } from 'src/dtos/register-user-condominium.dto';
 import { EmailParams, Sender, Recipient } from 'mailersend';
 import { mailerSend } from 'src/utils/mailerSend';
+import { generatePassword } from 'src/utils/generatePassword';
 
 interface RegistrationResult {
   name: string;
@@ -152,9 +153,27 @@ export class RegisterCondominiumUsersCase {
             continue;
           }
 
-          // Registrar el documento en Firestore sin crear cuenta en Firebase Auth
-          const docRef = admin.firestore().collection(profilePath).doc();
-          const uid = docRef.id;
+          // Generar contraseña aleatoria de 9 caracteres
+          const tempPassword = generatePassword().substring(0, 9);
+
+          // Crear la cuenta en Firebase Auth
+          const userRecord = await admin.auth().createUser({
+            email: userData.email,
+            displayName: userData.name,
+            password: tempPassword,
+          });
+
+          const uid = userRecord.uid;
+
+          // Establecer custom claims para el usuario
+          await admin.auth().setCustomUserClaims(uid, {
+            clientId: clientId,
+            condominiumId: condominiumId,
+            role: 'condominium',
+          });
+
+          // Registrar el documento en Firestore
+          const docRef = admin.firestore().collection(profilePath).doc(uid);
 
           await docRef.set({
             name: userData.name,
@@ -174,7 +193,7 @@ export class RegisterCondominiumUsersCase {
             photoURL: userData.photoURL || '',
             departament: userData.departament || '',
             uid: uid,
-            role: userData.role || 'condominium',
+            role: 'condominium',
             condominiumId: condominiumId || '',
             clientId: clientId || '',
             notifications: {
@@ -199,8 +218,8 @@ export class RegisterCondominiumUsersCase {
             ),
           ];
 
-          // Función para generar la plantilla HTML del correo sin contraseña
-          const htmlTemplate = (data: UserCondominiumDto) => `
+          // Función para generar la plantilla HTML del correo con contraseña
+          const htmlTemplate = (data: UserCondominiumDto, password: string) => `
           <html>
             <head>
               <style>
@@ -254,6 +273,16 @@ export class RegisterCondominiumUsersCase {
                           A partir de ahora comenzarás a ser notificado de las actividades de tu condominio y recibir confirmaciones de pagos y notificaciones de eventos importantes, por correo electrónico y WhatsApp si así lo deseas.
                         </td>
                       </tr>
+                      <tr>
+                        <td style="padding: 20px 10px; text-align: center;">
+                          <div style="background-color: #ffffff; border: 2px solid #6366F1; border-radius: 8px; padding: 20px; margin: 20px 0;">
+                            <h3 style="color: #6366F1; margin: 0 0 10px 0;">Tus datos de acceso:</h3>
+                            <p style="margin: 5px 0; font-size: 16px;"><strong>Email:</strong> ${data.email}</p>
+                            <p style="margin: 5px 0; font-size: 16px;"><strong>Contraseña:</strong> ${password}</p>
+                            <p style="font-size: 14px; color: #666; margin-top: 15px;">Guarda esta información de forma segura</p>
+                          </div>
+                        </td>
+                      </tr>
                     </table>
                   </td>
                 </tr>
@@ -279,7 +308,7 @@ export class RegisterCondominiumUsersCase {
           </html>
         `;
 
-          const emailHtml = htmlTemplate(userData);
+          const emailHtml = htmlTemplate(userData, tempPassword);
 
           const emailParams = new EmailParams()
             .setFrom(sentFrom)
