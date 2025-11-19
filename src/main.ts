@@ -3,6 +3,12 @@ import { AppModule } from './app.module';
 import * as bodyParser from 'body-parser';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger } from '@nestjs/common';
+import * as crypto from 'crypto';
+
+// Polyfill para crypto en el contexto global (necesario para @nestjs/schedule)
+if (typeof global.crypto === 'undefined') {
+  (global as any).crypto = crypto;
+}
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
