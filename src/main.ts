@@ -36,7 +36,7 @@ async function bootstrap() {
     logger.log('Body parsers configured');
 
     // Habilitar CORS
-    logger.log('🌐 Enabling CORS...');
+    logger.log('Enabling CORS...');
     app.enableCors({
       origin: [
         'http://localhost:5174',
