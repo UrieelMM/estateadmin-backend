@@ -14,26 +14,26 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
   try {
-    logger.log('🚀 Starting application...');
-    logger.log(`📦 Node Environment: ${process.env.NODE_ENV || 'development'}`);
-    logger.log(`🔌 Target Port: ${process.env.PORT || 8080}`);
+    logger.log('Starting application...');
+    logger.log(`Code Environment: ${process.env.NODE_ENV || 'development'}`);
+    logger.log(`Target Port: ${process.env.PORT || 8080}`);
 
     // Crear app sin bodyParser por defecto
-    logger.log('📝 Creating NestJS application...');
+    logger.log('Creating NestJS application...');
     const app = await NestFactory.create<NestExpressApplication>(AppModule, {
       bodyParser: false, // Desactivar el parser de cuerpo integrado
     });
-    logger.log('✅ NestJS application created');
+    logger.log('NestJS application created');
 
     // Usar un enfoque más simple para el manejo de webhooks
     // Primero para la ruta específica del webhook
-    logger.log('⚙️ Configuring body parsers...');
+    logger.log('Configuring body parsers...');
     app.use('/stripe/webhook', bodyParser.raw({ type: 'application/json' }));
 
     // Después para todas las demás rutas
     app.use(bodyParser.json({ limit: '10mb' }));
     app.use(bodyParser.urlencoded({ extended: true }));
-    logger.log('✅ Body parsers configured');
+    logger.log('Body parsers configured');
 
     // Habilitar CORS
     logger.log('🌐 Enabling CORS...');
@@ -46,7 +46,7 @@ async function bootstrap() {
       methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
       credentials: true,
     });
-    logger.log('✅ CORS enabled');
+    logger.log('CORS enabled');
 
     // Obtener el puerto de la variable de entorno o usar 8080 como predeterminado para Cloud Run
     const port = process.env.PORT || 8080;
@@ -55,11 +55,11 @@ async function bootstrap() {
     logger.log(`🎧 Starting to listen on port ${port}...`);
     await app.listen(port, '0.0.0.0');
 
-    logger.log(`✅ Aplicación ejecutándose en puerto: ${port}`);
-    logger.log(`🌍 URL completa: ${await app.getUrl()}`);
-    logger.log('🎉 Application started successfully!');
+    logger.log(`Aplicación ejecutándose en puerto: ${port}`);
+    logger.log(`URL completa: ${await app.getUrl()}`);
+    logger.log('Application started successfully!');
   } catch (error) {
-    logger.error('❌ CRITICAL ERROR during bootstrap:', error.message);
+    logger.error('CRITICAL ERROR during bootstrap:', error.message);
     logger.error('Stack trace:', error.stack);
     // Salir con código de error para que Cloud Run lo detecte
     process.exit(1);
@@ -67,6 +67,6 @@ async function bootstrap() {
 }
 
 bootstrap().catch((error) => {
-  console.error('❌ Unhandled error in bootstrap:', error);
+  console.error('Unhandled error in bootstrap:', error);
   process.exit(1);
 });
