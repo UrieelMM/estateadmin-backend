@@ -52,7 +52,7 @@ async function bootstrap() {
     const port = process.env.PORT || 8080;
 
     // Escuchar en todas las interfaces de red (0.0.0.0) es importante para contenedores
-    logger.log(`🎧 Starting to listen on port ${port}...`);
+    logger.log(`Starting to listen on port ${port}...`);
     await app.listen(port, '0.0.0.0');
 
     logger.log(`Aplicación ejecutándose en puerto: ${port}`);
