@@ -7,37 +7,60 @@ import { Logger } from '@nestjs/common';
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
-  // Crear app sin bodyParser por defecto
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-    bodyParser: false, // Desactivar el parser de cuerpo integrado
-  });
+  try {
+    logger.log('🚀 Starting application...');
+    logger.log(`📦 Node Environment: ${process.env.NODE_ENV || 'development'}`);
+    logger.log(`🔌 Target Port: ${process.env.PORT || 8080}`);
 
-  // Usar un enfoque más simple para el manejo de webhooks
-  // Primero para la ruta específica del webhook
-  app.use('/stripe/webhook', bodyParser.raw({ type: 'application/json' }));
+    // Crear app sin bodyParser por defecto
+    logger.log('📝 Creating NestJS application...');
+    const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+      bodyParser: false, // Desactivar el parser de cuerpo integrado
+    });
+    logger.log('✅ NestJS application created');
 
-  // Después para todas las demás rutas
-  app.use(bodyParser.json({ limit: '10mb' }));
-  app.use(bodyParser.urlencoded({ extended: true }));
+    // Usar un enfoque más simple para el manejo de webhooks
+    // Primero para la ruta específica del webhook
+    logger.log('⚙️ Configuring body parsers...');
+    app.use('/stripe/webhook', bodyParser.raw({ type: 'application/json' }));
 
-  // Habilitar CORS
-  app.enableCors({
-    origin: [
-      'http://localhost:5174',
-      'http://localhost:5173',
-      'https://estate-admin.com',
-    ], // Orígenes permitidos
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: true,
-  });
+    // Después para todas las demás rutas
+    app.use(bodyParser.json({ limit: '10mb' }));
+    app.use(bodyParser.urlencoded({ extended: true }));
+    logger.log('✅ Body parsers configured');
 
-  // Obtener el puerto de la variable de entorno o usar 8080 como predeterminado para Cloud Run
-  const port = process.env.PORT || 8080;
+    // Habilitar CORS
+    logger.log('🌐 Enabling CORS...');
+    app.enableCors({
+      origin: [
+        'http://localhost:5174',
+        'http://localhost:5173',
+        'https://estate-admin.com',
+      ], // Orígenes permitidos
+      methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+      credentials: true,
+    });
+    logger.log('✅ CORS enabled');
 
-  // Escuchar en todas las interfaces de red (0.0.0.0) es importante para contenedores
-  await app.listen(port, '0.0.0.0');
+    // Obtener el puerto de la variable de entorno o usar 8080 como predeterminado para Cloud Run
+    const port = process.env.PORT || 8080;
 
-  logger.log(`Aplicación ejecutándose en puerto: ${port}`);
-  logger.log(`URL completa: ${await app.getUrl()}`);
+    // Escuchar en todas las interfaces de red (0.0.0.0) es importante para contenedores
+    logger.log(`🎧 Starting to listen on port ${port}...`);
+    await app.listen(port, '0.0.0.0');
+
+    logger.log(`✅ Aplicación ejecutándose en puerto: ${port}`);
+    logger.log(`🌍 URL completa: ${await app.getUrl()}`);
+    logger.log('🎉 Application started successfully!');
+  } catch (error) {
+    logger.error('❌ CRITICAL ERROR during bootstrap:', error.message);
+    logger.error('Stack trace:', error.stack);
+    // Salir con código de error para que Cloud Run lo detecte
+    process.exit(1);
+  }
 }
-bootstrap();
+
+bootstrap().catch((error) => {
+  console.error('❌ Unhandled error in bootstrap:', error);
+  process.exit(1);
+});
