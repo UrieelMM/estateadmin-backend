@@ -1998,18 +1998,18 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     });
 
     try {
-      // Buscar primero por email (más específico y menos resultados)
       const snapshot = await this.firestore
         .collectionGroup('users')
+        .where('phone', '==', phoneForDB)
         .where('email', '==', cleanedEmail)
+        .where('number', '==', cleanedDept)
         .get();
 
       this.logger.log(
-        `Usuarios encontrados con email ${cleanedEmail}: ${snapshot.size}`,
+        `Usuarios encontrados con la triple condición: ${snapshot.size}`,
       );
 
       if (snapshot.empty) {
-        this.logger.log('No se encontraron usuarios con ese email');
         return [];
       }
 
@@ -2021,68 +2021,44 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
       }> = [];
       const uniquePaths = new Set<string>();
 
-      // Filtrar manualmente comparando phone y number (case-insensitive)
       for (const doc of snapshot.docs) {
         if (uniquePaths.has(doc.ref.path)) continue;
+        uniquePaths.add(doc.ref.path);
 
-        const userData = doc.data();
+        const pathSegments = doc.ref.path.split('/');
+        if (
+          pathSegments.length >= 6 &&
+          pathSegments[0] === 'clients' &&
+          pathSegments[2] === 'condominiums' &&
+          pathSegments[4] === 'users'
+        ) {
+          const clientId = pathSegments[1];
+          const condominiumId = pathSegments[3];
+          const userId = doc.id;
 
-        // Normalizar los datos de la BD para comparar
-        const dbPhone = userData.phone
-          ? this.toTenDigits(String(userData.phone))
-          : '';
-        const dbNumber = userData.number
-          ? this.cleanInput(String(userData.number))
-          : '';
-
-        this.logger.log(`Comparando usuario ${doc.id}:`, {
-          dbPhone,
-          phoneForDB,
-          phoneMatches: dbPhone === phoneForDB,
-          dbNumber,
-          cleanedDept,
-          numberMatches: dbNumber === cleanedDept,
-        });
-
-        // Verificar que coincidan phone y number normalizados
-        if (dbPhone === phoneForDB && dbNumber === cleanedDept) {
-          uniquePaths.add(doc.ref.path);
-
-          const pathSegments = doc.ref.path.split('/');
-          if (
-            pathSegments.length >= 6 &&
-            pathSegments[0] === 'clients' &&
-            pathSegments[2] === 'condominiums' &&
-            pathSegments[4] === 'users'
-          ) {
-            const clientId = pathSegments[1];
-            const condominiumId = pathSegments[3];
-            const userId = doc.id;
-
-            let condominiumName: string | undefined = undefined;
-            try {
-              const condoDocRef = this.firestore.doc(
-                `clients/${clientId}/condominiums/${condominiumId}`,
-              );
-              const condoSnap = await condoDocRef.get();
-              condominiumName = condoSnap.exists
-                ? condoSnap.data()?.name
-                : undefined;
-              this.logger.log(
-                `Nombre del condominio ${condominiumId}: ${condominiumName}`,
-              );
-            } catch (nameError) {
-              this.logger.warn(
-                `No se pudo obtener el nombre para el condominio ${condominiumId}`,
-              );
-            }
-
-            results.push({ clientId, condominiumId, userId, condominiumName });
-          } else {
+          let condominiumName: string | undefined = undefined;
+          try {
+            const condoDocRef = this.firestore.doc(
+              `clients/${clientId}/condominiums/${condominiumId}`,
+            );
+            const condoSnap = await condoDocRef.get();
+            condominiumName = condoSnap.exists
+              ? condoSnap.data()?.name
+              : undefined;
+            this.logger.log(
+              `Nombre del condominio ${condominiumId}: ${condominiumName}`,
+            );
+          } catch (nameError) {
             this.logger.warn(
-              `Ruta de usuario encontrada no coincide con el patrón esperado: ${doc.ref.path}`,
+              `No se pudo obtener el nombre para el condominio ${condominiumId}`,
             );
           }
+
+          results.push({ clientId, condominiumId, userId, condominiumName });
+        } else {
+          this.logger.warn(
+            `Ruta de usuario encontrada no coincide con el patrón esperado: ${doc.ref.path}`,
+          );
         }
       }
 
