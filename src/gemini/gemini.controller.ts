@@ -115,6 +115,16 @@ export class GeminiController {
       this.logger.log(
         `Stream finished. Full response length: ${fullResponseText.length}`,
       );
+
+      if (!res.writableEnded) {
+        const usage = await resultStream.getUsage();
+        res.write(
+          `event: usage\ndata: ${JSON.stringify({
+            type: 'usage',
+            usage,
+          })}\n\n`,
+        );
+      }
     } catch (error) {
       this.logger.error(
         `Error during Gemini stream generation or processing: ${error.message}`,

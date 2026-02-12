@@ -6,14 +6,26 @@ import {
   HarmBlockThreshold,
   GenerateContentRequest,
   Part,
-  GenerateContentStreamResult,
 } from '@google/generative-ai';
+
+export interface GeminiTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimated: boolean;
+  source: 'gemini_usage_metadata' | 'count_tokens' | 'char_estimate';
+}
+
+export interface GeminiStreamResponse {
+  stream: AsyncIterable<any>;
+  getUsage: () => Promise<GeminiTokenUsage>;
+}
 
 @Injectable()
 export class GeminiService implements OnModuleInit {
   private genAI: GoogleGenerativeAI;
   private readonly logger = new Logger(GeminiService.name);
-  private readonly modelName = 'gemini-2.0-flash';
+  private readonly modelName = 'gemini-3-flash-preview';
 
   constructor(private configService: ConfigService) {}
 
@@ -68,7 +80,7 @@ export class GeminiService implements OnModuleInit {
   async generateContentStream(
     prompt: string,
     file?: Express.Multer.File,
-  ): Promise<GenerateContentStreamResult> {
+  ): Promise<GeminiStreamResponse> {
     try {
       const model = this.genAI.getGenerativeModel({ model: this.modelName });
 
@@ -141,8 +153,83 @@ export class GeminiService implements OnModuleInit {
       const resultStream = await model.generateContentStream(request);
       this.logger.log(`Received stream from Gemini.`);
 
-      // Return the stream result directly
-      return resultStream;
+      const estimateTokensFromText = (text: string): number => {
+        if (!text) return 0;
+        return Math.max(1, Math.ceil(text.length / 4));
+      };
+
+      const getUsage = async (): Promise<GeminiTokenUsage> => {
+        let outputText = '';
+
+        try {
+          const finalResponse: any = await resultStream.response;
+          outputText = finalResponse?.text?.() ?? '';
+
+          const usage = finalResponse?.usageMetadata;
+          const promptTokenCount = usage?.promptTokenCount;
+          const candidatesTokenCount = usage?.candidatesTokenCount;
+          const totalTokenCount = usage?.totalTokenCount;
+
+          if (
+            Number.isFinite(promptTokenCount) &&
+            Number.isFinite(candidatesTokenCount)
+          ) {
+            return {
+              inputTokens: promptTokenCount,
+              outputTokens: candidatesTokenCount,
+              totalTokens:
+                Number.isFinite(totalTokenCount)
+                  ? totalTokenCount
+                  : promptTokenCount + candidatesTokenCount,
+              estimated: false,
+              source: 'gemini_usage_metadata',
+            };
+          }
+
+          const inputCount: any = await model.countTokens({
+            contents: request.contents,
+          } as any);
+          const outputCount: any = outputText
+            ? await model.countTokens({
+                contents: [{ role: 'user', parts: [{ text: outputText }] }],
+              } as any)
+            : { totalTokens: 0 };
+
+          if (
+            Number.isFinite(inputCount?.totalTokens) &&
+            Number.isFinite(outputCount?.totalTokens)
+          ) {
+            const inputTokens = inputCount.totalTokens;
+            const outputTokens = outputCount.totalTokens;
+            return {
+              inputTokens,
+              outputTokens,
+              totalTokens: inputTokens + outputTokens,
+              estimated: true,
+              source: 'count_tokens',
+            };
+          }
+        } catch (usageError) {
+          this.logger.warn(
+            `Could not retrieve exact usage metadata. Falling back to estimates: ${usageError.message}`,
+          );
+        }
+
+        const inputTokens = estimateTokensFromText(prompt);
+        const outputTokens = estimateTokensFromText(outputText);
+        return {
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
+          estimated: true,
+          source: 'char_estimate',
+        };
+      };
+
+      return {
+        stream: resultStream.stream,
+        getUsage,
+      };
     } catch (error) {
       this.logger.error(
         `Error calling Gemini API (generateContentStream): ${error.message}`,
