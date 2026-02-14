@@ -1,9 +1,26 @@
-import { IsArray, IsNotEmpty, IsString, IsBoolean, IsOptional } from 'class-validator';
+import {
+  IsArray,
+  IsNotEmpty,
+  IsString,
+  IsBoolean,
+  IsOptional,
+  IsEmail,
+  IsEnum,
+} from 'class-validator';
+
+export enum AdministratorRole {
+  ADMIN = 'admin',
+  ADMIN_ASSISTANT = 'admin-assistant',
+}
 
 export class EditUserDto {
   @IsString()
   @IsNotEmpty()
   clientId: string;
+
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
 
   @IsString()
   @IsNotEmpty()
@@ -17,11 +34,15 @@ export class EditUserDto {
   @IsNotEmpty()
   condominiumUids: string[];
 
-  @IsString()
+  @IsEnum(AdministratorRole)
   @IsNotEmpty()
-  role: string;
+  role: AdministratorRole;
 
   @IsBoolean()
-  @IsOptional()
+  @IsNotEmpty()
   active: boolean;
-} 
+
+  @IsOptional()
+  @IsString()
+  photoURL?: string;
+}
