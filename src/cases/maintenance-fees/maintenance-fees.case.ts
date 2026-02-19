@@ -56,6 +56,7 @@ export const MaintenancePaymentCase = async (
     // NUEVO: Fecha de pago y cuenta seleccionada
     // Ahora se espera un ISO string con la fecha de pago
     paymentDate,
+    paymentReference,
     financialAccountId,
   } = maintenancePaymentDto;
 
@@ -251,6 +252,7 @@ export const MaintenancePaymentCase = async (
         paymentDate: paymentDate
           ? admin.firestore.Timestamp.fromDate(new Date(paymentDate))
           : null,
+        paymentReference: paymentReference || '',
         financialAccountId: financialAccountId || '',
         concept: conceptProcessed,
         // NUEVO: Enviar el startAt correspondiente del arreglo (según el orden de asignaciones)
@@ -309,6 +311,7 @@ export const MaintenancePaymentCase = async (
       paymentDate: paymentDate
         ? admin.firestore.Timestamp.fromDate(new Date(paymentDate))
         : null,
+      paymentReference: paymentReference || '',
       financialAccountId: financialAccountId || '',
       payments: paymentsArray, // Array con los registros individuales
       concept: aggregatedConcepts.join(', ') || 'Desconocido',
@@ -469,6 +472,7 @@ export const MaintenancePaymentCase = async (
       paymentDate: paymentDate
         ? admin.firestore.Timestamp.fromDate(new Date(paymentDate))
         : null,
+      paymentReference: paymentReference || '',
       financialAccountId: financialAccountId || '',
       concept: conceptProcessed,
       // NUEVO: Procesar startAt en pago único

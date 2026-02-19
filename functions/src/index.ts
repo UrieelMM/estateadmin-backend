@@ -1069,6 +1069,12 @@ export { rateLimitedGetQRData } from './qr/qr.controller';
 // Exportar la función desde el nuevo archivo
 export { sendNotificationMorosidad } from './notifications/notifications.controller';
 
+// Motor de notificaciones in-app (Bloque 2)
+export {
+  onNotificationEventCreated,
+  retryStaleNotificationEvents,
+} from './notification-dispatch';
+
 // Exportar las funciones de super admin desde el nuevo archivo
 export {
   verifySuperAdminAccess,

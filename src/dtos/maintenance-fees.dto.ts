@@ -62,6 +62,10 @@ export class MaintenanceFeesDto {
   @IsString()
   paymentDate: string;
 
+  @IsOptional()
+  @IsString()
+  paymentReference?: string;
+
   @IsString()
   financialAccountId: string;
 

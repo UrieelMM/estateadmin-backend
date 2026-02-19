@@ -3,20 +3,33 @@ import {
   NotFoundException,
   UnauthorizedException,
   BadRequestException,
+  ConflictException,
+  GoneException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import axios from 'axios';
 import * as admin from 'firebase-admin';
+import { Request } from 'express';
 import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
 import {
   NewCustomerInfoDto,
   FormExpirationResponseDto,
   FormUrlResponseDto,
   FormUrlDto,
+  AttendanceQrRegisterDto,
 } from 'src/dtos/tools';
 
 @Injectable()
 export class ToolsService {
   private readonly GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
+  private readonly attendanceDuplicateWindowMs = 60 * 1000;
+  private readonly pinFailuresMax = 5;
+  private readonly pinCooldownMs = 10 * 60 * 1000;
+  private readonly pinFailures = new Map<
+    string,
+    { failures: number; cooldownUntil: number }
+  >();
 
   /**
    * Obtiene datos paginados de la colección newCustomerInformationForm
@@ -853,5 +866,446 @@ export class ToolsService {
         `Error al registrar información del cliente: ${error.message}`,
       );
     }
+  }
+
+  async validatePublicAttendanceQr(
+    qrId: string,
+    clientId: string,
+    condominiumId: string,
+  ) {
+    if (!qrId?.trim() || !clientId?.trim() || !condominiumId?.trim()) {
+      throw new BadRequestException({
+        ok: false,
+        code: 'INVALID_PAYLOAD',
+        message: 'qrId, clientId y condominiumId son obligatorios',
+      });
+    }
+
+    const qr = await this.getAttendanceQrOrThrow(
+      qrId.trim(),
+      clientId.trim(),
+      condominiumId.trim(),
+    );
+
+    return {
+      ok: true,
+      data: {
+        qrId,
+        clientId,
+        condominiumId,
+        expiresAt: qr.expiresAtIso,
+        active: qr.data.active === true,
+      },
+    };
+  }
+
+  async registerAttendanceFromPublicQr(
+    qrId: string,
+    payload: AttendanceQrRegisterDto,
+    req: Request,
+  ) {
+    const clientId = payload.clientId?.trim();
+    const condominiumId = payload.condominiumId?.trim();
+    const employeeNumber = payload.employeeNumber?.trim();
+    const pin = payload.pin?.trim();
+    const type = payload.type;
+
+    if (!qrId?.trim() || !clientId || !condominiumId || !employeeNumber || !pin) {
+      throw new BadRequestException({
+        ok: false,
+        code: 'INVALID_PAYLOAD',
+        message:
+          'qrId, clientId, condominiumId, employeeNumber y pin son obligatorios',
+      });
+    }
+
+    const qr = await this.getAttendanceQrOrThrow(
+      qrId.trim(),
+      clientId,
+      condominiumId,
+    );
+
+    const sourceIp = this.extractIp(req);
+    const userAgent = String(req.headers['user-agent'] || '');
+    const employeeAttemptKey = this.buildEmployeeAttemptKey(
+      clientId,
+      condominiumId,
+      employeeNumber,
+    );
+    const ipAttemptKey = `${sourceIp}:${employeeAttemptKey}`;
+
+    this.throwIfPinBlocked(employeeAttemptKey);
+    this.throwIfPinBlocked(ipAttemptKey);
+
+    let employee: {
+      employeeId: string;
+      employeeNumber: string;
+      employeeName: string;
+    } | null = null;
+
+    try {
+      employee = await this.validateAttendanceEmployee(
+        qr.data,
+        clientId,
+        condominiumId,
+        employeeNumber,
+        pin,
+      );
+    } catch (error) {
+      if (
+        error instanceof UnauthorizedException ||
+        error instanceof NotFoundException
+      ) {
+        this.registerPinFailure(employeeAttemptKey);
+        this.registerPinFailure(ipAttemptKey);
+        throw new HttpException(
+          {
+            ok: false,
+            code: 'INVALID_EMPLOYEE_CREDENTIALS',
+            message: 'Credenciales de empleado inválidas',
+          },
+          HttpStatus.UNAUTHORIZED,
+        );
+      }
+      throw error;
+    }
+
+    this.clearPinFailures(employeeAttemptKey);
+    this.clearPinFailures(ipAttemptKey);
+
+    const attendanceRef = admin
+      .firestore()
+      .collection('clients')
+      .doc(clientId)
+      .collection('condominiums')
+      .doc(condominiumId)
+      .collection('attendance');
+
+    const recentSnapshot = await attendanceRef
+      .orderBy('timestamp', 'desc')
+      .limit(100)
+      .get();
+
+    const nowMs = Date.now();
+    const records = recentSnapshot.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() } as any))
+      .filter(
+        (record) =>
+          String(record.employeeNumber || '').trim() === employee.employeeNumber,
+      );
+
+    const lastRecord = records[0];
+    if (lastRecord && lastRecord.type === type) {
+      throw new ConflictException({
+        ok: false,
+        code: 'ATTENDANCE_SEQUENCE_CONFLICT',
+        message: `No se puede registrar ${type} consecutivo`,
+      });
+    }
+
+    const lastSameType = records.find((record) => record.type === type);
+    if (lastSameType) {
+      const lastSameTypeMs = this.toMillis(lastSameType.timestamp);
+      if (
+        lastSameTypeMs &&
+        nowMs - lastSameTypeMs <= this.attendanceDuplicateWindowMs
+      ) {
+        throw new ConflictException({
+          ok: false,
+          code: 'ATTENDANCE_DUPLICATED',
+          message: 'Registro duplicado en ventana de seguridad',
+        });
+      }
+    }
+
+    await attendanceRef.add({
+      employeeId: employee.employeeId,
+      employeeNumber: employee.employeeNumber,
+      employeeName: employee.employeeName,
+      type,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      method: 'qr',
+      qrId: qrId.trim(),
+      sourceIp,
+      userAgent,
+    });
+
+    return {
+      ok: true,
+      message:
+        type === 'check-in'
+          ? 'Entrada registrada exitosamente'
+          : 'Salida registrada exitosamente',
+      data: {
+        employeeId: employee.employeeId,
+        employeeName: employee.employeeName,
+        type,
+        timestamp: new Date().toISOString(),
+      },
+    };
+  }
+
+  private async getAttendanceQrOrThrow(
+    qrId: string,
+    clientId: string,
+    condominiumId: string,
+  ) {
+    const condominiumRef = admin
+      .firestore()
+      .collection('clients')
+      .doc(clientId)
+      .collection('condominiums')
+      .doc(condominiumId);
+
+    const publicQrRef = condominiumRef.collection('publicQRs').doc(qrId);
+    const attendanceQrRef = condominiumRef.collection('attendanceQR').doc(qrId);
+
+    const publicQrDoc = await publicQrRef.get();
+    const fallbackQrDoc = publicQrDoc.exists ? null : await attendanceQrRef.get();
+    const qrDoc = publicQrDoc.exists ? publicQrDoc : fallbackQrDoc;
+
+    if (!qrDoc?.exists) {
+      throw new NotFoundException({
+        ok: false,
+        code: 'QR_NOT_FOUND',
+        message: 'Código QR no existe',
+      });
+    }
+
+    const data = qrDoc.data() || {};
+
+    if (data.active !== true) {
+      throw new GoneException({
+        ok: false,
+        code: 'QR_INACTIVE',
+        message: 'Código QR desactivado',
+      });
+    }
+
+    if (data.type && String(data.type).trim() !== 'attendance') {
+      throw new BadRequestException({
+        ok: false,
+        code: 'QR_INVALID_TYPE',
+        message: 'El código QR no corresponde a asistencia',
+      });
+    }
+
+    const expiresAtMs = this.toMillis(data.expiresAt);
+    if (!expiresAtMs) {
+      throw new BadRequestException({
+        ok: false,
+        code: 'QR_INVALID_EXPIRATION',
+        message: 'Código QR sin fecha de expiración válida',
+      });
+    }
+
+    if (expiresAtMs <= Date.now()) {
+      throw new GoneException({
+        ok: false,
+        code: 'QR_EXPIRED',
+        message: 'Código QR expirado',
+      });
+    }
+
+    return {
+      data,
+      expiresAtIso: new Date(expiresAtMs).toISOString(),
+    };
+  }
+
+  private async validateAttendanceEmployee(
+    qrData: any,
+    clientId: string,
+    condominiumId: string,
+    employeeNumber: string,
+    pin: string,
+  ) {
+    const allowed = Array.isArray(qrData?.allowedEmployees)
+      ? qrData.allowedEmployees
+      : [];
+
+    if (allowed.length) {
+      const allowedMatch = allowed.find((item: any) => {
+        if (typeof item === 'string') {
+          return item.trim() === employeeNumber;
+        }
+        const candidateNumber = String(
+          item?.employeeNumber ?? item?.number ?? '',
+        ).trim();
+        return candidateNumber === employeeNumber;
+      });
+
+      if (!allowedMatch) {
+        throw new UnauthorizedException('Empleado no permitido para este QR');
+      }
+
+      if (typeof allowedMatch === 'object' && allowedMatch !== null) {
+        const expectedPin = String(
+          allowedMatch.pin ?? allowedMatch.employeePin ?? '',
+        ).trim();
+        if (expectedPin && expectedPin !== pin) {
+          throw new UnauthorizedException('PIN inválido');
+        }
+
+        if (expectedPin === pin) {
+          const fallbackAllowedName = `${allowedMatch.firstName || ''} ${allowedMatch.lastName || ''}`.trim();
+          return {
+            employeeId: String(
+              allowedMatch.employeeId ?? allowedMatch.id ?? employeeNumber,
+            ),
+            employeeNumber,
+            employeeName: String(
+              allowedMatch.employeeName ||
+                allowedMatch.name ||
+                fallbackAllowedName ||
+                employeeNumber,
+            ),
+          };
+        }
+      }
+    }
+
+    return this.findEmployeeInCollections(
+      clientId,
+      condominiumId,
+      employeeNumber,
+      pin,
+    );
+  }
+
+  private async findEmployeeInCollections(
+    clientId: string,
+    condominiumId: string,
+    employeeNumber: string,
+    pin: string,
+  ) {
+    const employeesRef = admin
+      .firestore()
+      .collection('clients')
+      .doc(clientId)
+      .collection('condominiums')
+      .doc(condominiumId)
+      .collection('employees');
+
+    let employeeDoc = await employeesRef
+      .where('employmentInfo.employeeNumber', '==', employeeNumber)
+      .limit(1)
+      .get();
+
+    if (employeeDoc.empty) {
+      employeeDoc = await employeesRef
+        .where('employeeNumber', '==', employeeNumber)
+        .limit(1)
+        .get();
+    }
+
+    if (employeeDoc.empty) {
+      const maintenanceRef = admin
+        .firestore()
+        .collection('clients')
+        .doc(clientId)
+        .collection('maintenanceAppUsers');
+
+      employeeDoc = await maintenanceRef
+        .where('employeeNumber', '==', employeeNumber)
+        .limit(1)
+        .get();
+    }
+
+    if (employeeDoc.empty) {
+      throw new NotFoundException('Empleado no encontrado');
+    }
+
+    const doc = employeeDoc.docs[0];
+    const data = doc.data() || {};
+    const expectedPin = String(
+      data?.employmentInfo?.pin ?? data?.pin ?? data?.employeePin ?? '',
+    ).trim();
+
+    if (!expectedPin || expectedPin !== pin) {
+      throw new UnauthorizedException('PIN inválido');
+    }
+
+    const employeeName =
+      String(data.employeeName || '').trim() ||
+      String(data.name || '').trim() ||
+      `${String(data.firstName || '').trim()} ${String(data.lastName || '').trim()}`.trim() ||
+      employeeNumber;
+
+    return {
+      employeeId: doc.id,
+      employeeNumber,
+      employeeName,
+    };
+  }
+
+  private toMillis(value: any): number | null {
+    if (!value) return null;
+    if (typeof value?.toMillis === 'function') return value.toMillis();
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === 'string' || typeof value === 'number') {
+      const dateValue = new Date(value).getTime();
+      return Number.isNaN(dateValue) ? null : dateValue;
+    }
+    return null;
+  }
+
+  private extractIp(req: Request): string {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (Array.isArray(forwardedFor) && forwardedFor.length) {
+      return String(forwardedFor[0]).split(',')[0].trim();
+    }
+    if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+      return forwardedFor.split(',')[0].trim();
+    }
+    return (
+      req.ip ||
+      (req.socket?.remoteAddress ? String(req.socket.remoteAddress) : '') ||
+      'unknown'
+    );
+  }
+
+  private buildEmployeeAttemptKey(
+    clientId: string,
+    condominiumId: string,
+    employeeNumber: string,
+  ) {
+    return `${clientId}:${condominiumId}:${employeeNumber}`;
+  }
+
+  private throwIfPinBlocked(key: string) {
+    const current = this.pinFailures.get(key);
+    if (!current) return;
+    if (current.cooldownUntil > Date.now()) {
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((current.cooldownUntil - Date.now()) / 1000),
+      );
+      throw new HttpException(
+        {
+          ok: false,
+          code: 'PIN_COOLDOWN',
+          message: 'Demasiados intentos fallidos. Intenta más tarde',
+          retryAfterSeconds,
+        },
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    if (current.cooldownUntil <= Date.now()) {
+      this.pinFailures.delete(key);
+    }
+  }
+
+  private registerPinFailure(key: string) {
+    const current = this.pinFailures.get(key);
+    const failures = (current?.failures || 0) + 1;
+    const cooldownUntil =
+      failures >= this.pinFailuresMax ? Date.now() + this.pinCooldownMs : 0;
+    this.pinFailures.set(key, { failures, cooldownUntil });
+  }
+
+  private clearPinFailures(key: string) {
+    this.pinFailures.delete(key);
   }
 }

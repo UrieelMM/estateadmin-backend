@@ -4,6 +4,11 @@ import { NewCustomerInfoDto, CondominiumInfoDto } from './new-customer-info.dto'
 import { FormExpirationDto, FormExpirationResponseDto } from './form-expiration.dto';
 import { FormUrlDto, FormUrlResponseDto } from './form-url.dto';
 import { PaginationQueryDto, PaginatedResponseDto } from './pagination.dto';
+import {
+  AttendanceQrValidateQueryDto,
+  AttendanceQrRegisterDto,
+  AttendanceRegisterType,
+} from './attendance-qr.dto';
 
 export class SearchPlacesDto {
   latitude: number;
@@ -40,5 +45,8 @@ export {
   FormUrlDto,
   FormUrlResponseDto,
   PaginationQueryDto,
-  PaginatedResponseDto
+  PaginatedResponseDto,
+  AttendanceQrValidateQueryDto,
+  AttendanceQrRegisterDto,
+  AttendanceRegisterType,
 };

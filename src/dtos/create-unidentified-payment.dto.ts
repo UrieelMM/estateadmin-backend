@@ -54,6 +54,10 @@ export class CreateUnidentifiedPaymentDto {
   @IsNotEmpty()
   paymentDate: string; // ISO string
 
+  @IsOptional()
+  @IsString()
+  paymentReference?: string;
+
   @IsString()
   @IsNotEmpty()
   financialAccountId: string;

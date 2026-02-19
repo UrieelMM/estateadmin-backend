@@ -20,6 +20,7 @@ export const MaintenanceUnidentifiedPaymentCase = async (
     amountPending: amountPendingStr,
     paymentType,
     paymentDate,
+    paymentReference,
     financialAccountId,
     appliedToUser,
     appliedToCondomino, // Nuevo campo
@@ -93,6 +94,7 @@ export const MaintenanceUnidentifiedPaymentCase = async (
     paymentType: paymentType || '',
     paymentGroupId,
     paymentDate: paymentDate ? admin.firestore.Timestamp.fromDate(new Date(paymentDate)) : null,
+    paymentReference: paymentReference || '',
     financialAccountId: financialAccountId || '',
     isUnidentifiedPayment: true,
     appliedToUser: false,

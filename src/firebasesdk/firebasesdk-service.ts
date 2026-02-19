@@ -45,11 +45,13 @@ import {
   FormExpirationResponseDto, 
   FormUrlDto, 
   FormUrlResponseDto,
-  PaginatedResponseDto
+  PaginatedResponseDto,
+  AttendanceQrRegisterDto,
 } from 'src/dtos/tools';
 import { PaymentConfirmationDto } from 'src/dtos/whatsapp/payment-confirmation.dto';
 import { WhatsappMessageDto } from 'src/dtos/whatsapp/whatsapp-message.dto';
 import { UpdateParcelCase } from 'src/cases/parcel/update-parcel.case';
+import { Request } from 'express';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -394,6 +396,30 @@ export class FirebaseAuthService {
       );
       throw error; // Re-throw the error to be handled by the caller
     }
+  }
+
+  async validatePublicAttendanceQr(
+    qrId: string,
+    clientId: string,
+    condominiumId: string,
+  ) {
+    return await this.toolsService.validatePublicAttendanceQr(
+      qrId,
+      clientId,
+      condominiumId,
+    );
+  }
+
+  async registerAttendanceFromPublicQr(
+    qrId: string,
+    payload: AttendanceQrRegisterDto,
+    req: Request,
+  ) {
+    return await this.toolsService.registerAttendanceFromPublicQr(
+      qrId,
+      payload,
+      req,
+    );
   }
 
   async createMaintenanceUser(
