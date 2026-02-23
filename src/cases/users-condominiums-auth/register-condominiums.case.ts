@@ -271,16 +271,9 @@ export class RegisterCondominiumUsersCase {
                       <tr>
                         <td style="padding: 30px 10px; font-size: 15px;" width="200">
                           A partir de ahora comenzarás a ser notificado de las actividades de tu condominio y recibir confirmaciones de pagos y notificaciones de eventos importantes, por correo electrónico y WhatsApp si así lo deseas.
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding: 20px 10px; text-align: center;">
-                          <div style="background-color: #ffffff; border: 2px solid #6366F1; border-radius: 8px; padding: 20px; margin: 20px 0;">
-                            <h3 style="color: #6366F1; margin: 0 0 10px 0;">Tus datos de acceso:</h3>
-                            <p style="margin: 5px 0; font-size: 16px;"><strong>Email:</strong> ${data.email}</p>
-                            <p style="margin: 5px 0; font-size: 16px;"><strong>Contraseña:</strong> ${password}</p>
-                            <p style="font-size: 14px; color: #666; margin-top: 15px;">Guarda esta información de forma segura</p>
-                          </div>
+                          <p style="margin-top: 14px; margin-bottom: 0;">
+                            En caso de que no desees recibir notificaciones por correo o WhatsApp, ponte en contacto con tu administración.
+                          </p>
                         </td>
                       </tr>
                     </table>

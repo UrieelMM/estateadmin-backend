@@ -224,16 +224,16 @@ export const processGroupPaymentEmail = onRequest(
         return res.status(404).send('No se encontró el usuario');
       }
       const userData = userSnapshot.docs[0].data();
-      if (!userData.email || !userData.email.includes('@')) {
-        console.error('Email inválido:', userData.email);
-        return res.status(400).send('Email inválido');
-      }
+      const wantsEmailNotifications = userData?.notifications?.email === true;
+      const wantsWhatsappNotifications =
+        userData?.notifications?.whatsapp === true;
 
       // Enviar notificación por WhatsApp
-      try {
-        // Obtener el número de WhatsApp del usuario
-        const userPhone = userData.phoneNumber || userData.phone;
-        if (userPhone) {
+      if (wantsWhatsappNotifications) {
+        try {
+          // Obtener el número de WhatsApp del usuario
+          const userPhone = userData.phoneNumber || userData.phone;
+          if (userPhone) {
           // Helper para formatear a moneda mexicana (los valores vienen en centavos)
           const formatCurrency = (value: any) => {
             const num = (Number(value) || 0) / 100;
@@ -370,10 +370,38 @@ export const processGroupPaymentEmail = onRequest(
             }),
           });
 
-          console.log(`Mensaje de WhatsApp enviado con SID: ${message.sid}`);
+            console.log(`Mensaje de WhatsApp enviado con SID: ${message.sid}`);
+          } else {
+            console.log(
+              `Notificación WhatsApp omitida por falta de teléfono para usuario ${userData.uid || 'sin-uid'}`,
+            );
+          }
+        } catch (whatsappError) {
+          console.error(
+            'Error al enviar el mensaje de WhatsApp:',
+            whatsappError,
+          );
         }
-      } catch (whatsappError) {
-        console.error('Error al enviar el mensaje de WhatsApp:', whatsappError);
+      } else {
+        console.log(
+          `Notificación WhatsApp desactivada para usuario ${userData.uid || 'sin-uid'}`,
+        );
+      }
+
+      if (!wantsEmailNotifications) {
+        console.log(
+          `Notificación por correo desactivada para usuario ${userData.uid || 'sin-uid'}`,
+        );
+        return res.status(200).send('Notificaciones procesadas');
+      }
+
+      if (!userData.email || !userData.email.includes('@')) {
+        console.log(
+          `Notificación por correo omitida por email inválido para usuario ${userData.uid || 'sin-uid'}`,
+        );
+        return res
+          .status(200)
+          .send('Notificaciones procesadas (correo omitido)');
       }
 
       // Helper para formatear a moneda mexicana (los valores vienen en centavos)
