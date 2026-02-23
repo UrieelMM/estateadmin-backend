@@ -5,7 +5,6 @@ import * as XLSX from 'xlsx';
 import { UserCondominiumDto } from 'src/dtos/register-user-condominium.dto';
 import { EmailParams, Sender, Recipient } from 'mailersend';
 import { mailerSend } from 'src/utils/mailerSend';
-import { generatePassword } from 'src/utils/generatePassword';
 
 interface RegistrationResult {
   name: string;
@@ -76,22 +75,19 @@ export class RegisterCondominiumUsersCase {
 
       // Procesar cada usuario del archivo Excel
       for (const userData of usersData) {
+        const normalizedName = (userData.name || '').trim();
+        const normalizedEmail = (userData.email || '').trim().toLowerCase();
+
         const result: RegistrationResult = {
-          name: userData.name || '',
-          email: userData.email || '',
+          name: normalizedName,
+          email: normalizedEmail,
           status: 'error',
           message: '',
         };
 
         try {
           // Validar datos mínimos requeridos
-          if (!userData.email) {
-            result.message = 'El correo electrónico es obligatorio.';
-            registrationResults.push(result);
-            continue;
-          }
-
-          if (!userData.name) {
+          if (!normalizedName) {
             result.message = 'El nombre es obligatorio.';
             registrationResults.push(result);
             continue;
@@ -140,44 +136,28 @@ export class RegisterCondominiumUsersCase {
 
           // Verificar si el usuario ya existe
           const profilePath = `clients/${clientId}/condominiums/${condominiumId}/users`;
-          const existingUsers = await admin
-            .firestore()
-            .collection(profilePath)
-            .where('email', '==', userData.email)
-            .get();
+          if (normalizedEmail) {
+            const existingUsers = await admin
+              .firestore()
+              .collection(profilePath)
+              .where('email', '==', normalizedEmail)
+              .get();
 
-          if (!existingUsers.empty) {
-            result.message =
-              'El usuario con este correo electrónico ya existe.';
-            registrationResults.push(result);
-            continue;
+            if (!existingUsers.empty) {
+              result.message =
+                'El usuario con este correo electrónico ya existe.';
+              registrationResults.push(result);
+              continue;
+            }
           }
 
-          // Generar contraseña aleatoria de 9 caracteres
-          const tempPassword = generatePassword().substring(0, 9);
-
-          // Crear la cuenta en Firebase Auth
-          const userRecord = await admin.auth().createUser({
-            email: userData.email,
-            displayName: userData.name,
-            password: tempPassword,
-          });
-
-          const uid = userRecord.uid;
-
-          // Establecer custom claims para el usuario
-          await admin.auth().setCustomUserClaims(uid, {
-            clientId: clientId,
-            condominiumId: condominiumId,
-            role: 'condominium',
-          });
-
-          // Registrar el documento en Firestore
+          // Crear solo perfil en Firestore (sin crear cuenta en Firebase Auth)
+          const uid = admin.firestore().collection(profilePath).doc().id;
           const docRef = admin.firestore().collection(profilePath).doc(uid);
 
           await docRef.set({
-            name: userData.name,
-            email: userData.email,
+            name: normalizedName,
+            email: normalizedEmail,
             lastName: userData.lastName || '',
             phone: userData.phone || '',
             RFC: userData.RFC || '',
@@ -202,24 +182,19 @@ export class RegisterCondominiumUsersCase {
             },
           });
 
-          this.logger.log(
-            `Documento creado para usuario: email=${userData.email}, uid=${uid}`,
-          );
+          this.logger.log(`Documento creado para usuario: email=${normalizedEmail || 'N/A'}, uid=${uid}`);
 
           // Preparar y enviar el correo electrónico
           const sentFrom = new Sender(
             'MS_Fpa0aS@notifications.estate-admin.com',
             'EstateAdmin Notifications',
           );
-          const recipients = [
-            new Recipient(
-              userData.email || 'Sin email',
-              userData.name || 'Sin nombre',
-            ),
-          ];
+          const recipients = normalizedEmail
+            ? [new Recipient(normalizedEmail, normalizedName || 'Sin nombre')]
+            : [];
 
-          // Función para generar la plantilla HTML del correo con contraseña
-          const htmlTemplate = (data: UserCondominiumDto, password: string) => `
+          // Función para generar la plantilla HTML del correo
+          const htmlTemplate = (data: UserCondominiumDto) => `
           <html>
             <head>
               <style>
@@ -301,31 +276,39 @@ export class RegisterCondominiumUsersCase {
           </html>
         `;
 
-          const emailHtml = htmlTemplate(userData, tempPassword);
+          if (normalizedEmail) {
+            const emailHtml = htmlTemplate(userData);
 
-          const emailParams = new EmailParams()
-            .setFrom(sentFrom)
-            .setTo(recipients)
-            .setReplyTo(
-              new Sender(
-                'MS_Fpa0aS@notifications.estate-admin.com',
-                'EstateAdmin Notifications',
-              ),
-            )
-            .setSubject('Bienvenido a EstateAdmin')
-            .setHtml(emailHtml);
+            const emailParams = new EmailParams()
+              .setFrom(sentFrom)
+              .setTo(recipients)
+              .setReplyTo(
+                new Sender(
+                  'MS_Fpa0aS@notifications.estate-admin.com',
+                  'EstateAdmin Notifications',
+                ),
+              )
+              .setSubject('Bienvenido a EstateAdmin')
+              .setHtml(emailHtml);
 
-          await mailerSend.email.send(emailParams);
-          this.logger.log(`Correo enviado a ${userData.email}`);
+            await mailerSend.email.send(emailParams);
+            this.logger.log(`Correo enviado a ${normalizedEmail}`);
+          } else {
+            this.logger.log(
+              `Usuario registrado sin correo electrónico, no se envía email: uid=${uid}`,
+            );
+          }
 
           // Actualizar resultado como exitoso
           result.status = 'success';
-          result.message = 'Usuario registrado correctamente.';
+          result.message = normalizedEmail
+            ? 'Usuario registrado correctamente.'
+            : 'Usuario registrado correctamente (sin correo electrónico).';
           registrationResults.push(result);
         } catch (error) {
           console.log(error);
           this.logger.error(
-            `Error al registrar el usuario ${userData.email}: ${error.message}`,
+            `Error al registrar el usuario ${normalizedEmail || normalizedName}: ${error.message}`,
             error.stack,
           );
           result.message = `Error: ${error.message || 'Error desconocido al procesar el usuario.'}`;
