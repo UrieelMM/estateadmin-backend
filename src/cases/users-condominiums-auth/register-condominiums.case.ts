@@ -172,6 +172,7 @@ export class RegisterCondominiumUsersCase {
             taxtRegime: userData.taxtRegime || '',
             photoURL: userData.photoURL || '',
             departament: userData.departament || '',
+            tower: userData.tower || '',
             uid: uid,
             role: 'condominium',
             condominiumId: condominiumId || '',

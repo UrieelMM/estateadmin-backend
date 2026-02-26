@@ -69,6 +69,10 @@ export class UserCondominiumDto {
   @IsString()
   departament?: string;
 
+  @IsOptional()
+  @IsString()
+  tower?: string;
+
   @IsNotEmpty()
   @IsString()
   role: string = 'condominium';
