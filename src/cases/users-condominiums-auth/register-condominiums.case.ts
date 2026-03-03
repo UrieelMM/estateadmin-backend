@@ -13,6 +13,8 @@ interface RegistrationResult {
   message: string;
 }
 
+const ALLOWED_CONDOMINIUM_ROLES = new Set(['propietario', 'inquilino']);
+
 @Injectable()
 export class RegisterCondominiumUsersCase {
   private readonly logger = new Logger(RegisterCondominiumUsersCase.name);
@@ -23,6 +25,10 @@ export class RegisterCondominiumUsersCase {
     condominiumId: string,
   ): Promise<Buffer> {
     try {
+      this.logger.log(
+        `[register-condominiums.case] Inicio clientId=${clientId} condominiumId=${condominiumId} fileSize=${fileBuffer?.length || 0}`,
+      );
+
       if (!clientId) {
         throw new BadRequestException('ClientId es requerido.');
       }
@@ -73,10 +79,14 @@ export class RegisterCondominiumUsersCase {
         );
       }
 
+      let processedUsers = 0;
+
       // Procesar cada usuario del archivo Excel
       for (const userData of usersData) {
         const normalizedName = (userData.name || '').trim();
         const normalizedEmail = (userData.email || '').trim().toLowerCase();
+        const normalizedRole = (userData.role || '').trim().toLowerCase();
+        const resolvedRole = normalizedRole || 'propietario';
 
         const result: RegistrationResult = {
           name: normalizedName,
@@ -92,44 +102,13 @@ export class RegisterCondominiumUsersCase {
             registrationResults.push(result);
             continue;
           }
-          // Verificar si el rol es administrativo (no permitido)
-          const forbiddenRoles = [
-            'admin',
-            'admin-assistant',
-            'super-admin',
-            'superAdmin',
-            'superadmin',
-            'superAdmin',
-            'super-admin',
-            'superAdmin',
-            'super-admin',
-            'superAdmin',
-            'super-admin',
-            'editor',
-            'editor-assistant',
-            'editorAssistant',
-            'editor-assistant',
-            'editorAssistant',
-            'editor-assistant',
-            'editorAssistant',
-            'viewer',
-            'viewer-assistant',
-            'viewerAssistant',
-            'viewer-assistant',
-            'viewerAssistant',
-            'viewer-assistant',
-            'viewerAssistant',
-          ];
-          if (
-            userData.role &&
-            forbiddenRoles.some((role) =>
-              userData.role.toLowerCase().includes(role.toLowerCase()),
-            )
-          ) {
+
+          if (!ALLOWED_CONDOMINIUM_ROLES.has(resolvedRole)) {
             this.logger.warn(
-              `Intento de registro con rol administrativo no permitido: email=${userData.email}, role=${userData.role}`,
+              `Rol inválido para condómino: email=${normalizedEmail || 'N/A'}, role=${userData.role}`,
             );
-            result.message = 'Rol administrativo no permitido.';
+            result.message =
+              'Role inválido. Valores permitidos: propietario, inquilino.';
             registrationResults.push(result);
             continue;
           }
@@ -174,7 +153,7 @@ export class RegisterCondominiumUsersCase {
             departament: userData.departament || '',
             tower: userData.tower || '',
             uid: uid,
-            role: 'condominium',
+            role: resolvedRole,
             condominiumId: condominiumId || '',
             clientId: clientId || '',
             notifications: {
@@ -315,6 +294,13 @@ export class RegisterCondominiumUsersCase {
           result.message = `Error: ${error.message || 'Error desconocido al procesar el usuario.'}`;
           registrationResults.push(result);
         }
+
+        processedUsers += 1;
+        if (processedUsers % 100 === 0 || processedUsers === usersData.length) {
+          this.logger.log(
+            `[register-condominiums.case] Progreso ${processedUsers}/${usersData.length}`,
+          );
+        }
       }
 
       // Si hay usuarios omitidos por el límite, añadirlos al resultado
@@ -340,6 +326,10 @@ export class RegisterCondominiumUsersCase {
         bookType: 'xlsx',
         type: 'buffer',
       });
+
+      this.logger.log(
+        `[register-condominiums.case] Finalizado total=${rawUsersData.length} procesados=${usersData.length} omitted=${omittedUsers} resultSize=${excelBuffer.length}`,
+      );
 
       return excelBuffer;
     } catch (error) {

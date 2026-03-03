@@ -75,5 +75,5 @@ export class UserCondominiumDto {
 
   @IsNotEmpty()
   @IsString()
-  role: string = 'condominium';
+  role: string = 'propietario';
 }

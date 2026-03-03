@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { FirebaseAuthService } from './firebasesdk-service';
 import { RegisterCondominiumUsersCase } from '../cases/users-condominiums-auth/register-condominiums.case';
+import { UpsertCondominiumUsersCase } from '../cases/users-condominiums-auth/upsert-condominiums.case';
 import * as dotenv from 'dotenv';
 import { ToolsModule } from '../tools/tools.module';
 import { StripeModule } from '../stripe/stripe.module';
@@ -28,7 +29,11 @@ dotenv.config();
     GeminiModule,
     CondominiumUsersModule,
   ],
-  providers: [FirebaseAuthService, RegisterCondominiumUsersCase],
+  providers: [
+    FirebaseAuthService,
+    RegisterCondominiumUsersCase,
+    UpsertCondominiumUsersCase,
+  ],
   exports: [FirebaseAuthService],
 })
 export class FirebasesdkModule {

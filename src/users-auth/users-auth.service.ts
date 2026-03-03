@@ -12,6 +12,7 @@ import {
 import { ClientPlanResponseDto } from 'src/dtos/client-plan.dto';
 import { RegisterCondominiumDto } from 'src/dtos/register-condominium.dto';
 import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
+import { UpsertActor, UpsertMode } from 'src/dtos/upsert-condominium-users.dto';
 
 @Injectable()
 export class UsersAuthService {
@@ -66,6 +67,41 @@ export class UsersAuthService {
       clientId,
       condominiumId,
     );
+  }
+
+  async assertCondominiumInClient(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<void> {
+    return this.firebaseAuthService.assertCondominiumInClient(
+      clientId,
+      condominiumId,
+    );
+  }
+
+  async upsertCondominiumUsersDryRun(params: {
+    fileBuffer: Buffer;
+    originalFileName?: string;
+    clientId: string;
+    condominiumId: string;
+    mode?: UpsertMode;
+    optionsJson?: string;
+    actor: UpsertActor;
+    sourceIp?: string;
+  }) {
+    return this.firebaseAuthService.upsertCondominiumUsersDryRun(params);
+  }
+
+  async upsertCondominiumUsersCommit(params: {
+    fileBuffer: Buffer;
+    originalFileName?: string;
+    clientId: string;
+    condominiumId: string;
+    operationId: string;
+    actor: UpsertActor;
+    sourceIp?: string;
+  }) {
+    return this.firebaseAuthService.upsertCondominiumUsersCommit(params);
   }
 
   async registerCondominium(registerCondominiumDto: RegisterCondominiumDto) {

@@ -10,6 +10,7 @@ import { RegisterClientCase } from 'src/cases/register-clients/register-clients.
 import { RegisterCondominiumCase } from 'src/cases/register-condominium-case/register-condominium.case';
 import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
 import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
+import { UpsertCondominiumUsersCase } from 'src/cases/users-condominiums-auth/upsert-condominiums.case';
 import { CreateMaintenanceUserCase } from 'src/cases/maintenance-users/create-maintenance-user.case';
 import { UpdateMaintenanceUserCase } from 'src/cases/maintenance-users/update-maintenance-user.case';
 import { ToolsService } from '../tools/tools.service';
@@ -52,6 +53,7 @@ import { PaymentConfirmationDto } from 'src/dtos/whatsapp/payment-confirmation.d
 import { WhatsappMessageDto } from 'src/dtos/whatsapp/whatsapp-message.dto';
 import { UpdateParcelCase } from 'src/cases/parcel/update-parcel.case';
 import { Request } from 'express';
+import { UpsertActor, UpsertMode } from 'src/dtos/upsert-condominium-users.dto';
 
 @Injectable()
 export class FirebaseAuthService {
@@ -60,6 +62,7 @@ export class FirebaseAuthService {
 
   constructor(
     private registerCondominiumUsersCase: RegisterCondominiumUsersCase,
+    private upsertCondominiumUsersCase: UpsertCondominiumUsersCase,
     private toolsService: ToolsService,
     private stripeService: StripeService,
     private whatsappChatBotService: WhatsappChatBotService,
@@ -98,6 +101,41 @@ export class FirebaseAuthService {
       companyName,
       condominiumName,
     );
+  }
+
+  async assertCondominiumInClient(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<void> {
+    return this.upsertCondominiumUsersCase.assertCondominiumInClient(
+      clientId,
+      condominiumId,
+    );
+  }
+
+  async upsertCondominiumUsersDryRun(params: {
+    fileBuffer: Buffer;
+    originalFileName?: string;
+    clientId: string;
+    condominiumId: string;
+    mode?: UpsertMode;
+    optionsJson?: string;
+    actor: UpsertActor;
+    sourceIp?: string;
+  }) {
+    return this.upsertCondominiumUsersCase.executeDryRun(params);
+  }
+
+  async upsertCondominiumUsersCommit(params: {
+    fileBuffer: Buffer;
+    originalFileName?: string;
+    clientId: string;
+    condominiumId: string;
+    operationId: string;
+    actor: UpsertActor;
+    sourceIp?: string;
+  }) {
+    return this.upsertCondominiumUsersCase.executeCommit(params);
   }
 
   async createPublication(
