@@ -11,6 +11,7 @@ import { Storage } from '@google-cloud/storage';
 const { MailerSend, EmailParams, Recipient, Sender } = require('mailersend');
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 import { onRequest } from 'firebase-functions/v2/https';
+import { persistReceiptPdfForPaymentGroup } from './receipts/receipt.utils';
 // const cors = require('cors'); // No se utiliza con la configuración CORS de V2
 
 const twilio = require('twilio');
@@ -127,7 +128,7 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 
 //TODO: SEND EMAIL FOR RECEIPTS
 // ////////////////////////////////////////// SEND EMAIL FOR RECEIPTS//////////////////////////////////////////
-export { sendReceiptsByEmail } from './receipts/receipts.controller';
+export { sendReceiptsByEmail, getPaymentReceipt } from './receipts/receipts.controller';
 
 //TODO: SEND EMAIL FOR CALENDAR EVENTS
 //////////////////////////////////////// SEND EMAIL FOR CALENDAR EVENTS //////////////////////////////////////////
@@ -175,26 +176,43 @@ exports.makePaymentFilePublic = onObjectFinalized(
 export const processGroupPaymentEmail = onRequest(
   async (req: any, res: any) => {
     try {
-      // Renombramos userUID a userId para evitar el error de TS.
       const {
         clientId,
         condominiumId,
-        userUID: _userId,
+        userUID,
         chargeUID: _chargeUID,
         paymentGroupId,
         email,
       } = req.body;
 
-      // Consultar la colección consolidada
-      const paymentsQuerySnapshot = await admin
+      const paymentsToSendEmailRef = admin
         .firestore()
         .collection('clients')
         .doc(clientId)
         .collection('condominiums')
         .doc(condominiumId)
-        .collection('paymentsToSendEmail')
+        .collection('paymentsToSendEmail');
+
+      // Consultar la colección consolidada por paymentGroupId.
+      // Fallback: buscar por docId cuando paymentGroupId viene como fallback desde el trigger.
+      let paymentsQuerySnapshot = await paymentsToSendEmailRef
         .where('paymentGroupId', '==', paymentGroupId)
         .get();
+
+      if (paymentsQuerySnapshot.empty && paymentGroupId) {
+        const consolidatedByIdDoc = await paymentsToSendEmailRef
+          .doc(paymentGroupId)
+          .get();
+
+        if (consolidatedByIdDoc.exists) {
+          paymentsQuerySnapshot = {
+            ...paymentsQuerySnapshot,
+            empty: false,
+            size: 1,
+            docs: [consolidatedByIdDoc],
+          } as any;
+        }
+      }
 
       if (paymentsQuerySnapshot.empty) {
         console.log('No se encontraron pagos.');
@@ -218,15 +236,61 @@ export const processGroupPaymentEmail = onRequest(
       const usersRef = admin
         .firestore()
         .collection(`clients/${clientId}/condominiums/${condominiumId}/users`);
-      const userSnapshot = await usersRef.where('email', '==', email).get();
-      if (userSnapshot.empty) {
-        console.log('No se encontró un usuario con el email:', email);
+
+      let userData: any = null;
+      let userDocId = '';
+
+      const normalizedUserUID = String(userUID || '').trim();
+      if (normalizedUserUID) {
+        const userDocByUid = await usersRef.doc(normalizedUserUID).get();
+        if (userDocByUid.exists) {
+          userData = userDocByUid.data() || {};
+          userDocId = userDocByUid.id;
+        }
+      }
+
+      if (!userData) {
+        const normalizedEmail = String(email || '').trim().toLowerCase();
+        if (normalizedEmail) {
+          const userSnapshotByEmail = await usersRef
+            .where('email', '==', normalizedEmail)
+            .limit(1)
+            .get();
+          if (!userSnapshotByEmail.empty) {
+            userData = userSnapshotByEmail.docs[0].data() || {};
+            userDocId = userSnapshotByEmail.docs[0].id;
+          }
+        }
+      }
+
+      if (!userData && consolidatedPayment?.userId) {
+        const fallbackUserDoc = await usersRef
+          .doc(String(consolidatedPayment.userId))
+          .get();
+        if (fallbackUserDoc.exists) {
+          userData = fallbackUserDoc.data() || {};
+          userDocId = fallbackUserDoc.id;
+        }
+      }
+
+      if (!userData) {
+        console.log(
+          'No se encontró el usuario por userUID/email/payment record:',
+          userUID,
+          email,
+        );
         return res.status(404).send('No se encontró el usuario');
       }
-      const userData = userSnapshot.docs[0].data();
+
       const wantsEmailNotifications = userData?.notifications?.email === true;
       const wantsWhatsappNotifications =
         userData?.notifications?.whatsapp === true;
+
+      const resolvedPaymentGroupId = String(
+        paymentGroupId ||
+          consolidatedPayment?.paymentGroupId ||
+          consolidatedPaymentDoc.id,
+      );
 
       // Enviar notificación por WhatsApp
       if (wantsWhatsappNotifications) {
@@ -373,7 +437,7 @@ export const processGroupPaymentEmail = onRequest(
             console.log(`Mensaje de WhatsApp enviado con SID: ${message.sid}`);
           } else {
             console.log(
-              `Notificación WhatsApp omitida por falta de teléfono para usuario ${userData.uid || 'sin-uid'}`,
+              `Notificación WhatsApp omitida por falta de teléfono para usuario ${userData.uid || userDocId || 'sin-uid'}`,
             );
           }
         } catch (whatsappError) {
@@ -384,20 +448,20 @@ export const processGroupPaymentEmail = onRequest(
         }
       } else {
         console.log(
-          `Notificación WhatsApp desactivada para usuario ${userData.uid || 'sin-uid'}`,
+          `Notificación WhatsApp desactivada para usuario ${userData.uid || userDocId || 'sin-uid'}`,
         );
       }
 
       if (!wantsEmailNotifications) {
         console.log(
-          `Notificación por correo desactivada para usuario ${userData.uid || 'sin-uid'}`,
+          `Notificación por correo desactivada para usuario ${userData.uid || userDocId || 'sin-uid'}`,
         );
         return res.status(200).send('Notificaciones procesadas');
       }
 
       if (!userData.email || !userData.email.includes('@')) {
         console.log(
-          `Notificación por correo omitida por email inválido para usuario ${userData.uid || 'sin-uid'}`,
+          `Notificación por correo omitida por email inválido para usuario ${userData.uid || userDocId || 'sin-uid'}`,
         );
         return res
           .status(200)
@@ -852,6 +916,25 @@ export const processGroupPaymentEmail = onRequest(
 
       const pdfBytes = await pdfDoc.save();
       const pdfBase64 = Buffer.from(pdfBytes).toString('base64');
+
+      // Persistir receiptUrl para descarga inmediata y masiva.
+      try {
+        const receiptPersistResult = await persistReceiptPdfForPaymentGroup({
+          clientId,
+          condominiumId,
+          paymentGroupId: resolvedPaymentGroupId,
+          pdfBytes,
+          source: 'processGroupPaymentEmail',
+        });
+        console.log(
+          `[processGroupPaymentEmail] Recibo persistido paymentGroupId=${resolvedPaymentGroupId} receiptUrl=${receiptPersistResult.receiptUrl} updatedConsolidated=${receiptPersistResult.updatedConsolidated} updatedPayments=${receiptPersistResult.updatedPayments}`,
+        );
+      } catch (receiptPersistError) {
+        console.error(
+          `[processGroupPaymentEmail] Error al persistir receiptUrl para paymentGroupId=${resolvedPaymentGroupId}:`,
+          receiptPersistError,
+        );
+      }
       // ----- FIN: GENERACIÓN DEL PDF -----
 
       // --- GENERAR HTML DEL CORREO CON DETALLE DE PAGOS ---

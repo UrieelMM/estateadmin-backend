@@ -168,6 +168,7 @@ export const MaintenancePaymentCase = async (
     const folio = `EA-${Math.floor(Math.random() * 1e12)
       .toString()
       .padStart(12, '0')}`;
+    const defaultPaymentGroupIdForMulti = paymentGroupId || uuidv4();
 
     const totalAssigned = assignments.reduce(
       (sum, curr) => sum + curr.amount,
@@ -247,7 +248,7 @@ export const MaintenancePaymentCase = async (
         invoiceRequired,
         creditBalance: leftoverForThisCharge > 0 ? leftoverForThisCharge : 0,
         paymentType: paymentType || '',
-        paymentGroupId: paymentGroupId || '',
+        paymentGroupId: defaultPaymentGroupIdForMulti,
         creditUsed: creditUsed,
         paymentDate: paymentDate
           ? admin.firestore.Timestamp.fromDate(new Date(paymentDate))
@@ -287,6 +288,8 @@ export const MaintenancePaymentCase = async (
 
     // Crear un único registro consolidado para paymentsToSendEmail
     const aggregatedPaymentId = uuidv4();
+    const resolvedPaymentGroupId =
+      paymentGroupId || defaultPaymentGroupIdForMulti;
     const aggregatedPaymentRecord = {
       paymentId: aggregatedPaymentId,
       email,
@@ -307,7 +310,7 @@ export const MaintenancePaymentCase = async (
       creditBalance: aggregatedCreditBalance,
       creditUsed: creditUsed,
       paymentType: paymentType || '',
-      paymentGroupId: paymentGroupId || '',
+      paymentGroupId: resolvedPaymentGroupId,
       paymentDate: paymentDate
         ? admin.firestore.Timestamp.fromDate(new Date(paymentDate))
         : null,
@@ -352,6 +355,8 @@ export const MaintenancePaymentCase = async (
     return {
       overallCreditBalance: newTotalCredit,
       attachmentUrls: attachmentPayment,
+      paymentGroupId: resolvedPaymentGroupId,
+      consolidatedPaymentId: aggregatedPaymentId,
     };
   }
   // 4. PROCESO ÚNICO (sin chargeAssignments)
@@ -444,6 +449,7 @@ export const MaintenancePaymentCase = async (
     const isPaid = newRemaining === 0;
 
     const paymentId = uuidv4();
+    const resolvedPaymentGroupId = paymentGroupId || paymentId;
     // Generar folio para pago único
     const folio = `EA-${Math.floor(Math.random() * 1e12)
       .toString()
@@ -468,7 +474,7 @@ export const MaintenancePaymentCase = async (
       creditBalance: leftover > 0 ? leftover : 0,
       creditUsed,
       paymentType: paymentType || '',
-      paymentGroupId: paymentGroupId || '',
+      paymentGroupId: resolvedPaymentGroupId,
       paymentDate: paymentDate
         ? admin.firestore.Timestamp.fromDate(new Date(paymentDate))
         : null,
@@ -514,6 +520,8 @@ export const MaintenancePaymentCase = async (
       paymentId,
       attachmentUrls: attachmentPayment,
       leftoverApplied: leftover,
+      paymentGroupId: resolvedPaymentGroupId,
+      consolidatedPaymentId: paymentId,
     };
   }
 };
