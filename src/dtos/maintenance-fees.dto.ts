@@ -1,5 +1,16 @@
-import { Type } from 'class-transformer';
-import { IsNotEmpty, IsString, IsOptional, ValidateNested, IsNumber } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsNotEmpty,
+  IsString,
+  IsOptional,
+  ValidateNested,
+  IsNumber,
+  MaxLength,
+} from 'class-validator';
+import {
+  sanitizeTowerSnapshot,
+  TOWER_SNAPSHOT_MAX_LENGTH,
+} from 'src/utils/tower-snapshot';
 
 export class MaintenanceFeesFileDto {
   @IsString()
@@ -65,6 +76,12 @@ export class MaintenanceFeesDto {
   @IsOptional()
   @IsString()
   paymentReference?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => sanitizeTowerSnapshot(value))
+  @IsString()
+  @MaxLength(TOWER_SNAPSHOT_MAX_LENGTH)
+  towerSnapshot?: string;
 
   @IsString()
   financialAccountId: string;

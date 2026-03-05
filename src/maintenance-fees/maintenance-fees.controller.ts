@@ -17,6 +17,17 @@ import { CreateUnidentifiedPaymentDto } from 'src/dtos/create-unidentified-payme
 import { EditUnidentifiedPaymentDto } from 'src/dtos/edit-unidentified-payment.dto';
 import { Throttle } from '@nestjs/throttler';
 
+const parseBooleanInput = (value: unknown): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+  return false;
+};
+
 @Controller('maintenance-fees')
 export class MaintenanceFeesController {
   constructor(
@@ -50,6 +61,7 @@ export class MaintenanceFeesController {
       startAts: req.body.startAts,
       paymentDate: req.body.paymentDate,
       paymentReference: req.body.paymentReference,
+      towerSnapshot: req.body.towerSnapshot,
       paymentType: req.body.paymentType,
       paymentGroupId: req.body.paymentGroupId,
       month: req.body.month,
@@ -91,6 +103,7 @@ export class MaintenanceFeesController {
       financialAccountId: req.body.financialAccountId,
       paymentDate: req.body.paymentDate,
       paymentReference: req.body.paymentReference,
+      towerSnapshot: req.body.towerSnapshot,
       paymentType: req.body.paymentType,
       paymentGroupId: req.body.paymentGroupId,
       month: req.body.month,
@@ -98,7 +111,7 @@ export class MaintenanceFeesController {
       amountPaid: req.body.amountPaid,
       amountPending: req.body.amountPending,
       isUnidentifiedPayment: true,
-      appliedToUser: req.body.appliedToUser ? req.body.appliedToUser : false,
+      appliedToUser: parseBooleanInput(req.body.appliedToUser),
       attachmentPayment: req.body.attachmentPayment,
       paymentId: req.body.paymentId,
       appliedToCondomino: req.body.appliedToCondomino,

@@ -1,0 +1,356 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    /* ───────────── Funciones ───────────── */
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function hasRole(role) {
+      return isAuthenticated() && request.auth.token.role == role;
+    }
+    function isSuperAdmin() {
+      return hasRole('super-provider-admin');
+    }
+    function isAdmin() {
+      return hasRole('admin');
+    }
+    function isAdminAssistant() {
+      return hasRole('admin-assistant');
+    }
+    function isAdminOrAssistant() {
+      return isAdmin() || isAdminAssistant();
+    }
+    function belongsToClient(clientId) {
+      return isAuthenticated() && request.auth.token.clientId == clientId;
+    }
+    function isMaintenanceUser() {
+      return hasRole('maintenance');
+    }
+
+    /* ≤ 15 MB */
+    function isValidFileSize() {
+      return request.resource.size <= 15 * 1024 * 1024;
+    }
+    /* Imágenes, PDF, Word/Office */
+    function isValidContentType() {
+      return request.resource.contentType.matches('image/.*')
+          || request.resource.contentType.matches('application/pdf')
+          || request.resource.contentType.matches('application/msword')
+          || request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.*');
+    }
+    function isValidCsvContentType() {
+      return request.resource.contentType.matches('text/csv')
+          || request.resource.contentType.matches('application/csv')
+          || request.resource.contentType.matches('application/vnd.ms-excel')
+          || request.resource.contentType.matches('application/octet-stream');
+    }
+
+    /* ───────────── Rutas públicas ───────────── */
+    match /estateAdminUploads/assets/{fileName} {
+      allow read: if true;
+    }
+    match /linksNewsAndGuides/{fileName} {
+      allow read: if true;
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    /* ───────────── Nivel Cliente ───────────── */
+    match /clients/{clientId}/{allPaths=**} {
+      allow read:  if belongsToClient(clientId) || isSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
+    match /clients/{clientId}/clientAssets/{fileName} {
+      allow read:  if belongsToClient(clientId) || isSuperAdmin();
+      allow write: if (
+        (isAdmin() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Usuarios de App de Mantenimiento ─── */
+    match /clients/{clientId}/maintenanceUsers/{fileName} {
+      allow read:    if belongsToClient(clientId) || isMaintenanceUser() || isSuperAdmin();
+      allow create, update: if (
+        (isAdmin() && belongsToClient(clientId) && isValidFileSize() && request.resource.contentType.matches('image/.*'))
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Archivos de App de Mantenimiento (evidencias, reportes) ─── */
+    match /maintenanceApp/{clientId}/{condominiumId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isMaintenanceUser() && belongsToClient(clientId) && isValidFileSize() && (request.resource.contentType.matches('image/.*') || request.resource.contentType.matches('video/.*')))
+        || (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && (request.resource.contentType.matches('image/.*') || request.resource.contentType.matches('video/.*')))
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isMaintenanceUser() && belongsToClient(clientId))
+        || (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ───────────── Nivel Condominio ───────────── */
+    match /clients/{clientId}/condominiums/{condominiumId}/{allPaths=**} {
+      allow read:  if belongsToClient(clientId) || isSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
+
+    /* ─── Inventarios ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/inventory_items/{itemId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Gastos ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/expenses/{expenseId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Pagos ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/payments/{paymentId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Conciliaciones (fuente CSV bancaria) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/reconciliations/{reconciliationType}/{sessionId}/{fileName} {
+      allow read: if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidCsvContentType())
+        || isSuperAdmin()
+      );
+      allow delete: if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Pagos no identificados ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/unidentifiedPayments/{paymentId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Mantenimiento (evidencias) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/maintenance/{reportId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Tickets de mantenimiento ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/ticketsMaintenance/{ticketId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Caja chica (petty-cash) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/petty-cash/{pcId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Tickets de soporte (adjuntos de imagen) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/supportTickets/{userId}/{fileName} {
+      allow read: if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant()
+          && belongsToClient(clientId)
+          && request.auth.uid == userId
+          && isValidFileSize()
+          && request.resource.contentType.matches('image/.*'))
+        || isSuperAdmin()
+      );
+      allow delete: if (
+        ((isAdminOrAssistant() && belongsToClient(clientId)) || request.auth.uid == userId)
+        || isSuperAdmin()
+      );
+    }
+    
+     /* ─── Cotizaciones - Proyectos ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/projects/{projectId}/quotes/{fileName} {
+      // Leer cualquier cotización si pertenece al cliente o es superadmin
+      allow read: if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (
+          isAdminOrAssistant()
+          && belongsToClient(clientId)
+          && isValidFileSize()
+          && isValidContentType()
+        )
+        || isSuperAdmin()
+      );
+
+      allow delete: if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+     
+    /* ─── Publicaciones ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/publications/{publicationId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Usuarios (avatar / perfil) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/users/{userId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        ((isAdminOrAssistant() || request.auth.uid == userId)
+          && belongsToClient(clientId)
+          && isValidFileSize()
+          && request.resource.contentType.matches('image/.*'))
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        ((isAdmin() || request.auth.uid == userId)
+          && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Administradores (fotos de perfil) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/admin/{fileName} {
+      allow read: if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        ((isAdminOrAssistant()) && belongsToClient(clientId) && isValidFileSize() && request.resource.contentType.matches('image/.*'))
+        || isSuperAdmin()
+      );
+      allow delete: if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── Archivos de cargos ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/users/{userId}/charges/{chargeId}/{fileName} {
+      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update: if (
+        (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || isSuperAdmin()
+      );
+      allow delete:  if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
+    }
+
+    /* ─── PublicQRs (restauradas) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/publicQRs/{qrFile} {
+      allow read:    if true;
+      allow create:  if isAuthenticated() && (belongsToClient(clientId) || isSuperAdmin());
+      allow update, delete: if false;
+    }
+
+    /* ─── Public Documents (nuevo) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/publicDocuments/{docFile} {
+      allow read:            if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
+      allow create, update:  if (((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin()) && isValidFileSize() && isValidContentType());
+      allow delete:          if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
+    }
+
+    /* ─── ZIPs temporales de recibos masivos ─── */
+    /* Nota: el backend (Admin SDK) escribe/borrar en esta ruta y envía Signed URLs.
+       Las Signed URLs no requieren regla allow read pública. */
+    match /receipts-deliveries/{clientId}/{condominiumId}/{datePath}/{fileName} {
+      allow read: if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update, delete: if false;
+    }
+
+    /* ─── Parcel Receptions ─── */
+    /* ─── Parcel Receptions ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/parcelReceptions/{datePath}/{fileName} {
+      allow read:            if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
+      allow create, update:  if (((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin()) && isValidFileSize() && isValidContentType());
+      allow delete:          if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
+    }
+
+    /* ─── ÁREAS COMUNES (ajuste 1) ─── */
+    match /clients/{clientId}/condominiums/{condominiumId}/commonAreas/{fileName} {
+      // lectura
+      allow read:    if isSuperAdmin()
+                        || (isAdminOrAssistant() && belongsToClient(clientId));
+      // crear y actualizar
+      allow create, update: if isSuperAdmin()
+                               || ((isAdminOrAssistant() && belongsToClient(clientId))
+                                   && isValidFileSize() && isValidContentType());
+      // borrar
+      allow delete:  if isSuperAdmin()
+                        || (isAdmin() && belongsToClient(clientId));
+    }
+    
+    /* ─── Estados de cuenta temporales ─── */
+    match /temp/account-statements/{allPaths=**} {
+      allow read, write: if true;
+    }
+
+    /* ───────────── Regla por defecto ───────────── */
+    match /{allPaths=**} {
+      allow read, write: if isSuperAdmin();
+    }
+  }
+}

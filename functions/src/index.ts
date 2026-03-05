@@ -128,7 +128,11 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
 
 //TODO: SEND EMAIL FOR RECEIPTS
 // ////////////////////////////////////////// SEND EMAIL FOR RECEIPTS//////////////////////////////////////////
-export { sendReceiptsByEmail, getPaymentReceipt } from './receipts/receipts.controller';
+export {
+  sendReceiptsByEmail,
+  getPaymentReceipt,
+  cleanupTemporaryReceiptZips,
+} from './receipts/receipts.controller';
 
 //TODO: SEND EMAIL FOR CALENDAR EVENTS
 //////////////////////////////////////// SEND EMAIL FOR CALENDAR EVENTS //////////////////////////////////////////

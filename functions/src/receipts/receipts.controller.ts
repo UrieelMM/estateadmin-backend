@@ -1,4 +1,5 @@
 import { onRequest } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import * as admin from 'firebase-admin';
 import {
   ensureReceiptUrlForPaymentGroup,
@@ -16,6 +17,20 @@ const corsHandler = cors({
 });
 
 const ALLOWED_ROLES = new Set(['admin', 'admin-assistant', 'super-provider-admin']);
+const MAX_FILES_PER_EMAIL = Number(process.env.RECEIPTS_MAX_FILES_PER_EMAIL || 100);
+const MAX_RAW_BYTES_PER_CHUNK = Number(
+  process.env.RECEIPTS_MAX_RAW_BYTES_PER_CHUNK || 14 * 1024 * 1024,
+);
+const ZIP_SIGNED_URL_TTL_HOURS = Number(process.env.RECEIPTS_ZIP_LINK_TTL_HOURS || 48);
+const RECEIPTS_ZIP_RETENTION_HOURS = Number(
+  process.env.RECEIPTS_ZIP_RETENTION_HOURS || 48,
+);
+const RECEIPTS_CLEANUP_SCAN_LIMIT = Number(
+  process.env.RECEIPTS_CLEANUP_SCAN_LIMIT || 10000,
+);
+const RECEIPTS_CLEANUP_DELETE_LIMIT = Number(
+  process.env.RECEIPTS_CLEANUP_DELETE_LIMIT || 5000,
+);
 
 type AuthContext = {
   uid: string;
@@ -44,6 +59,101 @@ const parseBoolean = (value: any): boolean => {
   }
   return false;
 };
+
+const sanitizeFileNamePart = (value: string): string =>
+  value
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_\-.]/g, '')
+    .slice(0, 60) || 'archivo';
+
+const formatLocalDate = (): string => {
+  const now = new Date();
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  return `${yyyy}${mm}${dd}`;
+};
+
+const uploadZipAndGetSignedUrl = async (params: {
+  clientId: string;
+  condominiumId: string;
+  yearMonth: string;
+  docType: string;
+  part: number;
+  totalParts: number;
+  zipBuffer: Buffer;
+}): Promise<{ storagePath: string; signedUrl: string; sizeBytes: number }> => {
+  const bucket = admin.storage().bucket();
+  const randomId = admin.firestore().collection('_').doc().id;
+  const fileName = `documentos-${params.docType}-${params.yearMonth}-parte-${String(
+    params.part,
+  ).padStart(2, '0')}-de-${String(params.totalParts).padStart(2, '0')}-${randomId}.zip`;
+  const storagePath = `receipts-deliveries/${params.clientId}/${params.condominiumId}/${formatLocalDate()}/${fileName}`;
+  const file = bucket.file(storagePath);
+
+  await file.save(params.zipBuffer, {
+    resumable: false,
+    contentType: 'application/zip',
+    metadata: {
+      cacheControl: 'private, max-age=0, no-cache',
+    },
+  });
+
+  const expiresAt = Date.now() + ZIP_SIGNED_URL_TTL_HOURS * 60 * 60 * 1000;
+  const [signedUrl] = await file.getSignedUrl({
+    action: 'read',
+    expires: expiresAt,
+  });
+
+  return {
+    storagePath,
+    signedUrl,
+    sizeBytes: params.zipBuffer.length,
+  };
+};
+
+const buildEmailHtml = (params: {
+  recipientName: string;
+  totalFiles: number;
+  month: string;
+  year: string;
+  docType: string;
+  bodyExtraHtml: string;
+}): string => `
+  <html>
+    <head>
+      <style>
+        :root { font-family: 'Open Sans', sans-serif; }
+        .footer-link { color: #6366F1 !important; text-decoration: none; }
+      </style>
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
+    </head>
+    <body style="background-color: #f6f6f6;">
+      <table width="80%" style="background-color: #ffffff; border-radius: 10px; padding: 50px 40px; margin: 40px auto 0 auto; box-shadow: 5px 5px 10px rgba(0, 0, 0, .1);" cellspacing="0" cellpadding="0">
+        <tr>
+          <td style="background-color: #6366F1; border-radius: 5px 5px 0 0; padding: 10px 0 0 0; text-align: center;">
+            <img style="width: 140px; height: 140px; object-fit: contain;" src="https://firebasestorage.googleapis.com/v0/b/iahub-24.appspot.com/o/app%2Fassets%2Flogo%2F2.png?alt=media&token=5fb84508-cad4-405c-af43-cd1a4f54f521" alt="EstateAdmin">
+          </td>
+        </tr>
+        <tr>
+          <td style="background-color: #6366F1; border-radius: 0 0 5px 5px; padding: 0 0 20px 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">Documentos de Pago Disponibles</h1>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 20px 0; text-align: center;">
+            <p style="font-size: 16px;">Hola ${params.recipientName}, se procesaron ${params.totalFiles} documentos de pago del mes ${params.month} de ${params.year}.</p>
+            <p style="font-size: 14px;">Tipo de documento: ${params.docType}.</p>
+            ${params.bodyExtraHtml}
+          </td>
+        </tr>
+      </table>
+    </body>
+  </html>
+`;
 
 const verifyAuthAndTenant = async (
   req: any,
@@ -231,19 +341,46 @@ export const sendReceiptsByEmail = onRequest(
           throw toHttpError(404, 'No se encontraron documentos para la fecha indicada.');
         }
 
-        const zip = new JSZip();
         const storageBaseUrl =
           'https://storage.googleapis.com/administracioncondominio-93419.appspot.com/';
 
         let archivosAgregados = 0;
         const processedPaymentGroupIds = new Set<string>();
         const processedFilePaths = new Set<string>();
+        const zipPayloads: Array<{
+          zipBuffer: Buffer;
+          fileCount: number;
+          part: number;
+        }> = [];
+
+        let currentZip = new JSZip();
+        let currentZipFileCount = 0;
+        let currentZipRawBytes = 0;
+
+        const flushZipChunk = async () => {
+          if (currentZipFileCount === 0) {
+            return;
+          }
+
+          const zipBuffer = await currentZip.generateAsync({ type: 'nodebuffer' });
+          zipPayloads.push({
+            zipBuffer,
+            fileCount: currentZipFileCount,
+            part: zipPayloads.length + 1,
+          });
+
+          currentZip = new JSZip();
+          currentZipFileCount = 0;
+          currentZipRawBytes = 0;
+        };
 
         for (const doc of snapshot.docs) {
           const data = doc.data() || {};
           console.log(`[sendReceiptsByEmail] Procesando doc ${doc.id}, path=${doc.ref.path}`);
 
           let userName = 'usuario';
+          const safeUserName = sanitizeFileNamePart(userName);
+          const safeNumber = sanitizeFileNamePart(String(data.numberCondominium || 'sin-numero'));
           const userId = String(data.userId || '').trim();
 
           if (userId) {
@@ -258,6 +395,7 @@ export const sendReceiptsByEmail = onRequest(
               console.error('[sendReceiptsByEmail] Error al obtener usuario:', error);
             }
           }
+          const safeResolvedUserName = sanitizeFileNamePart(userName || safeUserName);
 
           let fileUrl: string | undefined;
           let fileName: string | undefined;
@@ -293,7 +431,7 @@ export const sendReceiptsByEmail = onRequest(
               }
             }
 
-            fileName = `recibo-${data.numberCondominium || 'sin-numero'}-${year}-${monthString}-${userName.replace(/ /g, '_')}-${paymentGroupId}.pdf`;
+            fileName = `recibo-${safeNumber}-${year}-${monthString}-${safeResolvedUserName}-${sanitizeFileNamePart(paymentGroupId)}.pdf`;
           } else {
             const paymentGroupId = String(data.paymentGroupId || '').trim();
             if (paymentGroupId && processedPaymentGroupIds.has(paymentGroupId)) {
@@ -318,7 +456,7 @@ export const sendReceiptsByEmail = onRequest(
             }
             processedFilePaths.add(filePath);
 
-            fileName = `comprobante-${data.numberCondominium || 'sin-numero'}-${year}-${monthString}-${userName.replace(/ /g, '_')}-${doc.id}.pdf`;
+            fileName = `comprobante-${safeNumber}-${year}-${monthString}-${safeResolvedUserName}-${sanitizeFileNamePart(doc.id)}.pdf`;
 
             try {
               const bucket = admin.storage().bucket();
@@ -361,62 +499,29 @@ export const sendReceiptsByEmail = onRequest(
               continue;
             }
 
-            zip.file(fileName, Buffer.from(arrayBuffer));
+            const fileBuffer = Buffer.from(arrayBuffer);
+            if (
+              currentZipFileCount > 0 &&
+              (currentZipFileCount >= MAX_FILES_PER_EMAIL ||
+                currentZipRawBytes + fileBuffer.byteLength > MAX_RAW_BYTES_PER_CHUNK)
+            ) {
+              await flushZipChunk();
+            }
+
+            currentZip.file(fileName, fileBuffer);
+            currentZipRawBytes += fileBuffer.byteLength;
+            currentZipFileCount += 1;
             archivosAgregados += 1;
           } catch (error) {
             console.error('[sendReceiptsByEmail] Error descargando/agregando archivo:', error);
           }
         }
 
+        await flushZipChunk();
+
         if (archivosAgregados === 0) {
           throw toHttpError(404, 'No se encontraron archivos para enviar por correo.');
         }
-
-        const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
-
-        const htmlTemplate = (userData: any, receiptsInfo: any) => `
-             <html>
-               <head>
-                  <style>
-                     :root { font-family: 'Open Sans', sans-serif; }
-                     .footer-link { color: #6366F1 !important; text-decoration: none; }
-                   </style>
-                  <link rel="preconnect" href="https://fonts.googleapis.com">
-                  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-                  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
-               </head>
-               <body style="background-color: #f6f6f6;">
-                 <table width="80%" style="background-color: #ffffff; border-radius: 10px; padding: 50px 40px; margin: 40px auto 0 auto; box-shadow: 5px 5px 10px rgba(0, 0, 0, .1);" cellspacing="0" cellpadding="0">
-                   <tr>
-                     <td style="background-color: #6366F1; border-radius: 5px 5px 0 0; padding: 10px 0 0 0; text-align: center;">
-                       <img style="width: 140px; height: 140px; object-fit: contain;" src="https://firebasestorage.googleapis.com/v0/b/iahub-24.appspot.com/o/app%2Fassets%2Flogo%2F2.png?alt=media&token=5fb84508-cad4-405c-af43-cd1a4f54f521" alt="EstateAdmin">
-                     </td>
-                   </tr>
-                   <tr>
-                     <td style="background-color: #6366F1; border-radius: 0 0 5px 5px; padding: 0 0 20px 0; text-align: center;">
-                       <h1 style="color: white; margin: 0; font-size: 24px;">Documentos de Pago Disponibles</h1>
-                     </td>
-                   </tr>
-                   <tr>
-                     <td style="padding: 20px 0; text-align: center;">
-                       <p style="font-size: 16px;">Hola ${userData.name}, adjunto encontrarás ${receiptsInfo.totalArchivos} documentos de pago correspondientes al mes ${receiptsInfo.month} del año ${receiptsInfo.year}.</p>
-                       <p style="font-size: 14px;">Tipo de documento: ${receiptsInfo.docType}.</p>
-                     </td>
-                   </tr>
-                 </table>
-               </body>
-             </html>
-       `;
-
-        const receiptsInfo = {
-          year,
-          month: monthString,
-          condominiumId,
-          totalArchivos: archivosAgregados,
-          docType,
-        };
-
-        const emailHtml = htmlTemplate(recipient, receiptsInfo);
 
         const mailerSendApiKey = process.env.MAILERSEND_API_KEY;
         if (!mailerSendApiKey) {
@@ -430,7 +535,42 @@ export const sendReceiptsByEmail = onRequest(
           apiKey: mailerSendApiKey,
         });
 
-        const emailParams = new EmailParams()
+        let emailsSent = 0;
+        const linksGenerated: Array<{ part: number; url: string; storagePath: string }> = [];
+        for (const payload of zipPayloads) {
+          const uploaded = await uploadZipAndGetSignedUrl({
+            clientId,
+            condominiumId,
+            yearMonth,
+            docType,
+            part: payload.part,
+            totalParts: zipPayloads.length,
+            zipBuffer: payload.zipBuffer,
+          });
+          linksGenerated.push({
+            part: payload.part,
+            url: uploaded.signedUrl,
+            storagePath: uploaded.storagePath,
+          });
+        }
+
+        const linksHtml = linksGenerated
+          .map(
+            (link) =>
+              `<p style="font-size:14px;margin:8px 0;">Parte ${link.part}: <a href="${link.url}" target="_blank" rel="noopener noreferrer">Descargar ZIP</a></p>`,
+          )
+          .join('');
+
+        const emailHtml = buildEmailHtml({
+          recipientName: recipient.name,
+          totalFiles: archivosAgregados,
+          month: monthString,
+          year,
+          docType,
+          bodyExtraHtml: `<p style="font-size:14px;">Se generaron enlaces seguros de descarga (vigencia: ${ZIP_SIGNED_URL_TTL_HOURS} horas).</p>${linksHtml}`,
+        });
+
+        const linksEmailParams = new EmailParams()
           .setFrom(
             new Sender(
               'MS_Fpa0aS@notifications.estate-admin.com',
@@ -445,23 +585,22 @@ export const sendReceiptsByEmail = onRequest(
             ),
           )
           .setSubject(`Tus documentos de pago para ${year}-${monthString}`)
-          .setHtml(emailHtml)
-          .setAttachments([
-            {
-              filename: `documentos_${docType}_${year}-${monthString}.zip`,
-              content: zipBuffer.toString('base64'),
-            },
-          ]);
+          .setHtml(emailHtml);
 
-        await mailerSend.email.send(emailParams);
+        await mailerSend.email.send(linksEmailParams);
+        emailsSent += 1;
 
         res.status(200).json({
           ok: true,
-          message: 'Correo enviado correctamente',
+          message: 'Correo enviado correctamente con links de descarga.',
           data: {
             sentTo: recipient.email,
             totalFiles: archivosAgregados,
             docType,
+            deliveryMode: 'signed_links',
+            chunks: zipPayloads.length,
+            emailsSent,
+            linksGeneratedCount: linksGenerated.length,
           },
         });
       } catch (error: any) {
@@ -538,5 +677,96 @@ export const getPaymentReceipt = onRequest(
         });
       }
     });
+  },
+);
+
+export const cleanupTemporaryReceiptZips = onSchedule(
+  {
+    schedule: 'every 2 hours',
+    timeZone: 'Etc/UTC',
+    region: 'us-central1',
+    maxInstances: 1,
+  },
+  async () => {
+    const startedAt = Date.now();
+    const cutoffMs = Date.now() - RECEIPTS_ZIP_RETENTION_HOURS * 60 * 60 * 1000;
+    const bucket = admin.storage().bucket();
+
+    let scanned = 0;
+    let deleted = 0;
+    let failed = 0;
+    let pageToken: string | undefined;
+
+    try {
+      do {
+        const [files, nextQuery] = await bucket.getFiles({
+          prefix: 'receipts-deliveries/',
+          autoPaginate: false,
+          maxResults: 500,
+          pageToken,
+        });
+
+        pageToken = nextQuery?.pageToken;
+
+        for (const file of files) {
+          if (scanned >= RECEIPTS_CLEANUP_SCAN_LIMIT || deleted >= RECEIPTS_CLEANUP_DELETE_LIMIT) {
+            pageToken = undefined;
+            break;
+          }
+
+          scanned += 1;
+          const filePath = String(file.name || '');
+          if (!filePath || filePath.endsWith('/')) {
+            continue;
+          }
+
+          let createdAtMs = Number.NaN;
+          const listedTimeCreated = file.metadata?.timeCreated;
+          if (listedTimeCreated) {
+            createdAtMs = Date.parse(listedTimeCreated);
+          }
+
+          if (!Number.isFinite(createdAtMs)) {
+            try {
+              const [metadata] = await file.getMetadata();
+              createdAtMs = Date.parse(String(metadata.timeCreated || ''));
+            } catch (metadataError) {
+              failed += 1;
+              console.error(
+                `[cleanupTemporaryReceiptZips] Error reading metadata for ${filePath}:`,
+                metadataError,
+              );
+              continue;
+            }
+          }
+
+          if (!Number.isFinite(createdAtMs)) {
+            continue;
+          }
+
+          if (createdAtMs > cutoffMs) {
+            continue;
+          }
+
+          try {
+            await file.delete({ ignoreNotFound: true });
+            deleted += 1;
+          } catch (error) {
+            failed += 1;
+            console.error(
+              `[cleanupTemporaryReceiptZips] Error deleting ${filePath}:`,
+              error,
+            );
+          }
+        }
+      } while (pageToken);
+
+      console.log(
+        `[cleanupTemporaryReceiptZips] completed scanned=${scanned} deleted=${deleted} failed=${failed} retentionHours=${RECEIPTS_ZIP_RETENTION_HOURS} elapsedMs=${Date.now() - startedAt}`,
+      );
+    } catch (error) {
+      console.error('[cleanupTemporaryReceiptZips] Fatal error:', error);
+      throw error;
+    }
   },
 );

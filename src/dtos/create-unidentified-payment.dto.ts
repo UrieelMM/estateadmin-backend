@@ -1,5 +1,11 @@
 // create-unidentified-payment.dto.ts
+import { Transform } from 'class-transformer';
 import { IsString, IsNotEmpty, IsOptional, IsBoolean } from 'class-validator';
+import {
+  sanitizeTowerSnapshot,
+  TOWER_SNAPSHOT_MAX_LENGTH,
+} from 'src/utils/tower-snapshot';
+import { MaxLength } from 'class-validator';
 
 export class CreateUnidentifiedPaymentDto {
   @IsString()
@@ -57,6 +63,12 @@ export class CreateUnidentifiedPaymentDto {
   @IsOptional()
   @IsString()
   paymentReference?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => sanitizeTowerSnapshot(value))
+  @IsString()
+  @MaxLength(TOWER_SNAPSHOT_MAX_LENGTH)
+  towerSnapshot?: string;
 
   @IsString()
   @IsNotEmpty()

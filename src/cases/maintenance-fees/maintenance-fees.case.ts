@@ -4,6 +4,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { format } from 'date-fns';
 import { MaintenanceFeesDto } from 'src/dtos';
 import { UploadedFiles } from 'src/interfaces';
+import {
+  resolveTowerSnapshot,
+  sanitizeTowerSnapshot,
+} from 'src/utils/tower-snapshot';
 
 /**
  * Reglas:
@@ -58,6 +62,7 @@ export const MaintenancePaymentCase = async (
     paymentDate,
     paymentReference,
     financialAccountId,
+    towerSnapshot,
   } = maintenancePaymentDto;
 
   // NUEVO: Obtener el arreglo de startAt(s) enviado desde el componente (para multipago)
@@ -105,6 +110,14 @@ export const MaintenancePaymentCase = async (
   const phoneNumber = userData?.phone || null;
   const invoiceRequired = userData?.invoiceRequired ?? false;
   const currentTotalCredit = parseFloat(userData.totalCreditBalance || '0');
+  const inputTowerSnapshot = sanitizeTowerSnapshot(towerSnapshot);
+  const canonicalUserTower = sanitizeTowerSnapshot(userData?.tower);
+  const towerSnapshotFinal =
+    canonicalUserTower &&
+    inputTowerSnapshot &&
+    inputTowerSnapshot !== canonicalUserTower
+      ? canonicalUserTower
+      : resolveTowerSnapshot(inputTowerSnapshot, canonicalUserTower);
 
   // 2. Subir archivos (si existen)
   const datePath = format(new Date(), 'yyyy-MM-dd');
@@ -255,6 +268,7 @@ export const MaintenancePaymentCase = async (
           : null,
         paymentReference: paymentReference || '',
         financialAccountId: financialAccountId || '',
+        towerSnapshot: towerSnapshotFinal,
         concept: conceptProcessed,
         // NUEVO: Enviar el startAt correspondiente del arreglo (según el orden de asignaciones)
         startAt: startAtsArray[index] || '',
@@ -316,6 +330,7 @@ export const MaintenancePaymentCase = async (
         : null,
       paymentReference: paymentReference || '',
       financialAccountId: financialAccountId || '',
+      towerSnapshot: towerSnapshotFinal,
       payments: paymentsArray, // Array con los registros individuales
       concept: aggregatedConcepts.join(', ') || 'Desconocido',
       // NUEVO: En el registro consolidado, se unen todos los startAt enviados (separados por comas)
@@ -357,6 +372,7 @@ export const MaintenancePaymentCase = async (
       attachmentUrls: attachmentPayment,
       paymentGroupId: resolvedPaymentGroupId,
       consolidatedPaymentId: aggregatedPaymentId,
+      towerSnapshot: towerSnapshotFinal,
     };
   }
   // 4. PROCESO ÚNICO (sin chargeAssignments)
@@ -480,6 +496,7 @@ export const MaintenancePaymentCase = async (
         : null,
       paymentReference: paymentReference || '',
       financialAccountId: financialAccountId || '',
+      towerSnapshot: towerSnapshotFinal,
       concept: conceptProcessed,
       // NUEVO: Procesar startAt en pago único
       startAt: startAtStr || maintenancePaymentDto.startAt || '',
@@ -522,6 +539,7 @@ export const MaintenancePaymentCase = async (
       leftoverApplied: leftover,
       paymentGroupId: resolvedPaymentGroupId,
       consolidatedPaymentId: paymentId,
+      towerSnapshot: towerSnapshotFinal,
     };
   }
 };
