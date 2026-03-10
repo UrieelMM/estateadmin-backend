@@ -22,6 +22,10 @@ export class EditUnidentifiedPaymentDto {
 
   @IsOptional()
   @IsString()
+  userId?: string;
+
+  @IsOptional()
+  @IsString()
   appliedToCondomino?: string;
 
   @IsOptional()

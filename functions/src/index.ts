@@ -62,6 +62,81 @@ const formatPhoneNumber = (phone: any): string => {
   return `+521${cleanPhone}`;
 };
 
+const toCents = (value: any): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.round(parsed);
+};
+
+const resolveChargeCents = (payment: any): number => {
+  const directCharge = toCents(payment?.chargeValue);
+  if (directCharge !== 0) {
+    return directCharge;
+  }
+
+  const paymentReference = toCents(payment?.paymentAmountReference);
+  if (paymentReference !== 0) {
+    return paymentReference;
+  }
+
+  const paid = toCents(payment?.amountPaid);
+  const creditBalance = toCents(payment?.creditBalance);
+  if (paid !== 0 || creditBalance !== 0) {
+    return Math.max(paid - creditBalance, 0);
+  }
+
+  return 0;
+};
+
+const resolveSaldoCents = (payment: any): number => {
+  const paid = toCents(payment?.amountPaid);
+  const charge = resolveChargeCents(payment);
+  const creditBalance = toCents(payment?.creditBalance);
+  const amountPending = toCents(payment?.amountPending);
+
+  const baseSaldo = paid - charge;
+  if (baseSaldo !== 0) {
+    return baseSaldo;
+  }
+
+  if (creditBalance !== 0) {
+    return creditBalance;
+  }
+
+  if (amountPending !== 0) {
+    return -amountPending;
+  }
+
+  return 0;
+};
+
+const buildConceptWithMonth = (payment: any): string => {
+  let concept = payment?.concept || 'Sin concepto';
+  if (payment?.startAt) {
+    const parsedDate = new Date(String(payment.startAt).replace(' ', 'T'));
+    if (!Number.isNaN(parsedDate.getTime())) {
+      const monthNames = [
+        'Enero',
+        'Febrero',
+        'Marzo',
+        'Abril',
+        'Mayo',
+        'Junio',
+        'Julio',
+        'Agosto',
+        'Septiembre',
+        'Octubre',
+        'Noviembre',
+        'Diciembre',
+      ];
+      concept += ` - ${monthNames[parsedDate.getMonth()] || ''}`;
+    }
+  }
+  return concept;
+};
+
 ////////////////////////////////////////// SEND EMAIL FOR PARCEL //////////////////////////////////////////
 
 // Exportación de la función para notificación de paquetes
@@ -92,7 +167,7 @@ exports.enviarEmailConPagoPDF = onDocumentCreated(
       const paymentId = pathSegments[5];
 
       // Extraer userUID y chargeUID desde el documento (fue insertado adicionalmente)
-      const userUID = paymentData.userUID || '';
+      const userUID = paymentData.userUID || paymentData.userId || '';
       const chargeUID = paymentData.chargeUID || '';
 
       // Crear una tarea para procesar el envío de correo con un retraso de 5 segundos
@@ -237,6 +312,14 @@ export const processGroupPaymentEmail = onRequest(
         console.log('No se encontraron datos de la empresa');
         return res.status(404).send('No se encontraron datos de la empresa');
       }
+      const condominiumDoc = await admin
+        .firestore()
+        .collection('clients')
+        .doc(clientId)
+        .collection('condominiums')
+        .doc(condominiumId)
+        .get();
+      const condominiumData = condominiumDoc.data() || {};
       const usersRef = admin
         .firestore()
         .collection(`clients/${clientId}/condominiums/${condominiumId}/users`);
@@ -277,18 +360,45 @@ export const processGroupPaymentEmail = onRequest(
         }
       }
 
-      if (!userData) {
+      const hasResolvedUser = !!userData;
+
+      if (!hasResolvedUser) {
         console.log(
-          'No se encontró el usuario por userUID/email/payment record:',
+          'No se encontró el usuario por userUID/email/payment record. Se continuará solo con generación/persistencia de recibo:',
           userUID,
           email,
         );
-        return res.status(404).send('No se encontró el usuario');
+        userData = {
+          name:
+            consolidatedPayment?.residentName ||
+            consolidatedPayment?.name ||
+            'Residente',
+          lastName: String(
+            consolidatedPayment?.residentLastName ||
+              consolidatedPayment?.lastName ||
+              '',
+          ).trim(),
+          email: String(email || consolidatedPayment?.email || '').trim(),
+          tower: String(consolidatedPayment?.towerSnapshot || '').trim(),
+          number: String(consolidatedPayment?.numberCondominium || '').trim(),
+          notifications: {
+            email: false,
+            whatsapp: false,
+          },
+        };
       }
 
-      const wantsEmailNotifications = userData?.notifications?.email === true;
+      const residentFullName = String(
+        `${userData?.name || ''} ${userData?.lastName || ''}`.trim() ||
+          userData?.name ||
+          'Sin nombre',
+      );
+
+      const wantsEmailNotifications =
+        hasResolvedUser && userData?.notifications?.email === true;
       const wantsWhatsappNotifications =
-        userData?.notifications?.whatsapp === true;
+        hasResolvedUser && userData?.notifications?.whatsapp === true;
+      let shouldSendEmail = wantsEmailNotifications;
 
       const resolvedPaymentGroupId = String(
         paymentGroupId ||
@@ -325,36 +435,39 @@ export const processGroupPaymentEmail = onRequest(
             options,
           );
 
-          // Calcular totales
-          let totalMontoPagado = 0;
-          let totalCargos = 0;
-          let totalSaldo = 0;
+          const formatSignedCurrency = (value: number) => {
+            if (value > 0) {
+              return `+${formatCurrency(value)}`;
+            }
+            return formatCurrency(value);
+          };
 
-          // Usar paymentsArray del registro consolidado
-          let paymentsArray = [];
-          if (
-            consolidatedPayment.payments &&
-            Array.isArray(consolidatedPayment.payments)
-          ) {
-            paymentsArray = consolidatedPayment.payments;
-          } else {
-            paymentsArray.push(consolidatedPayment);
-          }
+          // Usar la misma lógica canónica de cálculo que PDF/HTML
+          const paymentsArray = Array.isArray(consolidatedPayment.payments)
+            ? consolidatedPayment.payments
+            : [consolidatedPayment];
 
-          // Calcular totales usando el valor de chargeValue que ahora se guarda en paymentsToSendEmail
-          paymentsArray.forEach((payment) => {
-            totalMontoPagado += Number(payment.amountPaid) || 0;
-            // Usar el chargeValue que ahora se guarda en el documento
-            totalCargos += Number(payment.chargeValue) || 0;
+          const paymentRows = paymentsArray.map((payment) => {
+            return {
+              concept: buildConceptWithMonth(payment),
+              paidCents: toCents(payment.amountPaid),
+              chargeCents: resolveChargeCents(payment),
+              saldoCents: resolveSaldoCents(payment),
+            };
           });
 
-          // Si hay un chargeValue en el documento consolidado, usarlo directamente
-          if (consolidatedPayment.chargeValue) {
-            totalCargos = Number(consolidatedPayment.chargeValue) || 0;
-          }
-
-          // Calcular saldo como la diferencia entre monto pagado y cargo
-          totalSaldo = totalMontoPagado - totalCargos;
+          const totalMontoPagado = paymentRows.reduce(
+            (sum, row) => sum + row.paidCents,
+            0,
+          );
+          const totalCargos = paymentRows.reduce(
+            (sum, row) => sum + row.chargeCents,
+            0,
+          );
+          const totalSaldo = paymentRows.reduce(
+            (sum, row) => sum + row.saldoCents,
+            0,
+          );
 
           // Preparar los datos para la plantilla
           const folio =
@@ -363,38 +476,17 @@ export const processGroupPaymentEmail = onRequest(
               consolidatedPayment.payments[0]?.folio) ||
             'Sin folio';
           const fecha = formattedDate;
-          const residente = userData.name;
+          const residente = residentFullName;
           const medioPago =
             consolidatedPayment.paymentType || 'No especificado';
           const totalPagado = formatCurrency(totalMontoPagado);
           const cargos = formatCurrency(totalCargos);
-          const saldo = formatCurrency(totalSaldo);
+          const saldo = formatSignedCurrency(totalSaldo);
 
           // Preparar el detalle por concepto
-          let detalleConceptos = paymentsArray
-            .map((payment) => {
-              let concepto = payment.concept || 'Sin concepto';
-              if (payment.startAt) {
-                const d = new Date(payment.startAt.replace(' ', 'T'));
-                const monthIndex = d.getMonth();
-                const monthNames = [
-                  'Enero',
-                  'Febrero',
-                  'Marzo',
-                  'Abril',
-                  'Mayo',
-                  'Junio',
-                  'Julio',
-                  'Agosto',
-                  'Septiembre',
-                  'Octubre',
-                  'Noviembre',
-                  'Diciembre',
-                ];
-                const monthName = monthNames[monthIndex] || '';
-                concepto += ` - ${monthName}`;
-              }
-              return `• ${concepto}: $${(Number(payment.amountPaid) / 100).toFixed(2)}`;
+          let detalleConceptos = paymentRows
+            .map((paymentRow) => {
+              return `• ${paymentRow.concept}: ${formatCurrency(paymentRow.paidCents)}`;
             })
             .join(' | ');
 
@@ -460,21 +552,19 @@ export const processGroupPaymentEmail = onRequest(
         console.log(
           `Notificación por correo desactivada para usuario ${userData.uid || userDocId || 'sin-uid'}`,
         );
-        return res.status(200).send('Notificaciones procesadas');
+        shouldSendEmail = false;
       }
 
       if (!userData.email || !userData.email.includes('@')) {
         console.log(
           `Notificación por correo omitida por email inválido para usuario ${userData.uid || userDocId || 'sin-uid'}`,
         );
-        return res
-          .status(200)
-          .send('Notificaciones procesadas (correo omitido)');
+        shouldSendEmail = false;
       }
 
       // Helper para formatear a moneda mexicana (los valores vienen en centavos)
       const formatCurrency = (value: any) => {
-        const num = (Number(value) || 0) / 100;
+        const num = toCents(value) / 100;
         return new Intl.NumberFormat('es-MX', {
           style: 'currency',
           currency: 'MXN',
@@ -482,181 +572,158 @@ export const processGroupPaymentEmail = onRequest(
         }).format(num);
       };
 
-      // ----- INICIO: GENERACIÓN DEL PDF CON ESTILOS MODERNOS -----
+      // ----- INICIO: GENERACIÓN DEL PDF -----
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([612, 792]); // Carta: 612x792 puntos
       const { width, height } = page.getSize();
 
       const colorInstitucional = rgb(0.39, 0.4, 0.95); // #6366F1
       const fontSizeTitle = 22;
-      const fontSizeText = 14;
-      const fontSizeSmall = 12;
+      const fontSizeText = 12;
+      const fontSizeSmall = 10;
       const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
       const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-      // Marca de agua
-      const watermarkUrl =
-        'https://firebasestorage.googleapis.com/v0/b/administracioncondominio-93419.appspot.com/o/estateAdminUploads%2Fassets%2FEstateAdminWatteMark.png?alt=media&token=653a790b-d7f9-4324-8c6d-8d1eaf9d5924';
-      const watermarkBytes = await fetch(watermarkUrl).then((res) =>
-        res.arrayBuffer(),
-      );
-      const watermarkImage = await pdfDoc.embedPng(watermarkBytes);
-      const watermarkDims = watermarkImage.scaleToFit(
-        width * 0.8,
-        height * 0.8,
-      );
-      page.drawImage(watermarkImage, {
-        x: (width - watermarkDims.width) / 2,
-        y: (height - watermarkDims.height) / 2,
-        width: watermarkDims.width,
-        height: watermarkDims.height,
-        opacity: 0.1,
-      });
+      const formatSignedCurrency = (value: number) => {
+        if (value > 0) {
+          return `+${formatCurrency(value)}`;
+        }
+        return formatCurrency(value);
+      };
 
-      // Datos de la empresa
-      const companyLogoUrl = clientData.logoUrl || '';
-      const companyEmail = clientData.email || 'Sin correo';
-      const companyPhone = clientData.phoneNumber || 'Sin teléfono';
-      const companyName =
-        clientData.companyName || clientData.name || 'Sin nombre de empresa';
+      // Datos de encabezado/legales
+      const companyLogoUrl = String(clientData.logoUrl || '').trim();
+      const condominiumName = String(condominiumData.name || 'Sin nombre').trim();
+      const condominiumAddress = String(
+        condominiumData.address || 'Sin dirección',
+      ).trim();
+      const signatureUrl = String(condominiumData.signatureUrl || '').trim();
+      const residentName = residentFullName;
+      const residentTower = String(
+        userData?.tower || consolidatedPayment?.towerSnapshot || '',
+      ).trim();
+      const residentNumber = String(
+        userData?.number || consolidatedPayment?.numberCondominium || '',
+      ).trim();
+      const paymentMethod = String(
+        consolidatedPayment.paymentType || 'No especificado',
+      ).trim();
+      const folioValue = String(
+        consolidatedPayment.folio ||
+          (consolidatedPayment.payments &&
+            consolidatedPayment.payments[0]?.folio) ||
+          'Sin folio',
+      ).trim();
 
-      page.drawText(companyName, {
-        x: 20,
-        y: height - 40,
-        size: fontSizeSmall,
-        font: fontBold,
-        color: rgb(0, 0, 0),
-      });
-      page.drawText(`Correo: ${companyEmail} | Teléfono: ${companyPhone}`, {
-        x: 20,
-        y: height - 60,
-        size: fontSizeSmall,
-        font: fontRegular,
-        color: rgb(0, 0, 0),
-      });
-
-      // Logo
-      let logoImage, logoDims;
-      try {
-        const logoImageBytes = await fetch(companyLogoUrl).then((res) =>
-          res.arrayBuffer(),
-        );
-        logoImage = await pdfDoc.embedPng(logoImageBytes);
-        logoDims = logoImage.scaleToFit(100, 50);
-      } catch (error) {
-        console.error('Error al cargar el logo, usando valores por defecto');
-      }
-
-      // Header con fondo institucional
+      // Header
       page.drawRectangle({
         x: 0,
-        y: height - 80,
-        width: width,
-        height: 80,
+        y: height - 90,
+        width,
+        height: 90,
         color: colorInstitucional,
       });
       page.drawText('Recibo de pago', {
         x: 20,
-        y: height - 50,
+        y: height - 56,
         size: fontSizeTitle,
         font: fontBold,
         color: rgb(1, 1, 1),
       });
-      if (logoImage && logoDims) {
-        page.drawImage(logoImage, {
-          x: width - 120,
-          y: height - 75,
-          width: logoDims.width,
-          height: logoDims.height,
-        });
+
+      // Logo más grande en el header (con sobreescalado controlado para mitigar márgenes)
+      if (companyLogoUrl) {
+        try {
+          const logoResponse = await fetch(companyLogoUrl);
+          if (logoResponse.ok) {
+            const logoBytes = await logoResponse.arrayBuffer();
+            const logoContentType = String(
+              logoResponse.headers.get('content-type') || '',
+            ).toLowerCase();
+            const logoImage = logoContentType.includes('png')
+              ? await pdfDoc.embedPng(logoBytes)
+              : await pdfDoc.embedJpg(logoBytes);
+
+            const logoBoxWidth = 230;
+            const logoBoxHeight = 74;
+            const fitScale = Math.min(
+              logoBoxWidth / logoImage.width,
+              logoBoxHeight / logoImage.height,
+            );
+            const overscale = 1.35;
+            const drawWidth = logoImage.width * fitScale * overscale;
+            const drawHeight = logoImage.height * fitScale * overscale;
+            const drawX = width - logoBoxWidth - 16 + (logoBoxWidth - drawWidth) / 2;
+            const drawY = height - 86 + (logoBoxHeight - drawHeight) / 2;
+
+            page.drawImage(logoImage, {
+              x: drawX,
+              y: drawY,
+              width: drawWidth,
+              height: drawHeight,
+            });
+          }
+        } catch (logoError) {
+          console.error('[processGroupPaymentEmail] Error al cargar logo:', logoError);
+        }
       }
 
-      // Fecha y hora de procesamiento (ajustado: etiqueta, font-size y color)
-      const currentDate = new Date();
-      const options: Intl.DateTimeFormatOptions = {
-        timeZone: 'America/Mexico_City',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
+      // Datos legales del recibo
+      let infoY = height - 120;
+      const infoStep = 18;
+      const drawInfoLine = (label: string, value: string) => {
+        page.drawText(`${label}: ${value || 'N/A'}`, {
+          x: 20,
+          y: infoY,
+          size: fontSizeText,
+          font: fontRegular,
+          color: rgb(0, 0, 0),
+        });
+        infoY -= infoStep;
       };
-      const formattedDateTime = currentDate.toLocaleString('es-MX', options);
-      const [dateProcessed, timeProcessed] = formattedDateTime.split(', ');
-      page.drawText(
-        `Fecha en que se procesó el pago: ${dateProcessed || 'Sin fecha'} ${timeProcessed || 'Sin hora'}`,
-        {
-          x: 20,
-          y: height - 120,
-          size: 10,
-          font: fontRegular,
-          color: rgb(0.502, 0.502, 0.502),
-        },
-      );
 
-      // Folio (ajustado con 9px de separación desde la fecha de procesamiento)
-      const folioValue =
-        consolidatedPayment.folio ||
-        (consolidatedPayment.payments &&
-          consolidatedPayment.payments[0]?.folio) ||
-        'Sin folio';
-      page.drawText(`Folio: ${folioValue}`, {
-        x: 20,
-        y: height - 138, // 120 + 18 (separación)
-        size: fontSizeText,
-        font: fontRegular,
-        color: rgb(0, 0, 0),
+      drawInfoLine('Condominio', condominiumName);
+      drawInfoLine('Dirección', condominiumAddress);
+      drawInfoLine('Folio', folioValue);
+      drawInfoLine('Condómino', residentName);
+      drawInfoLine('Torre', residentTower || 'N/A');
+      drawInfoLine('Número / Departamento / Casa', residentNumber || 'N/A');
+      drawInfoLine('Medio de pago', paymentMethod);
+
+      // Construir filas de pagos para PDF
+      const paymentsArray = Array.isArray(consolidatedPayment.payments)
+        ? consolidatedPayment.payments
+        : [consolidatedPayment];
+
+      const paymentRows = paymentsArray.map((payment) => {
+        const paidCents = toCents(payment.amountPaid);
+        const chargeCents = resolveChargeCents(payment);
+        const saldoCents = resolveSaldoCents(payment);
+        return {
+          concept: buildConceptWithMonth(payment),
+          paidCents,
+          chargeCents,
+          saldoCents,
+        };
       });
 
-      // Fecha de pago (ajustado con 9px de separación desde el folio)
-      if (consolidatedPayment.paymentDate) {
-        const paymentDateObj = consolidatedPayment.paymentDate.toDate
-          ? consolidatedPayment.paymentDate.toDate()
-          : new Date(consolidatedPayment.paymentDate);
-        const paymentDateFormatted = paymentDateObj.toLocaleDateString('es-ES');
-        page.drawText(`Fecha de pago: ${paymentDateFormatted}`, {
-          x: 20,
-          y: height - 165, // 138 + 27 (separación)
-          size: fontSizeText,
-          font: fontRegular,
-          color: rgb(0, 0, 0),
-        });
-      }
-
-      // Nombre del residente (ajustado con 9px de separación desde la fecha de pago)
-      page.drawText(`Nombre del residente: ${userData.name || 'Sin nombre'}`, {
-        x: 20,
-        y: height - 192, // 165 + 27 (separación)
-        size: fontSizeText,
-        font: fontRegular,
-        color: rgb(0, 0, 0),
-      });
-
-      // Medio de pago (ajustado con 9px de separación desde el nombre del residente)
-      page.drawText(
-        `Medio de pago: ${consolidatedPayment.paymentType || 'No especificado'}`,
-        {
-          x: 20,
-          y: height - 219, // 192 + 27 (separación)
-          size: fontSizeText,
-          font: fontRegular,
-          color: rgb(0, 0, 0),
-        },
+      const totalMontoPagado = paymentRows.reduce(
+        (sum, row) => sum + row.paidCents,
+        0,
       );
+      const totalCargos = paymentRows.reduce((sum, row) => sum + row.chargeCents, 0);
+      const totalSaldo = paymentRows.reduce((sum, row) => sum + row.saldoCents, 0);
 
-      // --- TABLA DE PAGOS EN EL PDF ---
-      // Definir columnas: Concepto (200 px), Monto Pagado (120 px), Saldo Pendiente (120 px) y Saldo a favor (120 px)
+      // Tabla de conceptos
       const tableX = 15;
       const tableWidth = 582;
-      const col1Width = 200;
-      const col2Width = 120;
-      const col3Width = 120;
-      const cellHeight = 30;
-      const cellPadding = 12;
-      const tableYStart = height - 290;
+      const col1Width = 265;
+      const col2Width = 105;
+      const col3Width = 105;
+      const cellHeight = 26;
+      const cellPadding = 8;
+      const tableYStart = infoY - 24;
 
-      // Encabezado de la tabla
       page.drawRectangle({
         x: tableX,
         y: tableYStart,
@@ -665,159 +732,90 @@ export const processGroupPaymentEmail = onRequest(
         color: colorInstitucional,
       });
       page.drawText('Concepto', {
-        x: tableX + 5,
+        x: tableX + 6,
         y: tableYStart + cellPadding,
         size: fontSizeText,
         font: fontBold,
         color: rgb(1, 1, 1),
       });
       page.drawText('Monto Pagado', {
-        x: tableX + col1Width + 5,
+        x: tableX + col1Width + 6,
         y: tableYStart + cellPadding,
         size: fontSizeText,
         font: fontBold,
         color: rgb(1, 1, 1),
       });
       page.drawText('Cargos', {
-        x: tableX + col1Width + col2Width + 5,
+        x: tableX + col1Width + col2Width + 6,
         y: tableYStart + cellPadding,
         size: fontSizeText,
         font: fontBold,
         color: rgb(1, 1, 1),
       });
       page.drawText('Saldo', {
-        x: tableX + col1Width + col2Width + col3Width + 5,
+        x: tableX + col1Width + col2Width + col3Width + 6,
         y: tableYStart + cellPadding,
         size: fontSizeText,
         font: fontBold,
         color: rgb(1, 1, 1),
       });
 
-      let totalMontoPagado = 0;
-      let totalCargos = 0;
       let currentY = tableYStart - cellHeight;
       let rowIndex = 0;
-
-      // Usar paymentsArray del registro consolidado (si es array; de lo contrario, empaquetarlo)
-      let paymentsArray = [];
-      if (
-        consolidatedPayment.payments &&
-        Array.isArray(consolidatedPayment.payments)
-      ) {
-        paymentsArray = consolidatedPayment.payments;
-      } else {
-        paymentsArray.push(consolidatedPayment);
-      }
-
-      // Calcular totales usando el valor de chargeValue que ahora se guarda en paymentsToSendEmail
-      paymentsArray.forEach((payment) => {
-        totalMontoPagado += Number(payment.amountPaid) || 0;
-        // Usar el chargeValue que ahora se guarda en el documento
-        totalCargos += Number(payment.chargeValue) || 0;
-      });
-
-      // Si hay un chargeValue en el documento consolidado, usarlo directamente
-      if (consolidatedPayment.chargeValue) {
-        totalCargos = Number(consolidatedPayment.chargeValue) || 0;
-      }
-
-      // Calcular el saldo total como la diferencia entre monto pagado y cargos
-      const totalSaldo = totalMontoPagado - totalCargos;
-
-      // Iterar sobre cada pago individual para construir la tabla en el PDF
-      for (const payment of paymentsArray) {
-        // Asegurarse de que cada pago tenga un valor de cargo válido
-        // Si no existe chargeValue en el pago individual, usar una parte proporcional del total
-        if (!payment.chargeValue && totalMontoPagado > 0) {
-          payment.chargeValue =
-            (Number(payment.amountPaid) / totalMontoPagado) * totalCargos;
-        }
-
-        // Usar directamente el concepto almacenado
-        let conceptoRow = payment.concept || 'Sin concepto';
-        // Modificación: usar startAt para determinar el mes
-        if (payment.startAt) {
-          const d = new Date(payment.startAt.replace(' ', 'T'));
-          const monthIndex = d.getMonth();
-          const monthNames = [
-            'Enero',
-            'Febrero',
-            'Marzo',
-            'Abril',
-            'Mayo',
-            'Junio',
-            'Julio',
-            'Agosto',
-            'Septiembre',
-            'Octubre',
-            'Noviembre',
-            'Diciembre',
-          ];
-          const monthName = monthNames[monthIndex] || '';
-          conceptoRow += ` - ${monthName}`;
-        }
-
-        // Reducir en dos puntos el font size del contenido de la tabla
-        const tableFontSize = fontSizeText - 2;
-
-        // Si la fila es impar, se sombrea con un fondo claro
+      for (const paymentRow of paymentRows) {
         if (rowIndex % 2 === 1) {
           page.drawRectangle({
             x: tableX,
             y: currentY,
             width: tableWidth,
             height: cellHeight,
-            color: rgb(0.95, 0.95, 0.95),
+            color: rgb(0.96, 0.96, 0.96),
           });
         }
 
-        // Dibujar la fila con borde delgado
         page.drawRectangle({
           x: tableX,
           y: currentY,
           width: tableWidth,
           height: cellHeight,
-          borderColor: colorInstitucional,
-          borderWidth: 1,
+          borderColor: rgb(0.85, 0.85, 0.85),
+          borderWidth: 0.5,
         });
-        page.drawText(conceptoRow, {
-          x: tableX + 5,
+
+        page.drawText(paymentRow.concept, {
+          x: tableX + 6,
           y: currentY + cellPadding,
-          size: tableFontSize,
+          size: fontSizeSmall,
           font: fontRegular,
           color: rgb(0, 0, 0),
         });
-        page.drawText(formatCurrency(payment.amountPaid), {
-          x: tableX + col1Width + 5,
+        page.drawText(formatCurrency(paymentRow.paidCents), {
+          x: tableX + col1Width + 6,
           y: currentY + cellPadding,
-          size: tableFontSize,
+          size: fontSizeSmall,
           font: fontRegular,
           color: rgb(0, 0, 0),
         });
-        // Mostrar el valor de chargeValue para cada fila individual
-        page.drawText(formatCurrency(payment.chargeValue || 0), {
-          x: tableX + col1Width + col2Width + 5,
+        page.drawText(formatCurrency(paymentRow.chargeCents), {
+          x: tableX + col1Width + col2Width + 6,
           y: currentY + cellPadding,
-          size: tableFontSize,
+          size: fontSizeSmall,
           font: fontRegular,
           color: rgb(0, 0, 0),
         });
-        // Calcular el saldo para cada pago como la diferencia entre monto pagado y cargo
-        const saldoPago =
-          Number(payment.amountPaid || 0) - Number(payment.chargeValue || 0);
-        page.drawText(formatCurrency(saldoPago), {
-          x: tableX + col1Width + col2Width + col3Width + 5,
+        page.drawText(formatSignedCurrency(paymentRow.saldoCents), {
+          x: tableX + col1Width + col2Width + col3Width + 6,
           y: currentY + cellPadding,
-          size: tableFontSize,
+          size: fontSizeSmall,
           font: fontRegular,
           color: rgb(0, 0, 0),
         });
+
         currentY -= cellHeight;
-        rowIndex++;
+        rowIndex += 1;
       }
 
-      // Fila de Totales
-      const tableFontSizeTotals = fontSizeText - 2;
+      // Totales
       page.drawRectangle({
         x: tableX,
         y: currentY,
@@ -827,95 +825,83 @@ export const processGroupPaymentEmail = onRequest(
         borderWidth: 1,
       });
       page.drawText('Total:', {
-        x: tableX + 5,
+        x: tableX + 6,
         y: currentY + cellPadding,
-        size: tableFontSizeTotals,
+        size: fontSizeText,
         font: fontBold,
         color: rgb(0, 0, 0),
       });
       page.drawText(formatCurrency(totalMontoPagado), {
-        x: tableX + col1Width + 5,
+        x: tableX + col1Width + 6,
         y: currentY + cellPadding,
-        size: tableFontSizeTotals,
+        size: fontSizeText,
         font: fontBold,
         color: rgb(0, 0, 0),
       });
       page.drawText(formatCurrency(totalCargos), {
-        x: tableX + col1Width + col2Width + 5,
+        x: tableX + col1Width + col2Width + 6,
         y: currentY + cellPadding,
-        size: tableFontSizeTotals,
-        font: fontBold,
-        color: rgb(0, 0, 0),
-      });
-      // El saldo total ya se calculó anteriormente
-      page.drawText(formatCurrency(totalSaldo), {
-        x: tableX + col1Width + col2Width + col3Width + 5,
-        y: currentY + cellPadding,
-        size: tableFontSizeTotals,
-        font: fontBold,
-        color: rgb(0, 0, 0),
-      });
-
-      // --- SELLO Y FOOTER DEL PDF (se mantienen sin cambios significativos) ---
-      const selloY = currentY - 175;
-      const selloUrl =
-        'https://firebasestorage.googleapis.com/v0/b/administracioncondominio-93419.appspot.com/o/estateAdminUploads%2Fassets%2FpagoSello.png?alt=media&token=88993c72-34fc-4d6e-8c15-93f4a58eea0a';
-      const selloBytes = await fetch(selloUrl).then((res) => res.arrayBuffer());
-      const selloImage = await pdfDoc.embedPng(selloBytes);
-      const selloDims = selloImage.scale(0.35); // Aumentado de 0.25 a 0.35 para hacer el sello más grande
-      page.drawImage(selloImage, {
-        x: width - selloDims.width - 50,
-        y: selloY,
-        width: selloDims.width,
-        height: selloDims.height,
-      });
-
-      const footerY = 0;
-      page.drawRectangle({
-        x: 0,
-        y: footerY,
-        width: width,
-        height: 100,
-        color: colorInstitucional,
-      });
-      page.drawText('Gracias por su pago.', {
-        x: 20,
-        y: footerY + 80,
         size: fontSizeText,
         font: fontBold,
-        color: rgb(1, 1, 1),
+        color: rgb(0, 0, 0),
       });
-      page.drawText(
-        'Para cualquier duda o aclaración, contacte a su empresa administradora:',
-        {
-          x: 20,
-          y: footerY + 60,
-          size: fontSizeSmall,
-          font: fontRegular,
-          color: rgb(1, 1, 1),
-        },
-      );
-      page.drawText(`Correo: ${companyEmail}`, {
-        x: 20,
-        y: footerY + 40,
-        size: fontSizeSmall,
-        font: fontRegular,
-        color: rgb(1, 1, 1),
-      });
-      page.drawText(`Teléfono: ${companyPhone}`, {
-        x: 350,
-        y: footerY + 40,
-        size: fontSizeSmall,
-        font: fontRegular,
-        color: rgb(1, 1, 1),
-      });
-      //Alinear a la izquierda
-      page.drawText('Un servicio de Omnipixel', {
-        x: 20,
-        y: footerY + 20,
-        size: fontSizeSmall,
+      page.drawText(formatSignedCurrency(totalSaldo), {
+        x: tableX + col1Width + col2Width + col3Width + 6,
+        y: currentY + cellPadding,
+        size: fontSizeText,
         font: fontBold,
-        color: rgb(1, 1, 1),
+        color: rgb(0, 0, 0),
+      });
+
+      // Firma del administrador
+      const signatureTopY = currentY - 90;
+      const signatureBoxWidth = 190;
+      const signatureBoxHeight = 70;
+      const signatureX = width - signatureBoxWidth - 36;
+
+      if (signatureUrl) {
+        try {
+          const signatureResponse = await fetch(signatureUrl);
+          if (signatureResponse.ok) {
+            const signatureBytes = await signatureResponse.arrayBuffer();
+            const signatureContentType = String(
+              signatureResponse.headers.get('content-type') || '',
+            ).toLowerCase();
+            const signatureImage = signatureContentType.includes('png')
+              ? await pdfDoc.embedPng(signatureBytes)
+              : await pdfDoc.embedJpg(signatureBytes);
+            const signatureDims = signatureImage.scaleToFit(
+              signatureBoxWidth,
+              signatureBoxHeight,
+            );
+
+            page.drawImage(signatureImage, {
+              x: signatureX + (signatureBoxWidth - signatureDims.width) / 2,
+              y: signatureTopY,
+              width: signatureDims.width,
+              height: signatureDims.height,
+            });
+          }
+        } catch (signatureError) {
+          console.error(
+            '[processGroupPaymentEmail] Error al cargar signatureUrl:',
+            signatureError,
+          );
+        }
+      }
+
+      page.drawLine({
+        start: { x: signatureX, y: signatureTopY - 8 },
+        end: { x: signatureX + signatureBoxWidth, y: signatureTopY - 8 },
+        thickness: 1,
+        color: rgb(0, 0, 0),
+      });
+      page.drawText('Firma del administrador', {
+        x: signatureX + 22,
+        y: signatureTopY - 24,
+        size: fontSizeSmall,
+        font: fontRegular,
+        color: rgb(0, 0, 0),
       });
 
       const pdfBytes = await pdfDoc.save();
@@ -943,94 +929,25 @@ export const processGroupPaymentEmail = onRequest(
 
       // --- GENERAR HTML DEL CORREO CON DETALLE DE PAGOS ---
       // Se elimina la columna de "Medio de pago" en la tabla y se agrega un bloque aparte con dicho dato.
-      let paymentsDetailsHtml = '';
-      // Calcular totales para el HTML
-      let htmlTotalMontoPagado = 0;
-      let htmlTotalCargos = 0;
-      let htmlTotalSaldo = 0;
-
-      // Usar paymentsArray del registro consolidado para el HTML
-      let htmlPaymentsArray = [];
-      if (
-        consolidatedPayment.payments &&
-        Array.isArray(consolidatedPayment.payments)
-      ) {
-        htmlPaymentsArray = consolidatedPayment.payments;
-      } else {
-        htmlPaymentsArray.push(consolidatedPayment);
-      }
-
-      // Calcular totales usando el valor de chargeValue que ahora se guarda en paymentsToSendEmail
-      htmlPaymentsArray.forEach((payment) => {
-        htmlTotalMontoPagado += Number(payment.amountPaid) || 0;
-        // Usar el chargeValue que ahora se guarda en el documento
-        htmlTotalCargos += Number(payment.chargeValue) || 0;
-      });
-
-      // Si hay un chargeValue en el documento consolidado, usarlo directamente
-      if (consolidatedPayment.chargeValue) {
-        htmlTotalCargos = Number(consolidatedPayment.chargeValue) || 0;
-      }
-
-      // Calcular saldo como la diferencia entre monto pagado y cargo
-      htmlTotalSaldo = htmlTotalMontoPagado - htmlTotalCargos;
-
-      htmlPaymentsArray.forEach((payment) => {
-        // Asegurarse de que cada pago tenga un valor de cargo válido
-        // Si no existe chargeValue en el pago individual, usar una parte proporcional del total
-        if (!payment.chargeValue && htmlTotalMontoPagado > 0) {
-          payment.chargeValue =
-            (Number(payment.amountPaid) / htmlTotalMontoPagado) *
-            htmlTotalCargos;
-        }
-
-        let concepto = payment.concept || 'Sin concepto';
-        // Modificación: usar startAt para determinar el mes
-        if (payment.startAt) {
-          const d = new Date(payment.startAt.replace(' ', 'T'));
-          const monthIndex = d.getMonth();
-          const monthNames = [
-            'Enero',
-            'Febrero',
-            'Marzo',
-            'Abril',
-            'Mayo',
-            'Junio',
-            'Julio',
-            'Agosto',
-            'Septiembre',
-            'Octubre',
-            'Noviembre',
-            'Diciembre',
-          ];
-          const monthName = monthNames[monthIndex] || '';
-          concepto += ` ${monthName}`;
-        }
-        const montoPagado = formatCurrency(payment.amountPaid);
-        const montoCargo = formatCurrency(payment.chargeValue || 0);
-        const saldoIndividual = formatCurrency(
-          (Number(payment.amountPaid) || 0) -
-            (Number(payment.chargeValue) || 0),
-        );
-        paymentsDetailsHtml += `
+      const paymentsDetailsHtml = paymentRows
+        .map((paymentRow) => {
+          return `
         <tr style="border-bottom:1px solid #ddd;">
-          <td style="padding:8px; text-align:left;">${concepto}</td>
-          <td style="padding:8px; text-align:right;">${montoPagado}</td>
-          <td style="padding:8px; text-align:right;">${montoCargo}</td>
-          <td style="padding:8px; text-align:right;">${saldoIndividual}</td>
+          <td style="padding:8px; text-align:left;">${paymentRow.concept}</td>
+          <td style="padding:8px; text-align:right;">${formatCurrency(paymentRow.paidCents)}</td>
+          <td style="padding:8px; text-align:right;">${formatCurrency(paymentRow.chargeCents)}</td>
+          <td style="padding:8px; text-align:right;">${formatSignedCurrency(paymentRow.saldoCents)}</td>
         </tr>
       `;
-      });
-
-      // Calcular el saldo como la diferencia entre monto pagado y cargo
-      htmlTotalSaldo = htmlTotalMontoPagado - htmlTotalCargos;
+        })
+        .join('');
 
       const totalsRow = `
       <tr style="font-weight:bold; border-top:2px solid #6366F1;">
         <td style="padding:8px; text-align:left;">Total:</td>
-        <td style="padding:8px; text-align:right;">${formatCurrency(htmlTotalMontoPagado)}</td>
-        <td style="padding:8px; text-align:right;">${formatCurrency(htmlTotalCargos)}</td>
-        <td style="padding:8px; text-align:right;">${formatCurrency(htmlTotalSaldo)}</td>
+        <td style="padding:8px; text-align:right;">${formatCurrency(totalMontoPagado)}</td>
+        <td style="padding:8px; text-align:right;">${formatCurrency(totalCargos)}</td>
+        <td style="padding:8px; text-align:right;">${formatSignedCurrency(totalSaldo)}</td>
       </tr>
     `;
 
@@ -1069,7 +986,7 @@ export const processGroupPaymentEmail = onRequest(
                 <h1>¡Confirmación de Pago Recibido!</h1>
               </div>
               <div class="content" style="padding:20px; background-color: #f6f6f6; margin-top:20px; border-radius: 10px;">
-                <h2 style="color:#1a1a1a; font-size:20px;">Hola, ${userData.name || 'Sin nombre'}</h2>
+                <h2 style="color:#1a1a1a; font-size:20px;">Hola, ${residentFullName}</h2>
                 <p style="color:#1a1a1a; font-size:16px;">Hemos registrado ${paymentsArray.length > 1 ? 'tus pagos' : 'tu pago'} exitosamente.</p>
                 <table class="details-table">
                   <tr>
@@ -1129,6 +1046,15 @@ export const processGroupPaymentEmail = onRequest(
         </html>
     `;
 
+      if (!shouldSendEmail) {
+        console.log(
+          `[processGroupPaymentEmail] Recibo generado y persistido para paymentGroupId=${resolvedPaymentGroupId}. Correo omitido.`,
+        );
+        return res
+          .status(200)
+          .send('Recibo generado y persistido. Correo omitido.');
+      }
+
       // Enviar correo
       const mailerSend = new MailerSend({
         apiKey:
@@ -1145,7 +1071,7 @@ export const processGroupPaymentEmail = onRequest(
         .setTo([
           new Recipient(
             userData.email || 'Sin email',
-            userData.name || 'Sin nombre',
+            residentFullName,
           ),
         ])
         .setReplyTo(
@@ -1170,7 +1096,7 @@ export const processGroupPaymentEmail = onRequest(
         `Correo enviado exitosamente con el recibo de pago en PDF a ${userData.email}`,
       );
 
-      res.status(200).send('Correo enviado exitosamente');
+      return res.status(200).send('Correo enviado exitosamente');
     } catch (error) {
       console.error('Error al enviar el correo con el recibo de pago:', error);
       res.status(500).send('Error al procesar el envío de correo');

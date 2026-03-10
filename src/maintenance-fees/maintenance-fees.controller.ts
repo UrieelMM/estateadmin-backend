@@ -62,6 +62,7 @@ export class MaintenanceFeesController {
       paymentDate: req.body.paymentDate,
       paymentReference: req.body.paymentReference,
       towerSnapshot: req.body.towerSnapshot,
+      userId: req.body.userId || req.body.uid,
       paymentType: req.body.paymentType,
       paymentGroupId: req.body.paymentGroupId,
       month: req.body.month,

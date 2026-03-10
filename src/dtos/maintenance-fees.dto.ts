@@ -83,6 +83,10 @@ export class MaintenanceFeesDto {
   @MaxLength(TOWER_SNAPSHOT_MAX_LENGTH)
   towerSnapshot?: string;
 
+  @IsNotEmpty()
+  @IsString()
+  userId: string;
+
   @IsString()
   financialAccountId: string;
 

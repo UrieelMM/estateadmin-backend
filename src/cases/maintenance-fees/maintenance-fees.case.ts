@@ -1,4 +1,9 @@
-import { InternalServerErrorException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
 import { format } from 'date-fns';
@@ -8,6 +13,77 @@ import {
   resolveTowerSnapshot,
   sanitizeTowerSnapshot,
 } from 'src/utils/tower-snapshot';
+
+const normalizeEmail = (value: unknown): string =>
+  String(value || '')
+    .trim()
+    .toLowerCase();
+
+const resolveCondominiumUser = async (params: {
+  clientId: string;
+  condominiumId: string;
+  requestedUserId: string;
+  numberCondominium: string;
+  email?: string;
+  towerSnapshot?: string;
+}): Promise<{ userId: string; userData: any }> => {
+  const usersRef = admin
+    .firestore()
+    .collection('clients')
+    .doc(params.clientId)
+    .collection('condominiums')
+    .doc(params.condominiumId)
+    .collection('users');
+
+  const normalizedNumber = String(params.numberCondominium || '').trim();
+  const normalizedEmail = normalizeEmail(params.email);
+  const normalizedTower = sanitizeTowerSnapshot(params.towerSnapshot);
+  const normalizedRequestedUserId = String(params.requestedUserId || '').trim();
+  if (!normalizedRequestedUserId) {
+    throw new BadRequestException(
+      'userId es obligatorio para registrar pagos identificados.',
+    );
+  }
+
+  const requestedUserDoc = await usersRef.doc(normalizedRequestedUserId).get();
+  if (!requestedUserDoc.exists) {
+    throw new NotFoundException(
+      `No se encontró el usuario objetivo con id ${normalizedRequestedUserId}.`,
+    );
+  }
+
+  const requestedUserData = requestedUserDoc.data() || {};
+  const requestedUserNumber = String(requestedUserData.number || '').trim();
+  const requestedUserEmail = normalizeEmail(requestedUserData.email);
+  const requestedUserTower = sanitizeTowerSnapshot(requestedUserData.tower);
+
+  if (normalizedNumber && requestedUserNumber !== normalizedNumber) {
+    throw new ConflictException(
+      'El userId enviado no coincide con el numberCondominium proporcionado.',
+    );
+  }
+
+  if (normalizedEmail && requestedUserEmail && requestedUserEmail !== normalizedEmail) {
+    throw new ConflictException(
+      'El userId enviado no coincide con el email proporcionado.',
+    );
+  }
+
+  if (
+    normalizedTower &&
+    requestedUserTower &&
+    requestedUserTower !== normalizedTower
+  ) {
+    throw new ConflictException(
+      'El userId enviado no coincide con la torre proporcionada.',
+    );
+  }
+
+  return {
+    userId: requestedUserDoc.id,
+    userData: requestedUserData,
+  };
+};
 
 /**
  * Reglas:
@@ -63,6 +139,7 @@ export const MaintenancePaymentCase = async (
     paymentReference,
     financialAccountId,
     towerSnapshot,
+    userId: requestedUserId,
   } = maintenancePaymentDto;
 
   // NUEVO: Obtener el arreglo de startAt(s) enviado desde el componente (para multipago)
@@ -87,26 +164,21 @@ export const MaintenancePaymentCase = async (
   const amountPending = parseFloat(amountPendingStr || '0');
   const cargoTotal = parseFloat(maintenancePaymentDto.cargoTotal || '0');
 
-  // 1. Buscar al usuario por su número
-  const userSnap = await admin
-    .firestore()
-    .collection('clients')
-    .doc(clientId)
-    .collection('condominiums')
-    .doc(condominiumId)
-    .collection('users')
-    .where('number', '==', numberCondominium)
-    .get();
+  const resolvedUser = await resolveCondominiumUser({
+    clientId,
+    condominiumId,
+    requestedUserId,
+    numberCondominium,
+    email,
+    towerSnapshot,
+  });
 
-  if (userSnap.empty) {
-    throw new InternalServerErrorException(
-      `No se encontró un usuario con el número de condómino: ${numberCondominium}.`,
-    );
-  }
-
-  const userDoc = userSnap.docs[0];
-  const userId = userDoc.id;
-  const userData = userDoc.data();
+  const userId = resolvedUser.userId;
+  const userData = resolvedUser.userData;
+  const resolvedNumberCondominium =
+    String(userData?.number || numberCondominium || '').trim();
+  const resolvedEmail =
+    normalizeEmail(userData?.email) || normalizeEmail(email) || email || '';
   const phoneNumber = userData?.phone || null;
   const invoiceRequired = userData?.invoiceRequired ?? false;
   const currentTotalCredit = parseFloat(userData.totalCreditBalance || '0');
@@ -244,11 +316,12 @@ export const MaintenancePaymentCase = async (
       const individualPaymentId = uuidv4();
       const paymentRecord = {
         paymentId: individualPaymentId,
-        email,
-        numberCondominium,
+        email: resolvedEmail,
+        numberCondominium: resolvedNumberCondominium,
         clientId,
         condominiumId,
         userId,
+        userUID: userId,
         chargeUID: assignment.chargeId,
         month: monthFormatted,
         yearMonth,
@@ -306,11 +379,12 @@ export const MaintenancePaymentCase = async (
       paymentGroupId || defaultPaymentGroupIdForMulti;
     const aggregatedPaymentRecord = {
       paymentId: aggregatedPaymentId,
-      email,
-      numberCondominium,
+      email: resolvedEmail,
+      numberCondominium: resolvedNumberCondominium,
       clientId,
       condominiumId,
       userId,
+      userUID: userId,
       chargeUID: chargeId || '', // Se puede conservar el chargeUID original o dejarlo vacío
       month: monthFormatted,
       yearMonth,
@@ -412,8 +486,8 @@ export const MaintenancePaymentCase = async (
       await chargeRef.set({
         concept: chargeConcept,
         amount: remainingAmount,
-        email,
-        numberCondominium,
+        email: resolvedEmail,
+        numberCondominium: resolvedNumberCondominium,
         phone: phoneNumber,
         month: monthFormatted,
         yearMonth: yearMonth,
@@ -472,11 +546,12 @@ export const MaintenancePaymentCase = async (
       .padStart(12, '0')}`;
     const paymentData = {
       paymentId,
-      email,
-      numberCondominium,
+      email: resolvedEmail,
+      numberCondominium: resolvedNumberCondominium,
       clientId,
       condominiumId,
       userId,
+      userUID: userId,
       chargeUID: chargeId || '',
       month: monthFormatted,
       yearMonth: yearMonth,

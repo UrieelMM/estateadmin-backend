@@ -12,11 +12,28 @@ import {
 
 const resolveUserForAppliedPayment = async (params: {
   usersRef: FirebaseFirestore.CollectionReference;
+  userId?: string;
   appliedToCondomino?: string;
   fallbackNumberCondominium?: string;
 }): Promise<{ userId: string; tower?: string } | null> => {
+  const directUserId = String(params.userId || '').trim();
   const rawTarget = String(params.appliedToCondomino || '').trim();
   const fallbackNumber = String(params.fallbackNumberCondominium || '').trim();
+
+  if (directUserId) {
+    const byUidDoc = await params.usersRef.doc(directUserId).get();
+    if (!byUidDoc.exists) {
+      throw new NotFoundException(
+        `No existe el usuario objetivo con userId: ${directUserId}`,
+      );
+    }
+
+    const userData = byUidDoc.data() || {};
+    return {
+      userId: byUidDoc.id,
+      tower: userData.tower,
+    };
+  }
 
   if (rawTarget) {
     const byUidDoc = await params.usersRef.doc(rawTarget).get();
@@ -70,7 +87,14 @@ const resolveUserForAppliedPayment = async (params: {
 export const EditUnidentifiedPaymentCase = async (
   dto: EditUnidentifiedPaymentDto,
 ) => {
-  const { clientId, condominiumId, paymentId, appliedToCondomino, appliedTowerSnapshot } = dto;
+  const {
+    clientId,
+    condominiumId,
+    paymentId,
+    userId,
+    appliedToCondomino,
+    appliedTowerSnapshot,
+  } = dto;
 
   try {
     const condominiumRef = admin
@@ -102,6 +126,7 @@ export const EditUnidentifiedPaymentCase = async (
     const usersRef = condominiumRef.collection('users');
     const resolvedUser = await resolveUserForAppliedPayment({
       usersRef,
+      userId,
       appliedToCondomino,
       fallbackNumberCondominium: String(paymentData.numberCondominium || ''),
     });
