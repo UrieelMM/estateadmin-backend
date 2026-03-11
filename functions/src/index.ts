@@ -70,43 +70,62 @@ const toCents = (value: any): number => {
   return Math.round(parsed);
 };
 
+const resolveBasePaidCents = (payment: any): number => {
+  const amountPaid = toCents(payment?.amountPaid);
+  const paymentAmountReference = toCents(payment?.paymentAmountReference);
+  return Math.max(amountPaid, paymentAmountReference);
+};
+
+const resolvePaidDisplayCents = (payment: any): number => {
+  // Basado en example.ts:
+  // totalPaidWithCredit = totalPaid - creditUsed + max(totalCreditBalance - totalCreditUsed, 0)
+  const basePaid = resolveBasePaidCents(payment);
+  const creditBalance = toCents(payment?.creditBalance);
+  const creditUsed = toCents(payment?.creditUsed);
+  const totalCredit = creditBalance - creditUsed;
+  return basePaid - creditUsed + Math.max(totalCredit, 0);
+};
+
 const resolveChargeCents = (payment: any): number => {
   const directCharge = toCents(payment?.chargeValue);
-  if (directCharge !== 0) {
+  const basePaid = resolveBasePaidCents(payment);
+  const amountPending = toCents(payment?.amountPending);
+  const reconstructedByPending =
+    basePaid > 0 && amountPending > 0 ? basePaid + amountPending : 0;
+  const referenceAmount = toCents(payment?.referenceAmount);
+
+  // Nunca degradar cargo: si hay dos fuentes, quedarse con la mayor.
+  if (directCharge > 0 && reconstructedByPending > 0) {
+    return Math.max(directCharge, reconstructedByPending);
+  }
+  if (directCharge > 0) {
     return directCharge;
   }
-
-  const paymentReference = toCents(payment?.paymentAmountReference);
-  if (paymentReference !== 0) {
-    return paymentReference;
+  if (reconstructedByPending > 0) {
+    return reconstructedByPending;
   }
-
-  const paid = toCents(payment?.amountPaid);
-  const creditBalance = toCents(payment?.creditBalance);
-  if (paid !== 0 || creditBalance !== 0) {
-    return Math.max(paid - creditBalance, 0);
+  if (referenceAmount > 0) {
+    return referenceAmount;
   }
-
-  return 0;
+  return basePaid;
 };
 
 const resolveSaldoCents = (payment: any): number => {
-  const paid = toCents(payment?.amountPaid);
+  const paid = resolvePaidDisplayCents(payment);
   const charge = resolveChargeCents(payment);
-  const creditBalance = toCents(payment?.creditBalance);
-  const amountPending = toCents(payment?.amountPending);
-
   const baseSaldo = paid - charge;
   if (baseSaldo !== 0) {
     return baseSaldo;
   }
 
-  if (creditBalance !== 0) {
-    return creditBalance;
-  }
-
+  const amountPending = toCents(payment?.amountPending);
   if (amountPending !== 0) {
     return -amountPending;
+  }
+
+  const creditBalance = toCents(payment?.creditBalance);
+  if (creditBalance !== 0) {
+    return creditBalance;
   }
 
   return 0;
@@ -436,10 +455,11 @@ export const processGroupPaymentEmail = onRequest(
           );
 
           const formatSignedCurrency = (value: number) => {
-            if (value > 0) {
-              return `+${formatCurrency(value)}`;
+            const accountingValue = -value;
+            if (accountingValue > 0) {
+              return `+${formatCurrency(accountingValue)}`;
             }
-            return formatCurrency(value);
+            return formatCurrency(accountingValue);
           };
 
           // Usar la misma lógica canónica de cálculo que PDF/HTML
@@ -450,7 +470,7 @@ export const processGroupPaymentEmail = onRequest(
           const paymentRows = paymentsArray.map((payment) => {
             return {
               concept: buildConceptWithMonth(payment),
-              paidCents: toCents(payment.amountPaid),
+              paidCents: resolvePaidDisplayCents(payment),
               chargeCents: resolveChargeCents(payment),
               saldoCents: resolveSaldoCents(payment),
             };
@@ -585,19 +605,28 @@ export const processGroupPaymentEmail = onRequest(
       const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
       const formatSignedCurrency = (value: number) => {
-        if (value > 0) {
-          return `+${formatCurrency(value)}`;
+        const accountingValue = -value;
+        if (accountingValue > 0) {
+          return `+${formatCurrency(accountingValue)}`;
         }
-        return formatCurrency(value);
+        return formatCurrency(accountingValue);
       };
 
       // Datos de encabezado/legales
       const companyLogoUrl = String(clientData.logoUrl || '').trim();
+      const paymentReceivedImageUrl =
+        'https://firebasestorage.googleapis.com/v0/b/administracioncondominio-93419.appspot.com/o/estateAdminUploads%2Fassets%2FpagoSello.png?alt=media&token=88993c72-34fc-4d6e-8c15-93f4a58eea0a';
       const condominiumName = String(condominiumData.name || 'Sin nombre').trim();
       const condominiumAddress = String(
         condominiumData.address || 'Sin dirección',
       ).trim();
-      const signatureUrl = String(condominiumData.signatureUrl || '').trim();
+      const signatureUrl = String(
+        condominiumData.signatureUrl || clientData.signatureUrl || '',
+      ).trim();
+      const administrationName = String(
+        clientData.companyName || clientData.name || 'Administración',
+      ).trim();
+      const administrationEmail = String(clientData.email || '').trim();
       const residentName = residentFullName;
       const residentTower = String(
         userData?.tower || consolidatedPayment?.towerSnapshot || '',
@@ -615,65 +644,96 @@ export const processGroupPaymentEmail = onRequest(
           'Sin folio',
       ).trim();
 
+      const embedRemoteImage = async (url: string, contextLabel: string) => {
+        if (!url) {
+          return null;
+        }
+        try {
+          const response = await fetch(url);
+          if (!response.ok) {
+            return null;
+          }
+          const bytes = await response.arrayBuffer();
+          try {
+            return await pdfDoc.embedPng(bytes);
+          } catch (_pngError) {}
+          try {
+            return await pdfDoc.embedJpg(bytes);
+          } catch (_jpgError) {}
+          return null;
+        } catch (error) {
+          console.error(
+            `[processGroupPaymentEmail] Error al cargar imagen (${contextLabel}):`,
+            error,
+          );
+          return null;
+        }
+      };
+
       // Header
       page.drawRectangle({
         x: 0,
         y: height - 90,
         width,
         height: 90,
-        color: colorInstitucional,
+        color: rgb(1, 1, 1),
       });
       page.drawText('Recibo de pago', {
         x: 20,
-        y: height - 56,
+        y: height - 54,
         size: fontSizeTitle,
         font: fontBold,
-        color: rgb(1, 1, 1),
+        color: colorInstitucional,
+      });
+      page.drawLine({
+        start: { x: 0, y: height - 90 },
+        end: { x: width, y: height - 90 },
+        thickness: 2,
+        color: colorInstitucional,
       });
 
-      // Logo más grande en el header (con sobreescalado controlado para mitigar márgenes)
+      // Logo en header, contenido sin desbordar
       if (companyLogoUrl) {
-        try {
-          const logoResponse = await fetch(companyLogoUrl);
-          if (logoResponse.ok) {
-            const logoBytes = await logoResponse.arrayBuffer();
-            const logoContentType = String(
-              logoResponse.headers.get('content-type') || '',
-            ).toLowerCase();
-            const logoImage = logoContentType.includes('png')
-              ? await pdfDoc.embedPng(logoBytes)
-              : await pdfDoc.embedJpg(logoBytes);
+        const logoImage = await embedRemoteImage(companyLogoUrl, 'logo');
+        if (logoImage) {
+          const logoBoxWidth = 260;
+          const logoBoxHeight = 80;
+          const logoBoxX = width - logoBoxWidth - 16;
+          const logoBoxY = height - 86;
+          const fitScale = Math.min(
+            logoBoxWidth / logoImage.width,
+            logoBoxHeight / logoImage.height,
+          );
+          const drawWidth = logoImage.width * fitScale;
+          const drawHeight = logoImage.height * fitScale;
+          const drawX = logoBoxX + (logoBoxWidth - drawWidth) / 2;
+          const drawY = logoBoxY + (logoBoxHeight - drawHeight) / 2;
 
-            const logoBoxWidth = 230;
-            const logoBoxHeight = 74;
-            const fitScale = Math.min(
-              logoBoxWidth / logoImage.width,
-              logoBoxHeight / logoImage.height,
-            );
-            const overscale = 1.35;
-            const drawWidth = logoImage.width * fitScale * overscale;
-            const drawHeight = logoImage.height * fitScale * overscale;
-            const drawX = width - logoBoxWidth - 16 + (logoBoxWidth - drawWidth) / 2;
-            const drawY = height - 86 + (logoBoxHeight - drawHeight) / 2;
-
-            page.drawImage(logoImage, {
-              x: drawX,
-              y: drawY,
-              width: drawWidth,
-              height: drawHeight,
-            });
-          }
-        } catch (logoError) {
-          console.error('[processGroupPaymentEmail] Error al cargar logo:', logoError);
+          page.drawImage(logoImage, {
+            x: drawX,
+            y: drawY,
+            width: drawWidth,
+            height: drawHeight,
+          });
         }
       }
 
       // Datos legales del recibo
-      let infoY = height - 120;
+      let infoY = height - 122;
       const infoStep = 18;
       const drawInfoLine = (label: string, value: string) => {
-        page.drawText(`${label}: ${value || 'N/A'}`, {
+        const normalizedValue = value || 'N/A';
+        const labelText = `${label}: `;
+        page.drawText(labelText, {
           x: 20,
+          y: infoY,
+          size: fontSizeText,
+          font: fontBold,
+          color: rgb(0, 0, 0),
+        });
+        const labelWidth = fontBold.widthOfTextAtSize(labelText, fontSizeText);
+        page.drawText(normalizedValue, {
+          x: 20 + labelWidth,
           y: infoY,
           size: fontSizeText,
           font: fontRegular,
@@ -687,8 +747,14 @@ export const processGroupPaymentEmail = onRequest(
       drawInfoLine('Folio', folioValue);
       drawInfoLine('Condómino', residentName);
       drawInfoLine('Torre', residentTower || 'N/A');
-      drawInfoLine('Número / Departamento / Casa', residentNumber || 'N/A');
+      drawInfoLine('Número', residentNumber || 'N/A');
       drawInfoLine('Medio de pago', paymentMethod);
+
+      // Imagen "Pago recibido" (marca visual)
+      const paymentReceivedImage = await embedRemoteImage(
+        paymentReceivedImageUrl,
+        'pago-recibido',
+      );
 
       // Construir filas de pagos para PDF
       const paymentsArray = Array.isArray(consolidatedPayment.payments)
@@ -696,7 +762,7 @@ export const processGroupPaymentEmail = onRequest(
         : [consolidatedPayment];
 
       const paymentRows = paymentsArray.map((payment) => {
-        const paidCents = toCents(payment.amountPaid);
+        const paidCents = resolvePaidDisplayCents(payment);
         const chargeCents = resolveChargeCents(payment);
         const saldoCents = resolveSaldoCents(payment);
         return {
@@ -853,55 +919,105 @@ export const processGroupPaymentEmail = onRequest(
         color: rgb(0, 0, 0),
       });
 
-      // Firma del administrador
-      const signatureTopY = currentY - 90;
-      const signatureBoxWidth = 190;
-      const signatureBoxHeight = 70;
-      const signatureX = width - signatureBoxWidth - 36;
+      // Firma del administrador (solo imagen), centrada y cercana al footer
+      const footerBarHeight = 22;
+      const signatureBoxWidth = 260;
+      const signatureBoxHeight = 92;
+      const signatureX = (width - signatureBoxWidth) / 2;
+      const signatureY = footerBarHeight + 34;
 
-      if (signatureUrl) {
-        try {
-          const signatureResponse = await fetch(signatureUrl);
-          if (signatureResponse.ok) {
-            const signatureBytes = await signatureResponse.arrayBuffer();
-            const signatureContentType = String(
-              signatureResponse.headers.get('content-type') || '',
-            ).toLowerCase();
-            const signatureImage = signatureContentType.includes('png')
-              ? await pdfDoc.embedPng(signatureBytes)
-              : await pdfDoc.embedJpg(signatureBytes);
-            const signatureDims = signatureImage.scaleToFit(
-              signatureBoxWidth,
-              signatureBoxHeight,
-            );
-
-            page.drawImage(signatureImage, {
-              x: signatureX + (signatureBoxWidth - signatureDims.width) / 2,
-              y: signatureTopY,
-              width: signatureDims.width,
-              height: signatureDims.height,
-            });
-          }
-        } catch (signatureError) {
-          console.error(
-            '[processGroupPaymentEmail] Error al cargar signatureUrl:',
-            signatureError,
+      // Imagen "Pago recibido" debajo de la tabla y arriba de firma
+      if (paymentReceivedImage) {
+        const baseStampWidth = 150;
+        const baseStampHeight = 150;
+        const stampBottomLimit = signatureY + signatureBoxHeight + 12;
+        const stampTopLimit = currentY - 12;
+        const availableHeight = Math.max(stampTopLimit - stampBottomLimit, 0);
+        if (availableHeight > 24) {
+          const maxHeightForStamp = Math.min(baseStampHeight, availableHeight);
+          const stampScale = Math.min(
+            baseStampWidth / paymentReceivedImage.width,
+            maxHeightForStamp / paymentReceivedImage.height,
           );
+          const drawStampWidth = paymentReceivedImage.width * stampScale;
+          const drawStampHeight = paymentReceivedImage.height * stampScale;
+          const stampX = width - drawStampWidth - 28;
+          const stampY =
+            stampBottomLimit + (availableHeight - drawStampHeight) / 2;
+
+          page.drawImage(paymentReceivedImage, {
+            x: stampX,
+            y: stampY,
+            width: drawStampWidth,
+            height: drawStampHeight,
+            opacity: 1,
+          });
         }
       }
 
-      page.drawLine({
-        start: { x: signatureX, y: signatureTopY - 8 },
-        end: { x: signatureX + signatureBoxWidth, y: signatureTopY - 8 },
-        thickness: 1,
-        color: rgb(0, 0, 0),
-      });
-      page.drawText('Firma del administrador', {
-        x: signatureX + 22,
-        y: signatureTopY - 24,
+      if (signatureUrl) {
+        const signatureImage = await embedRemoteImage(signatureUrl, 'signature');
+        if (signatureImage) {
+          const signatureScale = Math.min(
+            signatureBoxWidth / signatureImage.width,
+            signatureBoxHeight / signatureImage.height,
+          );
+          const drawWidth = signatureImage.width * signatureScale;
+          const drawHeight = signatureImage.height * signatureScale;
+          page.drawImage(signatureImage, {
+            x: signatureX + (signatureBoxWidth - drawWidth) / 2,
+            y: signatureY,
+            width: drawWidth,
+            height: drawHeight,
+          });
+        } else {
+          console.warn(
+            '[processGroupPaymentEmail] signatureUrl definido pero no se pudo renderizar en PDF',
+          );
+        }
+      } else {
+        console.warn(
+          '[processGroupPaymentEmail] No se encontró signatureUrl en condominio/cliente',
+        );
+      }
+
+      // Datos de administración debajo de la firma
+      const adminInfoY = footerBarHeight + 10;
+      const adminLine1 = administrationName || 'Administración';
+      const adminLine2 = administrationEmail || 'Sin correo';
+      const adminLine1Width = fontRegular.widthOfTextAtSize(adminLine1, fontSizeSmall);
+      const adminLine2Width = fontRegular.widthOfTextAtSize(adminLine2, fontSizeSmall);
+      page.drawText(adminLine1, {
+        x: (width - adminLine1Width) / 2,
+        y: adminInfoY + 10,
         size: fontSizeSmall,
         font: fontRegular,
         color: rgb(0, 0, 0),
+      });
+      page.drawText(adminLine2, {
+        x: (width - adminLine2Width) / 2,
+        y: adminInfoY,
+        size: fontSizeSmall,
+        font: fontRegular,
+        color: rgb(0, 0, 0),
+      });
+
+      // Footer: barra inferior en color institucional
+      page.drawRectangle({
+        x: 0,
+        y: 0,
+        width,
+        height: footerBarHeight,
+        color: colorInstitucional,
+      });
+      const pageLabel = `Página 1 de ${pdfDoc.getPageCount()}`;
+      const pageLabelWidth = fontBold.widthOfTextAtSize(pageLabel, 9);
+      page.drawText(pageLabel, {
+        x: width - pageLabelWidth - 14,
+        y: 7,
+        size: 9,
+        font: fontBold,
+        color: rgb(1, 1, 1),
       });
 
       const pdfBytes = await pdfDoc.save();

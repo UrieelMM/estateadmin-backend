@@ -61,6 +61,7 @@ export class UsersAuthController {
         companyName: registerClientDto.companyName, // Razón social
         phoneNumber: registerClientDto.phoneNumber,
         plan: registerClientDto.plan,
+        pricing: registerClientDto.pricing,
         proFunctions: registerClientDto.proFunctions,
         address: registerClientDto.address,
         fullFiscalAddress: registerClientDto.fullFiscalAddress, // Domicilio fiscal completo

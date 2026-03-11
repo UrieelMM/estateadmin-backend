@@ -12,6 +12,15 @@ const generateSessionToken = (uid: string) => {
   return hmac.digest('hex');
 };
 
+const removeUndefinedFields = (data: Record<string, any>) => {
+  return Object.entries(data).reduce((acc, [key, value]) => {
+    if (value !== undefined) {
+      acc[key] = value;
+    }
+    return acc;
+  }, {} as Record<string, any>);
+};
+
 // Verificación de Super Admin
 export const verifySuperAdminAccess = onCall(
   {
@@ -224,8 +233,42 @@ export const superAdminOperation = onCall(
 
       switch (operation) {
         case 'create_client':
-          // Implementación para crear cliente
-          result = { success: true, message: 'Cliente creado correctamente' };
+          if (!payload || typeof payload !== 'object') {
+            throw new HttpsError(
+              'invalid-argument',
+              'Se requiere payload para crear cliente',
+            );
+          }
+
+          {
+            const explicitClientId =
+              typeof payload.clientId === 'string'
+                ? payload.clientId.trim()
+                : '';
+            const newClientRef = explicitClientId
+              ? admin.firestore().collection('clients').doc(explicitClientId)
+              : admin.firestore().collection('clients').doc();
+
+            const createPayload = removeUndefinedFields({
+              ...payload,
+              uid: explicitClientId || newClientRef.id,
+              plan: payload.plan,
+              pricing: payload.pricing ?? null,
+              condominiumLimit: payload.condominiumLimit,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              createdBy: uid,
+              updatedBy: uid,
+            });
+
+            await newClientRef.set(createPayload, { merge: true });
+
+            result = {
+              success: true,
+              message: 'Cliente creado correctamente',
+              clientId: newClientRef.id,
+            };
+          }
           break;
 
         case 'update_client':
@@ -248,11 +291,15 @@ export const superAdminOperation = onCall(
           }
 
           // Actualizar el cliente
-          await clientRef.update({
+          const updatePayload = removeUndefinedFields({
             ...payload,
+            plan: payload.plan,
+            pricing: payload.pricing,
+            condominiumLimit: payload.condominiumLimit,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedBy: uid,
           });
+          await clientRef.update(updatePayload);
 
           result = {
             success: true,

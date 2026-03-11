@@ -73,6 +73,7 @@ export class ToolsService {
         items.push({
           id: doc.id,
           ...data,
+          pricing: data.pricing ?? null,
           // Convertir timestamps a formato ISO para facilitar el manejo en el frontend
           registrationDate: data.registrationDate
             ? data.registrationDate.toDate().toISOString()
@@ -184,6 +185,119 @@ export class ToolsService {
     } catch (error) {
       throw new Error(`Error al obtener URLs de formularios: ${error.message}`);
     }
+  }
+
+  async deleteCustomerInformation(recordId: string) {
+    const sanitizedRecordId = this.sanitizeString(recordId);
+    if (!sanitizedRecordId) {
+      throw new BadRequestException(
+        'El parámetro recordId es obligatorio para eliminar el registro',
+      );
+    }
+
+    const customerInfoDoc = await this.findDocumentByRecordId(
+      ['newCustomerInformationForm', 'customerInformation'],
+      sanitizedRecordId,
+      ['recordId', 'formId'],
+    );
+
+    if (!customerInfoDoc) {
+      throw new NotFoundException(
+        `No se encontró customer information para recordId: ${sanitizedRecordId}`,
+      );
+    }
+
+    const customerData = customerInfoDoc.data;
+    const linkedFormId = this.sanitizeString(
+      customerData.formId || customerData.recordId || '',
+    );
+
+    // Restaurar disponibilidad del/los formUrl(s) asociados antes de eliminar el registro.
+    const formUrlRefs = new Map<
+      string,
+      FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>
+    >();
+
+    const exactFormUrlDoc = await admin
+      .firestore()
+      .collection('formUrls')
+      .doc(customerInfoDoc.id)
+      .get();
+    if (exactFormUrlDoc.exists) {
+      formUrlRefs.set(exactFormUrlDoc.id, exactFormUrlDoc.ref);
+    }
+
+    const byCustomerInfoIdQuery = await admin
+      .firestore()
+      .collection('formUrls')
+      .where('customerInfoId', '==', customerInfoDoc.id)
+      .get();
+    byCustomerInfoIdQuery.docs.forEach((doc) => {
+      formUrlRefs.set(doc.id, doc.ref);
+    });
+
+    if (linkedFormId) {
+      const byFormIdQuery = await admin
+        .firestore()
+        .collection('formUrls')
+        .where('formId', '==', linkedFormId)
+        .get();
+      byFormIdQuery.docs.forEach((doc) => {
+        formUrlRefs.set(doc.id, doc.ref);
+      });
+    }
+
+    if (formUrlRefs.size > 0) {
+      const batch = admin.firestore().batch();
+      formUrlRefs.forEach((ref) => {
+        batch.update(ref, {
+          status: 'active',
+          active: true,
+          usedAt: admin.firestore.FieldValue.delete(),
+          customerInfoId: admin.firestore.FieldValue.delete(),
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+      await batch.commit();
+    }
+
+    await customerInfoDoc.ref.delete();
+
+    return {
+      success: true,
+      message: 'Customer information eliminado correctamente',
+      deletedRecordId: customerInfoDoc.id,
+      restoredFormUrls: formUrlRefs.size,
+    };
+  }
+
+  async deleteFormUrl(recordId: string) {
+    const sanitizedRecordId = this.sanitizeString(recordId);
+    if (!sanitizedRecordId) {
+      throw new BadRequestException(
+        'El parámetro recordId es obligatorio para eliminar el formUrl',
+      );
+    }
+
+    const formUrlDoc = await this.findDocumentByRecordId(
+      ['formUrls'],
+      sanitizedRecordId,
+      ['formId'],
+    );
+
+    if (!formUrlDoc) {
+      throw new NotFoundException(
+        `No se encontró formUrl para recordId: ${sanitizedRecordId}`,
+      );
+    }
+
+    await formUrlDoc.ref.delete();
+
+    return {
+      success: true,
+      message: 'Form URL eliminado correctamente',
+      deletedRecordId: formUrlDoc.id,
+    };
   }
 
   async searchPlaces(
@@ -359,6 +473,54 @@ export class ToolsService {
     );
 
     return sanitized.trim();
+  }
+
+  private async findDocumentByRecordId(
+    collectionNames: string[],
+    recordId: string,
+    lookupFields: string[] = [],
+  ): Promise<{
+    id: string;
+    ref: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>;
+    data: FirebaseFirestore.DocumentData;
+  } | null> {
+    for (const collectionName of collectionNames) {
+      const docById = await admin
+        .firestore()
+        .collection(collectionName)
+        .doc(recordId)
+        .get();
+
+      if (docById.exists) {
+        return {
+          id: docById.id,
+          ref: docById.ref,
+          data: docById.data() || {},
+        };
+      }
+    }
+
+    for (const collectionName of collectionNames) {
+      for (const field of lookupFields) {
+        const querySnapshot = await admin
+          .firestore()
+          .collection(collectionName)
+          .where(field, '==', recordId)
+          .limit(1)
+          .get();
+
+        if (!querySnapshot.empty) {
+          const doc = querySnapshot.docs[0];
+          return {
+            id: doc.id,
+            ref: doc.ref,
+            data: doc.data() || {},
+          };
+        }
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -701,8 +863,22 @@ export class ToolsService {
         );
       }
 
-      // Añadir valores predeterminados para campos opcionales
-      sanitizedData.plan = newCustomerInfo.plan || 'Basic';
+      // Añadir valores para campos opcionales
+      sanitizedData.plan = newCustomerInfo.plan
+        ? this.sanitizeString(String(newCustomerInfo.plan))
+        : null;
+      if (
+        newCustomerInfo.pricing !== undefined &&
+        newCustomerInfo.pricing !== null &&
+        String(newCustomerInfo.pricing).trim() !== ''
+      ) {
+        const numericPricing = Number(newCustomerInfo.pricing);
+        sanitizedData.pricing = Number.isFinite(numericPricing)
+          ? numericPricing
+          : this.sanitizeString(String(newCustomerInfo.pricing));
+      } else {
+        sanitizedData.pricing = null;
+      }
       sanitizedData.billingFrequency =
         newCustomerInfo.billingFrequency || 'monthly';
 

@@ -8,8 +8,6 @@ import {
   IsString,
   MaxLength,
   Min,
-  Max,
-  ValidateIf,
 } from 'class-validator';
 
 class CondominiumInfo {
@@ -21,13 +19,6 @@ class CondominiumInfo {
   @IsString()
   @MaxLength(300)
   address: string;
-}
-
-export enum PlanType {
-  Basic = 'Basic',
-  Essential = 'Essential',
-  Professional = 'Professional',
-  Premium = 'Premium',
 }
 
 export enum BillingFrequency {
@@ -71,10 +62,11 @@ export class RegisterClientDto {
   phoneNumber: string;
 
   @IsOptional()
-  @IsEnum(PlanType, {
-    message: 'El plan debe ser Basic, Essential, Professional o Premium',
-  })
-  plan: PlanType = PlanType.Basic;
+  @IsString()
+  plan: string;
+
+  @IsOptional()
+  pricing?: number | string;
 
   @IsOptional()
   @IsArray()
@@ -143,18 +135,7 @@ export class RegisterClientDto {
   // Límite de condominios
   @IsNotEmpty()
   @IsNumber()
-  @ValidateIf(o => o.plan === PlanType.Basic)
-  @Min(1, { message: 'El plan Basic permite entre 1 y 50 condominios' })
-  @Max(50, { message: 'El plan Basic permite entre 1 y 50 condominios' })
-  @ValidateIf(o => o.plan === PlanType.Essential)
-  @Min(51, { message: 'El plan Essential permite entre 51 y 100 condominios' })
-  @Max(100, { message: 'El plan Essential permite entre 51 y 100 condominios' })
-  @ValidateIf(o => o.plan === PlanType.Professional)
-  @Min(101, { message: 'El plan Professional permite entre 101 y 250 condominios' })
-  @Max(250, { message: 'El plan Professional permite entre 101 y 250 condominios' })
-  @ValidateIf(o => o.plan === PlanType.Premium)
-  @Min(251, { message: 'El plan Premium permite entre 251 y 500 condominios' })
-  @Max(500, { message: 'El plan Premium permite entre 251 y 500 condominios' })
+  @Min(1, { message: 'El límite de condominios debe ser mayor o igual a 1' })
   condominiumLimit: number;
 
   // Aceptación de términos y condiciones

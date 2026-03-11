@@ -77,10 +77,11 @@ export class NewCustomerInfoDto {
   photoURL?: string;
 
   @IsOptional()
-  @IsEnum(['Basic', 'Essential', 'Professional', 'Premium'], {
-    message: 'El plan debe ser uno de los siguientes: Basic, Essential, Professional, Premium',
-  })
-  plan?: 'Basic' | 'Essential' | 'Professional' | 'Premium' = 'Basic';
+  @IsString()
+  plan?: string;
+
+  @IsOptional()
+  pricing?: string | number;
 
   @IsOptional()
   @IsString()

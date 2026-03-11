@@ -1,4 +1,14 @@
-import { Controller, Post, Body, Get, Param, UseGuards, Query, BadRequestException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Param,
+  UseGuards,
+  Query,
+  BadRequestException,
+  Delete,
+} from '@nestjs/common';
 import { ToolsService } from './tools.service';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { ClientPlanDto } from 'src/dtos/client-plan.dto';
@@ -118,10 +128,6 @@ export class ToolsController {
   @Get('customer-information')
   @Throttle({ default: { limit: 20, ttl: 60000 } })
   async getCustomerInformation(@Query() paginationQuery: PaginationQueryDto) {
-    console.log(
-      'Obteniendo información de clientes:',
-      `página ${paginationQuery.page}, ${paginationQuery.perPage} por página`,
-    );
 
     return this.toolsService.getCustomerInformation(
       paginationQuery.page,
@@ -141,5 +147,17 @@ export class ToolsController {
       paginationQuery.page,
       paginationQuery.perPage
     );
+  }
+
+  @Delete('customer-information/:recordId')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async deleteCustomerInformation(@Param('recordId') recordId: string) {
+    return this.toolsService.deleteCustomerInformation(recordId);
+  }
+
+  @Delete('form-urls/:recordId')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async deleteFormUrl(@Param('recordId') recordId: string) {
+    return this.toolsService.deleteFormUrl(recordId);
   }
 }
