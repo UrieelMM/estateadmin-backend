@@ -42,6 +42,10 @@ export const RegisterClientCase = async (
   } = registerClientDto;
 
   const clientRecord = uuidv4();
+  const registrationDate = new Date();
+  const billingAnchorDay = registrationDate.getDate();
+  const initialNextBillingDate =
+    admin.firestore.Timestamp.fromDate(registrationDate);
 
   try {
     // Primero crear el usuario en Firebase Auth para asegurar que no hay conflictos
@@ -97,6 +101,13 @@ export const RegisterClientCase = async (
       pricing: pricing ?? null,
       condominiumLimit,
       createdDate: admin.firestore.FieldValue.serverTimestamp(),
+      status: 'active',
+      billingAnchorDay,
+      nextBillingDate: initialNextBillingDate,
+      stripeCustomerId: null,
+      ownerAdminUid: userRecord.uid,
+      ownerEmail: email,
+      defaultCondominiumId: condominiumUid,
       condominiumsUids: [condominiumUid],
       currency, // Utilizamos la variable extraída de la desestructuración
       language, // Utilizamos la variable extraída de la desestructuración
@@ -142,7 +153,15 @@ export const RegisterClientCase = async (
     };
     await adminProfileRef.set(adminProfileData);
 
-    return { clientData, adminProfileData, condominiumInfo };
+    return {
+      clientData,
+      adminProfileData,
+      condominiumInfo,
+      clientId: clientRecord,
+      condominiumId: condominiumUid,
+      adminUid: userRecord.uid,
+      registrationDate: registrationDate.toISOString(),
+    };
   } catch (error) {
     console.error(
       'Error al registrar el cliente y su cuenta administrativa',

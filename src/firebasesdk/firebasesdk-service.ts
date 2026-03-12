@@ -76,7 +76,33 @@ export class FirebaseAuthService {
   }
 
   async createClient(registerClientCase: RegisterClientDto) {
-    return await RegisterClientCase(registerClientCase);
+    const createdClient = await RegisterClientCase(registerClientCase);
+
+    try {
+      const billingResult = await this.stripeService.bootstrapClientBilling({
+        clientId: createdClient.clientId,
+        condominiumId: createdClient.condominiumId,
+        adminUid: createdClient.adminUid,
+      });
+
+      return {
+        ...createdClient,
+        billing: billingResult,
+      };
+    } catch (billingError) {
+      this.logger.error(
+        `Error al inicializar facturación automática para clientId=${createdClient.clientId}: ${billingError?.message || billingError}`,
+      );
+
+      return {
+        ...createdClient,
+        billing: {
+          success: false,
+          message: 'Cliente creado, pero la facturación inicial quedó pendiente',
+          error: billingError?.message || String(billingError),
+        },
+      };
+    }
   }
 
   async createUserWithEmail(registerUserDto: RegisterUserDto) {

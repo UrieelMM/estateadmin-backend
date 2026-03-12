@@ -142,24 +142,9 @@ export class StripeController {
         );
       }
 
-      // Parsear el payload para obtener clientId y condominiumId
-      const event = JSON.parse(rawBody.toString());
-      const { clientId, condominiumId } = event.data?.object?.metadata || {};
-
-      if (!clientId || !condominiumId) {
-        this.logger.warn(
-          `Evento ${event.type} sin clientId o condominiumId, ignorando...`,
-        );
-        return res
-          .status(HttpStatus.OK)
-          .json({ received: true, ignored: true });
-      }
-
       const result = await this.stripeService.processWebhookEvent(
         signature,
         rawBody,
-        clientId,
-        condominiumId,
       );
       this.logger.log('Webhook procesado exitosamente');
       return res.status(HttpStatus.OK).json(result);
