@@ -1,6 +1,6 @@
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
-import { CondominiumStatus } from 'src/dtos/register-client.dto';
+import { BillingFrequency, CondominiumStatus } from 'src/dtos/register-client.dto';
 
 export const RegisterCondominiumCase = async (condominiumData: {
   name: string;
@@ -12,6 +12,7 @@ export const RegisterCondominiumCase = async (condominiumData: {
   pricingWithoutTax?: number | string;
   pricingWithoutIVA?: number | string;
   pricingWithoutIva?: number | string;
+  billingFrequency?: BillingFrequency;
   condominiumLimit: number;
   status: CondominiumStatus;
   proFunctions?: string[];
@@ -29,6 +30,7 @@ export const RegisterCondominiumCase = async (condominiumData: {
       pricingWithoutTax,
       pricingWithoutIVA,
       pricingWithoutIva,
+      billingFrequency = BillingFrequency.Monthly,
       condominiumLimit,
       status = CondominiumStatus.Pending,
       proFunctions = [],
@@ -106,6 +108,7 @@ export const RegisterCondominiumCase = async (condominiumData: {
         plan,
         pricing: resolvedPricing,
         pricingWithoutTax: resolvedPricingWithoutTax,
+        billingFrequency,
         condominiumLimit,
         status,
         proFunctions,
@@ -132,6 +135,7 @@ export const RegisterCondominiumCase = async (condominiumData: {
       plan,
       pricing: resolvedPricing,
       pricingWithoutTax: resolvedPricingWithoutTax,
+      billingFrequency,
       condominiumLimit,
       status,
       proFunctions,

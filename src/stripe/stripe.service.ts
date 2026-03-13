@@ -21,12 +21,21 @@ export class StripeService {
   private readonly mxVatRatePercent = 16;
   private mxVatTaxRateIdCache: string | null = null;
   private readonly defaultBillingCurrency = 'MXN';
+  private readonly billingIntervalOverrideDays: number | null;
 
   constructor() {
     // Inicializar Stripe con la clave secreta
     this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
       apiVersion: '2025-03-31.basil',
     });
+    this.billingIntervalOverrideDays = this.parseBillingIntervalOverrideDays(
+      process.env.BILLING_TEST_INTERVAL_DAYS,
+    );
+    if (this.billingIntervalOverrideDays) {
+      this.logger.warn(
+        `BILLING_TEST_INTERVAL_DAYS activo: ${this.billingIntervalOverrideDays} día(s).`,
+      );
+    }
   }
 
   async bootstrapClientBilling(params: {
@@ -44,9 +53,6 @@ export class StripeService {
 
     const clientData = clientDoc.data() || {};
     const issueDate = new Date();
-    const billingFrequency = this.normalizeBillingFrequency(
-      clientData.billingFrequency,
-    );
     const anchorDay = this.resolveAnchorDay(clientData, issueDate);
     const dueDays = this.resolveDueDays();
     const effectiveCondominiumId =
@@ -72,6 +78,7 @@ export class StripeService {
     const amount = condominiumBillingConfig.amount;
     const currency = condominiumBillingConfig.currency;
     const plan = condominiumBillingConfig.plan;
+    const billingFrequency = condominiumBillingConfig.billingFrequency;
 
     if (amount <= 0) {
       const nextBillingDate = this.addBillingInterval(
@@ -173,9 +180,6 @@ export class StripeService {
             continue;
           }
 
-          const billingFrequency = this.normalizeBillingFrequency(
-            clientData.billingFrequency,
-          );
           const anchorDay = this.resolveAnchorDay(clientData, now);
           const dueDays = this.resolveDueDays();
           const condominiumId =
@@ -199,6 +203,7 @@ export class StripeService {
           const amount = condominiumBillingConfig.amount;
           const currency = condominiumBillingConfig.currency;
           const plan = condominiumBillingConfig.plan;
+          const billingFrequency = condominiumBillingConfig.billingFrequency;
           if (amount <= 0) {
             this.logger.warn(
               `Se omite facturación recurrente para clientId=${clientDoc.id} condominiumId=${condominiumId} por pricing inválido`,
@@ -1994,12 +1999,30 @@ export class StripeService {
     return this.billingDueDays;
   }
 
-  private resolveBillingIntervalOverrideDays(): number | null {
-    const envValue = Number(process.env.BILLING_TEST_INTERVAL_DAYS || '');
-    if (Number.isFinite(envValue) && envValue >= 1) {
-      return Math.floor(envValue);
+  private parseBillingIntervalOverrideDays(rawValue: any): number | null {
+    const raw = String(rawValue || '').trim();
+    if (!raw) {
+      return null;
     }
+
+    const direct = Number(raw);
+    if (Number.isFinite(direct) && direct >= 1) {
+      return Math.floor(direct);
+    }
+
+    const numericFragment = raw.match(/\d+/)?.[0];
+    if (numericFragment) {
+      const parsed = Number(numericFragment);
+      if (Number.isFinite(parsed) && parsed >= 1) {
+        return Math.floor(parsed);
+      }
+    }
+
     return null;
+  }
+
+  private resolveBillingIntervalOverrideDays(): number | null {
+    return this.billingIntervalOverrideDays;
   }
 
   private resolveAnchorDay(clientData: Record<string, any>, fallback: Date): number {
@@ -2044,6 +2067,7 @@ export class StripeService {
     amount: number;
     currency: string;
     plan: string;
+    billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual';
     condominiumLimit: number | null;
     sourceData: Record<string, any>;
   }> {
@@ -2076,6 +2100,9 @@ export class StripeService {
       sourceData?.currency || clientData?.currency || this.defaultBillingCurrency,
     );
     const plan = String(sourceData?.plan || clientData?.plan || '').trim();
+    const billingFrequency = this.normalizeBillingFrequency(
+      sourceData?.billingFrequency || clientData?.billingFrequency,
+    );
     const condominiumLimitRaw = Number(
       sourceData?.condominiumLimit ?? clientData?.condominiumLimit,
     );
@@ -2087,6 +2114,7 @@ export class StripeService {
       amount,
       currency,
       plan,
+      billingFrequency,
       condominiumLimit,
       sourceData,
     };

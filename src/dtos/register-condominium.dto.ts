@@ -7,7 +7,7 @@ import {
   IsString,
   Matches,
 } from 'class-validator';
-import { CondominiumStatus } from './register-client.dto';
+import { BillingFrequency, CondominiumStatus } from './register-client.dto';
 
 export class RegisterCondominiumDto {
   @IsNotEmpty()
@@ -41,6 +41,13 @@ export class RegisterCondominiumDto {
 
   @IsOptional()
   pricingWithoutIva?: number | string;
+
+  @IsOptional()
+  @IsEnum(BillingFrequency, {
+    message:
+      'La frecuencia de facturación debe ser monthly, quarterly, biannual o annual',
+  })
+  billingFrequency?: BillingFrequency;
 
   @IsNotEmpty()
   @IsNumber()

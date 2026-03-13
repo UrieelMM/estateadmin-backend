@@ -148,11 +148,7 @@ export const RegisterClientCase = async (
       responsiblePersonPosition, // Cargo de la persona responsable
       cfdiUse, // Uso de CFDI (opcional)
       serviceStartDate, // Fecha de inicio de servicio
-      billingFrequency, // Periodicidad de facturación
       termsAccepted, // Aceptación de términos y condiciones
-      plan,
-      pricing: resolvedPricing,
-      pricingWithoutTax: resolvedPricingWithoutTax,
       condominiumLimit,
       createdDate: admin.firestore.FieldValue.serverTimestamp(),
       status: 'active',
@@ -181,6 +177,7 @@ export const RegisterClientCase = async (
       plan,
       pricing: resolvedPricing,
       pricingWithoutTax: resolvedPricingWithoutTax,
+      billingFrequency,
       proFunctions,
       condominiumLimit, // Límite de condominios según el plan
       status: CondominiumStatus.Pending, // Estado inicial del condominio
