@@ -627,6 +627,11 @@ export const processGroupPaymentEmail = onRequest(
         clientData.companyName || clientData.name || 'Administración',
       ).trim();
       const administrationEmail = String(clientData.email || '').trim();
+      const condominiumManager = String(
+        condominiumData.condominiumManager || '',
+      ).trim();
+      const administrationContact =
+        condominiumManager || administrationEmail || 'Sin correo';
       const residentName = residentFullName;
       const residentTower = String(
         userData?.tower || consolidatedPayment?.towerSnapshot || '',
@@ -984,7 +989,7 @@ export const processGroupPaymentEmail = onRequest(
       // Datos de administración debajo de la firma
       const adminInfoY = footerBarHeight + 10;
       const adminLine1 = administrationName || 'Administración';
-      const adminLine2 = administrationEmail || 'Sin correo';
+      const adminLine2 = administrationContact;
       const adminLine1Width = fontRegular.widthOfTextAtSize(adminLine1, fontSizeSmall);
       const adminLine2Width = fontRegular.widthOfTextAtSize(adminLine2, fontSizeSmall);
       page.drawText(adminLine1, {

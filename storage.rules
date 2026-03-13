@@ -321,6 +321,13 @@ service firebase.storage {
       allow create, update, delete: if false;
     }
 
+    /* ─── PDFs de facturas de Stripe ─── */
+    /* Escritura la hace backend con Admin SDK; el frontend solo lee por tenant. */
+    match /clients/{clientId}/condominiums/{condominiumId}/invoices/{fileName} {
+      allow read: if belongsToClient(clientId) || isSuperAdmin();
+      allow create, update, delete: if false;
+    }
+
     /* ─── Parcel Receptions ─── */
     /* ─── Parcel Receptions ─── */
     match /clients/{clientId}/condominiums/{condominiumId}/parcelReceptions/{datePath}/{fileName} {

@@ -62,6 +62,9 @@ export class UsersAuthController {
         phoneNumber: registerClientDto.phoneNumber,
         plan: registerClientDto.plan,
         pricing: registerClientDto.pricing,
+        pricingWithoutTax: registerClientDto.pricingWithoutTax,
+        pricingWithoutIVA: registerClientDto.pricingWithoutIVA,
+        pricingWithoutIva: registerClientDto.pricingWithoutIva,
         proFunctions: registerClientDto.proFunctions,
         address: registerClientDto.address,
         fullFiscalAddress: registerClientDto.fullFiscalAddress, // Domicilio fiscal completo
@@ -77,6 +80,7 @@ export class UsersAuthController {
         billingFrequency: registerClientDto.billingFrequency, // Periodicidad
         condominiumLimit: registerClientDto.condominiumLimit, // Límite de condominios
         termsAccepted: registerClientDto.termsAccepted, // Aceptación términos
+        condominiumManager: registerClientDto.condominiumManager,
         condominiumInfo: registerClientDto.condominiumInfo,
         hasMaintenanceApp: registerClientDto.hasMaintenanceApp, // App de mantenimiento
       },

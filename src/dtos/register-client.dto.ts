@@ -19,6 +19,10 @@ class CondominiumInfo {
   @IsString()
   @MaxLength(300)
   address: string;
+
+  @IsOptional()
+  @IsString()
+  condominiumManager?: string;
 }
 
 export enum BillingFrequency {
@@ -38,6 +42,10 @@ export enum CondominiumStatus {
 export class RegisterClientDto {
   @IsNotEmpty()
   condominiumInfo: CondominiumInfo;
+
+  @IsOptional()
+  @IsString()
+  condominiumManager?: string;
 
   @IsNotEmpty()
   @IsString()
@@ -67,6 +75,15 @@ export class RegisterClientDto {
 
   @IsOptional()
   pricing?: number | string;
+
+  @IsOptional()
+  pricingWithoutTax?: number | string;
+
+  @IsOptional()
+  pricingWithoutIVA?: number | string;
+
+  @IsOptional()
+  pricingWithoutIva?: number | string;
 
   @IsOptional()
   @IsArray()

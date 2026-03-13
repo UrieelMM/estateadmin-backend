@@ -9,6 +9,10 @@ export class CondominiumInfoDto {
   @IsNotEmpty({ message: 'La dirección del condominio es obligatoria' })
   @IsString()
   address: string;
+
+  @IsOptional()
+  @IsString()
+  condominiumManager?: string;
 }
 
 export class NewCustomerInfoDto {
@@ -71,6 +75,10 @@ export class NewCustomerInfoDto {
   @Type(() => CondominiumInfoDto)
   condominiumInfo: CondominiumInfoDto;
 
+  @IsOptional()
+  @IsString()
+  condominiumManager?: string;
+
   // Campos opcionales con valores predeterminados
   @IsOptional()
   @IsString()
@@ -82,6 +90,15 @@ export class NewCustomerInfoDto {
 
   @IsOptional()
   pricing?: string | number;
+
+  @IsOptional()
+  pricingWithoutTax?: string | number;
+
+  @IsOptional()
+  pricingWithoutIVA?: string | number;
+
+  @IsOptional()
+  pricingWithoutIva?: string | number;
 
   @IsOptional()
   @IsString()

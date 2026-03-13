@@ -18,6 +18,10 @@ export class RegisterCondominiumDto {
   @IsString()
   address: string;
 
+  @IsOptional()
+  @IsString()
+  condominiumManager?: string;
+
   @IsNotEmpty()
   @IsString()
   clientId: string;
@@ -25,6 +29,18 @@ export class RegisterCondominiumDto {
   @IsNotEmpty()
   @IsString()
   plan: string;
+
+  @IsOptional()
+  pricing?: number | string;
+
+  @IsOptional()
+  pricingWithoutTax?: number | string;
+
+  @IsOptional()
+  pricingWithoutIVA?: number | string;
+
+  @IsOptional()
+  pricingWithoutIva?: number | string;
 
   @IsNotEmpty()
   @IsNumber()

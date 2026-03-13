@@ -5,6 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import axios from 'axios';
 import * as admin from 'firebase-admin';
 import Stripe from 'stripe';
 
@@ -17,6 +18,9 @@ export class StripeService {
   private readonly billingDueDays = 30;
   private readonly suspensionLockId = 'client-billing-suspension-cron-lock';
   private readonly overdueSuspensionDays = 30;
+  private readonly mxVatRatePercent = 16;
+  private mxVatTaxRateIdCache: string | null = null;
+  private readonly defaultBillingCurrency = 'MXN';
 
   constructor() {
     // Inicializar Stripe con la clave secreta
@@ -45,8 +49,6 @@ export class StripeService {
     );
     const anchorDay = this.resolveAnchorDay(clientData, issueDate);
     const dueDays = this.resolveDueDays();
-    const amount = this.parsePricingAmount(clientData.pricing);
-    const currency = this.normalizeCurrency(clientData.currency);
     const effectiveCondominiumId =
       condominiumId ||
       clientData.defaultCondominiumId ||
@@ -61,6 +63,15 @@ export class StripeService {
         message: 'No se encontró condominio objetivo para facturación inicial',
       };
     }
+
+    const condominiumBillingConfig = await this.resolveCondominiumBillingConfig({
+      clientId,
+      condominiumId: effectiveCondominiumId,
+      clientData,
+    });
+    const amount = condominiumBillingConfig.amount;
+    const currency = condominiumBillingConfig.currency;
+    const plan = condominiumBillingConfig.plan;
 
     if (amount <= 0) {
       const nextBillingDate = this.addBillingInterval(
@@ -97,10 +108,11 @@ export class StripeService {
       billingFrequency,
       amount,
       currency,
-      plan: clientData.plan,
+      plan,
       source: 'auto_initial_registration',
       dueDays,
       clientData,
+      billingSourceData: condominiumBillingConfig.sourceData,
       periodDate: issueDate,
     });
 
@@ -161,19 +173,10 @@ export class StripeService {
             continue;
           }
 
-          const amount = this.parsePricingAmount(clientData.pricing);
-          if (amount <= 0) {
-            this.logger.warn(
-              `Se omite facturación recurrente para clientId=${clientDoc.id} por pricing inválido`,
-            );
-            continue;
-          }
-
           const billingFrequency = this.normalizeBillingFrequency(
             clientData.billingFrequency,
           );
           const anchorDay = this.resolveAnchorDay(clientData, now);
-          const currency = this.normalizeCurrency(clientData.currency);
           const dueDays = this.resolveDueDays();
           const condominiumId =
             clientData.defaultCondominiumId ||
@@ -187,12 +190,30 @@ export class StripeService {
             );
             continue;
           }
+          const condominiumBillingConfig =
+            await this.resolveCondominiumBillingConfig({
+              clientId: clientDoc.id,
+              condominiumId,
+              clientData,
+            });
+          const amount = condominiumBillingConfig.amount;
+          const currency = condominiumBillingConfig.currency;
+          const plan = condominiumBillingConfig.plan;
+          if (amount <= 0) {
+            this.logger.warn(
+              `Se omite facturación recurrente para clientId=${clientDoc.id} condominiumId=${condominiumId} por pricing inválido`,
+            );
+            continue;
+          }
 
           const nextBillingDate = this.resolveNextBillingDate(clientData, now);
           let cursor = nextBillingDate;
           let iterations = 0;
+          const maxIterations = this.resolveBillingIntervalOverrideDays()
+            ? 365
+            : 12;
 
-          while (cursor.getTime() <= now.getTime() && iterations < 12) {
+          while (cursor.getTime() <= now.getTime() && iterations < maxIterations) {
             await this.createAutomatedInvoiceForPeriod({
               clientId: clientDoc.id,
               condominiumId,
@@ -203,10 +224,11 @@ export class StripeService {
               billingFrequency,
               amount,
               currency,
-              plan: clientData.plan,
+              plan,
               source: 'auto_scheduler',
               dueDays,
               clientData,
+              billingSourceData: condominiumBillingConfig.sourceData,
             });
 
             cursor = this.addBillingInterval(cursor, billingFrequency, anchorDay);
@@ -1273,12 +1295,23 @@ export class StripeService {
         return;
       }
 
+      const metadata = invoice.metadata || {};
+      const storedPdf = await this.persistStripeInvoicePdfToStorage({
+        clientId: String(metadata.clientId || ''),
+        condominiumId: String(metadata.condominiumId || ''),
+        invoiceId: String(metadata.invoiceId || ''),
+        stripeInvoiceId: invoice.id,
+        invoicePdfUrl: invoice.invoice_pdf || null,
+      });
+
       await invoiceRef.set(
         {
           stripeInvoiceId: invoice.id,
           stripeInvoiceStatus: invoice.status || 'open',
           stripeHostedInvoiceUrl: invoice.hosted_invoice_url || null,
           stripeInvoicePdf: invoice.invoice_pdf || null,
+          invoicePdfStoragePath: storedPdf?.storagePath || null,
+          invoicePdfStorageUrl: storedPdf?.storageUrl || null,
           paymentStatus: 'pending',
           status: 'pending',
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1303,12 +1336,23 @@ export class StripeService {
         return;
       }
 
+      const metadata = invoice.metadata || {};
+      const storedPdf = await this.persistStripeInvoicePdfToStorage({
+        clientId: String(metadata.clientId || ''),
+        condominiumId: String(metadata.condominiumId || ''),
+        invoiceId: String(metadata.invoiceId || ''),
+        stripeInvoiceId: invoice.id,
+        invoicePdfUrl: invoice.invoice_pdf || null,
+      });
+
       await invoiceRef.set(
         {
           stripeInvoiceId: invoice.id,
           stripeInvoiceStatus: invoice.status || 'paid',
           stripeHostedInvoiceUrl: invoice.hosted_invoice_url || null,
           stripeInvoicePdf: invoice.invoice_pdf || null,
+          invoicePdfStoragePath: storedPdf?.storagePath || null,
+          invoicePdfStorageUrl: storedPdf?.storageUrl || null,
           paymentStatus: 'paid',
           status: 'paid',
           paymentMethod: 'stripe_invoice',
@@ -1317,8 +1361,6 @@ export class StripeService {
         },
         { merge: true },
       );
-
-      const metadata = invoice.metadata || {};
       if (metadata.clientId) {
         await this.tryClearBillingSuspension(String(metadata.clientId));
       }
@@ -1660,6 +1702,76 @@ export class StripeService {
     }
   }
 
+  private async persistStripeInvoicePdfToStorage(params: {
+    clientId: string;
+    condominiumId: string;
+    invoiceId: string;
+    stripeInvoiceId: string;
+    invoicePdfUrl: string | null;
+  }): Promise<{ storagePath: string; storageUrl: string } | null> {
+    const {
+      clientId,
+      condominiumId,
+      invoiceId,
+      stripeInvoiceId,
+      invoicePdfUrl,
+    } = params;
+
+    if (!invoicePdfUrl || !clientId || !condominiumId || !invoiceId) {
+      return null;
+    }
+
+    try {
+      const bucketName =
+        process.env.FIREBASE_STORAGE_BUCKET ||
+        process.env.STORAGE_BUCKET ||
+        'administracioncondominio-93419.appspot.com';
+      const bucket = admin.storage().bucket(bucketName);
+      const safeInvoiceId = invoiceId.replace(/[^a-zA-Z0-9-_]/g, '');
+      const storagePath = `clients/${clientId}/condominiums/${condominiumId}/invoices/${safeInvoiceId}.pdf`;
+      const file = bucket.file(storagePath);
+
+      const [alreadyExists] = await file.exists();
+      if (!alreadyExists) {
+        const response = await axios.get(invoicePdfUrl, {
+          responseType: 'arraybuffer',
+          timeout: 20000,
+        });
+        const pdfBuffer = Buffer.from(response.data);
+
+        await file.save(pdfBuffer, {
+          resumable: false,
+          contentType: 'application/pdf',
+          metadata: {
+            cacheControl: 'private, max-age=3600',
+            metadata: {
+              stripeInvoiceId,
+              source: 'stripe_invoice_pdf',
+            },
+          },
+        });
+
+        try {
+          await file.makePublic();
+        } catch (publicError) {
+          this.logger.warn(
+            `No se pudo hacer público el PDF de factura ${invoiceId}: ${publicError?.message || publicError}`,
+          );
+        }
+      }
+
+      return {
+        storagePath,
+        storageUrl: `https://storage.googleapis.com/${bucket.name}/${storagePath}`,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error al persistir PDF de factura ${invoiceId} en Storage: ${error?.message || error}`,
+      );
+      return null;
+    }
+  }
+
   private normalizeBillingFrequency(value: any):
     | 'monthly'
     | 'quarterly'
@@ -1693,12 +1805,201 @@ export class StripeService {
     return 0;
   }
 
+  private roundAmount(value: number): number {
+    return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+  }
+
+  private deriveBaseAmountFromTotalIncludingVat(totalAmount: number): number {
+    const vatFactor = 1 + this.mxVatRatePercent / 100;
+    return this.roundAmount(totalAmount / vatFactor);
+  }
+
+  private isNearlySameAmount(a: number, b: number): boolean {
+    return Math.abs(a - b) <= 0.01;
+  }
+
+  private resolveBillableBaseAmount(clientData: Record<string, any>): number {
+    const pricingWithoutTax = this.parsePricingAmount(clientData?.pricingWithoutTax);
+    const pricing = this.parsePricingAmount(clientData?.pricing);
+    if (pricingWithoutTax > 0) {
+      // Compatibilidad con datos previos donde pricingWithoutTax se guardó igual que pricing.
+      if (pricing > 0 && this.isNearlySameAmount(pricingWithoutTax, pricing)) {
+        return this.deriveBaseAmountFromTotalIncludingVat(pricing);
+      }
+      return pricingWithoutTax;
+    }
+    if (pricing > 0) {
+      return this.deriveBaseAmountFromTotalIncludingVat(pricing);
+    }
+    return 0;
+  }
+
+  private resolveInvoiceTotals(params: {
+    clientData: Record<string, any>;
+    billableBaseAmount: number;
+  }): {
+    subtotalAmount: number;
+    taxAmount: number;
+    totalAmount: number;
+    taxRatePercent: number;
+    applyMexicanVat: boolean;
+  } {
+    const { clientData, billableBaseAmount } = params;
+    const pricingWithoutTax = this.parsePricingAmount(clientData?.pricingWithoutTax);
+    const pricing = this.parsePricingAmount(clientData?.pricing);
+    const shouldUseExplicitBase =
+      pricingWithoutTax > 0 &&
+      !(pricing > 0 && this.isNearlySameAmount(pricingWithoutTax, pricing));
+
+    if (shouldUseExplicitBase) {
+      const subtotalAmount = this.roundAmount(billableBaseAmount);
+      const taxRatePercent = this.mxVatRatePercent;
+      const taxAmount = this.roundAmount(
+        subtotalAmount * (taxRatePercent / 100),
+      );
+      const totalAmount = this.roundAmount(subtotalAmount + taxAmount);
+      return {
+        subtotalAmount,
+        taxAmount,
+        totalAmount,
+        taxRatePercent,
+        applyMexicanVat: true,
+      };
+    }
+
+    if (pricing > 0) {
+      const subtotalAmount = this.roundAmount(billableBaseAmount);
+      const totalAmount = this.roundAmount(pricing);
+      const taxRatePercent = this.mxVatRatePercent;
+      const taxAmount = this.roundAmount(Math.max(totalAmount - subtotalAmount, 0));
+      return {
+        subtotalAmount,
+        taxAmount,
+        totalAmount,
+        taxRatePercent,
+        applyMexicanVat: true,
+      };
+    }
+
+    const subtotalAmount = this.roundAmount(billableBaseAmount);
+    return {
+      subtotalAmount,
+      taxAmount: 0,
+      totalAmount: subtotalAmount,
+      taxRatePercent: 0,
+      applyMexicanVat: false,
+    };
+  }
+
+  private normalizeRfc(value: any): string {
+    return String(value || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '');
+  }
+
+  private async ensureStripeCustomerTaxId(
+    customerId: string,
+    clientData: Record<string, any>,
+  ): Promise<void> {
+    const rfc = this.normalizeRfc(clientData?.RFC);
+    if (!rfc) {
+      return;
+    }
+
+    try {
+      const taxIds = await this.stripe.customers.listTaxIds(customerId, {
+        limit: 100,
+      });
+      const sameRfcExists = taxIds.data.some(
+        (taxId) =>
+          taxId.type === 'mx_rfc' &&
+          this.normalizeRfc((taxId as any).value || '') === rfc,
+      );
+      if (sameRfcExists) {
+        return;
+      }
+
+      const previousMxRfc = taxIds.data.find((taxId) => taxId.type === 'mx_rfc');
+      if (previousMxRfc) {
+        await this.stripe.customers.deleteTaxId(customerId, previousMxRfc.id);
+      }
+
+      await this.stripe.customers.createTaxId(customerId, {
+        type: 'mx_rfc',
+        value: rfc,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo sincronizar RFC en Stripe para customerId=${customerId}: ${error?.message || error}`,
+      );
+    }
+  }
+
+  private async resolveMexicanVatTaxRateId(): Promise<string | null> {
+    if (this.mxVatTaxRateIdCache) {
+      return this.mxVatTaxRateIdCache;
+    }
+
+    const envTaxRateId = String(process.env.STRIPE_MX_VAT_TAX_RATE_ID || '').trim();
+    if (envTaxRateId) {
+      this.mxVatTaxRateIdCache = envTaxRateId;
+      return envTaxRateId;
+    }
+
+    try {
+      const taxRates = await this.stripe.taxRates.list({ active: true, limit: 100 });
+      const existing = taxRates.data.find(
+        (taxRate) =>
+          !taxRate.inclusive &&
+          Number(taxRate.percentage) === this.mxVatRatePercent &&
+          (String(taxRate.country || '').toUpperCase() === 'MX' ||
+            String(taxRate.jurisdiction || '')
+              .toUpperCase()
+              .includes('MEX')),
+      );
+      if (existing) {
+        this.mxVatTaxRateIdCache = existing.id;
+        return existing.id;
+      }
+
+      const created = await this.stripe.taxRates.create(
+        {
+          display_name: 'IVA',
+          description: 'IVA 16% México',
+          jurisdiction: 'Mexico',
+          country: 'MX',
+          percentage: this.mxVatRatePercent,
+          inclusive: false,
+        },
+        {
+          idempotencyKey: `mx-vat-${this.mxVatRatePercent}-exclusive`,
+        },
+      );
+      this.mxVatTaxRateIdCache = created.id;
+      return created.id;
+    } catch (error) {
+      this.logger.error(
+        `No se pudo resolver/crear taxRate IVA ${this.mxVatRatePercent}%: ${error?.message || error}`,
+      );
+      return null;
+    }
+  }
+
   private resolveDueDays(): number {
     const envValue = Number(process.env.BILLING_INVOICE_DUE_DAYS || '');
     if (Number.isFinite(envValue) && envValue > 0) {
       return Math.floor(envValue);
     }
     return this.billingDueDays;
+  }
+
+  private resolveBillingIntervalOverrideDays(): number | null {
+    const envValue = Number(process.env.BILLING_TEST_INTERVAL_DAYS || '');
+    if (Number.isFinite(envValue) && envValue >= 1) {
+      return Math.floor(envValue);
+    }
+    return null;
   }
 
   private resolveAnchorDay(clientData: Record<string, any>, fallback: Date): number {
@@ -1735,6 +2036,62 @@ export class StripeService {
     return fallback;
   }
 
+  private async resolveCondominiumBillingConfig(params: {
+    clientId: string;
+    condominiumId: string;
+    clientData: Record<string, any>;
+  }): Promise<{
+    amount: number;
+    currency: string;
+    plan: string;
+    condominiumLimit: number | null;
+    sourceData: Record<string, any>;
+  }> {
+    const { clientId, condominiumId, clientData } = params;
+    let condominiumData: Record<string, any> = {};
+
+    try {
+      const condominiumDoc = await admin
+        .firestore()
+        .collection(`clients/${clientId}/condominiums`)
+        .doc(condominiumId)
+        .get();
+      if (condominiumDoc.exists) {
+        condominiumData = condominiumDoc.data() || {};
+      } else {
+        this.logger.warn(
+          `No se encontró condominio para configuración de billing clientId=${clientId} condominiumId=${condominiumId}. Se usa fallback a client.`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer configuración de billing del condominio clientId=${clientId} condominiumId=${condominiumId}: ${error?.message || error}`,
+      );
+    }
+
+    const sourceData =
+      Object.keys(condominiumData).length > 0 ? condominiumData : clientData;
+    const amount = this.resolveBillableBaseAmount(sourceData);
+    const currency = this.normalizeCurrency(
+      sourceData?.currency || clientData?.currency || this.defaultBillingCurrency,
+    );
+    const plan = String(sourceData?.plan || clientData?.plan || '').trim();
+    const condominiumLimitRaw = Number(
+      sourceData?.condominiumLimit ?? clientData?.condominiumLimit,
+    );
+    const condominiumLimit = Number.isFinite(condominiumLimitRaw)
+      ? condominiumLimitRaw
+      : null;
+
+    return {
+      amount,
+      currency,
+      plan,
+      condominiumLimit,
+      sourceData,
+    };
+  }
+
   private getBillingIntervalMonths(
     billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual',
   ): number {
@@ -1755,6 +2112,13 @@ export class StripeService {
     billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual',
     anchorDay: number,
   ): Date {
+    const intervalDaysOverride = this.resolveBillingIntervalOverrideDays();
+    if (intervalDaysOverride) {
+      const result = new Date(baseDate);
+      result.setUTCDate(result.getUTCDate() + intervalDaysOverride);
+      return result;
+    }
+
     const monthsToAdd = this.getBillingIntervalMonths(billingFrequency);
     const year = baseDate.getUTCFullYear();
     const month = baseDate.getUTCMonth() + monthsToAdd;
@@ -1768,6 +2132,14 @@ export class StripeService {
     date: Date,
     billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual',
   ): string {
+    const intervalDaysOverride = this.resolveBillingIntervalOverrideDays();
+    if (intervalDaysOverride) {
+      const year = date.getUTCFullYear();
+      const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(date.getUTCDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
     const year = date.getUTCFullYear();
     const month = date.getUTCMonth() + 1;
 
@@ -1806,30 +2178,18 @@ export class StripeService {
     }
 
     if (clientData?.stripeCustomerId) {
-      return String(clientData.stripeCustomerId);
+      const existingCustomerId = String(clientData.stripeCustomerId);
+      await this.syncStripeCustomerBillingProfile(existingCustomerId, clientData);
+      await this.ensureStripeCustomerTaxId(existingCustomerId, clientData);
+      return existingCustomerId;
     }
 
     try {
-      const customerName =
-        String(clientData.companyName || '').trim() ||
-        [
-          String(clientData.responsiblePersonName || '').trim(),
-          String(clientData.responsiblePersonPosition || '').trim(),
-        ]
-          .filter(Boolean)
-          .join(' ') ||
-        String(clientData.email || '').trim();
+      const customer = await this.stripe.customers.create(
+        this.buildStripeCustomerPayload(clientData, clientId),
+      );
 
-      const customer = await this.stripe.customers.create({
-        name: customerName || undefined,
-        email: clientData.email || undefined,
-        phone: clientData.phoneNumber || undefined,
-        metadata: {
-          clientId,
-          RFC: String(clientData.RFC || ''),
-          country: String(clientData.country || ''),
-        },
-      });
+      await this.ensureStripeCustomerTaxId(customer.id, clientData);
 
       await clientRef.set(
         {
@@ -1848,6 +2208,61 @@ export class StripeService {
     }
   }
 
+  private buildStripeCustomerPayload(
+    clientData: Record<string, any>,
+    clientId?: string,
+  ): Stripe.CustomerCreateParams {
+    const customerName =
+      String(clientData.companyName || '').trim() ||
+      [
+        String(clientData.responsiblePersonName || '').trim(),
+        String(clientData.responsiblePersonPosition || '').trim(),
+      ]
+        .filter(Boolean)
+        .join(' ') ||
+      String(clientData.email || '').trim();
+
+    const customerRfc = this.normalizeRfc(clientData?.RFC);
+    const addressLine2 = customerRfc ? `RFC: ${customerRfc}` : undefined;
+
+    return {
+      name: customerName || undefined,
+      email: String(clientData.email || '').trim() || undefined,
+      phone: String(clientData.phoneNumber || '').trim() || undefined,
+      address: {
+        line1:
+          String(clientData.fullFiscalAddress || clientData.address || '').trim() ||
+          undefined,
+        line2: addressLine2,
+        country: String(clientData.country || '').trim().toUpperCase() || undefined,
+      },
+      metadata: {
+        clientId: String(clientId || '').trim(),
+        RFC: String(clientData.RFC || ''),
+        country: String(clientData.country || ''),
+      },
+    };
+  }
+
+  private async syncStripeCustomerBillingProfile(
+    customerId: string,
+    clientData: Record<string, any>,
+  ): Promise<void> {
+    try {
+      const payload = this.buildStripeCustomerPayload(clientData);
+      await this.stripe.customers.update(customerId, {
+        name: payload.name,
+        email: payload.email,
+        phone: payload.phone,
+        address: payload.address,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo sincronizar perfil fiscal del customer Stripe ${customerId}: ${error?.message || error}`,
+      );
+    }
+  }
+
   private async createAutomatedInvoiceForPeriod(params: {
     clientId: string;
     condominiumId: string;
@@ -1862,6 +2277,7 @@ export class StripeService {
     source: 'auto_initial_registration' | 'auto_scheduler';
     dueDays: number;
     clientData: Record<string, any>;
+    billingSourceData: Record<string, any>;
   }) {
     const {
       clientId,
@@ -1877,6 +2293,7 @@ export class StripeService {
       source,
       dueDays,
       clientData,
+      billingSourceData,
     } = params;
 
     const periodKey = this.buildPeriodKey(periodDate, billingFrequency);
@@ -1902,24 +2319,45 @@ export class StripeService {
 
     const dueDate = new Date(issueDate);
     dueDate.setUTCDate(dueDate.getUTCDate() + Math.max(1, dueDays));
+    const anchorDay = this.resolveAnchorDay(clientData, issueDate);
+    const nextChargeDate = this.addBillingInterval(
+      issueDate,
+      billingFrequency,
+      anchorDay,
+    );
     const invoiceNumber = this.formatInvoiceNumber(issueDate, clientId);
     const invoiceRef = invoiceCollectionRef.doc();
+    const invoiceAmounts = this.resolveInvoiceTotals({
+      clientData: billingSourceData,
+      billableBaseAmount: amount,
+    });
 
     const invoicePayload: Record<string, any> = {
       invoiceNumber,
       concept: 'Servicio mensual de administración',
-      amount,
+      amount: invoiceAmounts.totalAmount,
+      subtotalAmount: invoiceAmounts.subtotalAmount,
+      taxAmount: invoiceAmounts.taxAmount,
+      taxRatePercent: invoiceAmounts.taxRatePercent,
+      taxMode: invoiceAmounts.applyMexicanVat ? 'mx_iva_16_exclusive' : 'none',
       currency,
       periodKey,
       billingFrequency,
       billingDedupeKey,
       source,
       plan: plan || '',
-      pricingSnapshot: amount,
+      condominiumLimitSnapshot:
+        Number.isFinite(Number(billingSourceData?.condominiumLimit))
+          ? Number(billingSourceData?.condominiumLimit)
+          : null,
+      pricingSnapshot: invoiceAmounts.totalAmount,
+      pricingBaseSnapshot: invoiceAmounts.subtotalAmount,
       paymentStatus: 'pending',
       status: 'pending',
       issueDate: admin.firestore.Timestamp.fromDate(issueDate),
       dueDate: admin.firestore.Timestamp.fromDate(dueDate),
+      nextBillingDate: admin.firestore.Timestamp.fromDate(nextChargeDate),
+      nextChargeDate: admin.firestore.Timestamp.fromDate(nextChargeDate),
       clientId,
       condominiumId,
       userUID: adminUid || null,
@@ -1939,7 +2377,18 @@ export class StripeService {
 
     if (stripeCustomerId) {
       try {
-        const unitAmount = Math.round(amount * 100);
+        let unitAmount = Math.round(invoiceAmounts.subtotalAmount * 100);
+        let mxVatTaxRateId: string | null = null;
+        if (invoiceAmounts.applyMexicanVat) {
+          mxVatTaxRateId = await this.resolveMexicanVatTaxRateId();
+          if (!mxVatTaxRateId) {
+            unitAmount = Math.round(invoiceAmounts.totalAmount * 100);
+            this.logger.warn(
+              `No se pudo resolver taxRate IVA 16% para clientId=${clientId}. Se emite factura sin desglose de impuesto.`,
+            );
+          }
+        }
+
         const metadata = {
           invoiceId: invoiceRef.id,
           clientId,
@@ -1947,28 +2396,51 @@ export class StripeService {
           invoiceNumber,
           periodKey,
         };
+        const invoiceItemPayload: Stripe.InvoiceItemCreateParams = {
+          customer: stripeCustomerId,
+          currency: currency.toLowerCase(),
+          amount: unitAmount,
+          description: `Factura ${periodKey} - ${invoiceNumber}`,
+          metadata,
+        };
+        if (mxVatTaxRateId) {
+          invoiceItemPayload.tax_rates = [mxVatTaxRateId];
+        }
 
         await this.stripe.invoiceItems.create(
-          {
-            customer: stripeCustomerId,
-            currency: currency.toLowerCase(),
-            amount: unitAmount,
-            description: `Factura ${periodKey} - ${invoiceNumber}`,
-            metadata,
-          },
+          invoiceItemPayload,
           {
             idempotencyKey: `${billingDedupeKey}:invoice-item`,
           },
         );
 
+        const issuerRfc = this.normalizeRfc(
+          process.env.STRIPE_ISSUER_RFC ||
+            process.env.COMPANY_RFC ||
+            'MOMH941214N28',
+        );
+        const customFields: Stripe.InvoiceCreateParams.CustomField[] = [];
+        if (issuerRfc) {
+          customFields.push({
+            name: 'RFC Emisor',
+            value: issuerRfc,
+          });
+        }
+
+        const stripeInvoicePayload: Stripe.InvoiceCreateParams = {
+          customer: stripeCustomerId,
+          collection_method: 'send_invoice',
+          days_until_due: Math.max(1, dueDays),
+          auto_advance: true,
+          pending_invoice_items_behavior: 'include',
+          metadata,
+        };
+        if (customFields.length > 0) {
+          stripeInvoicePayload.custom_fields = customFields.slice(0, 4);
+        }
+
         const stripeInvoice = await this.stripe.invoices.create(
-          {
-            customer: stripeCustomerId,
-            collection_method: 'send_invoice',
-            days_until_due: Math.max(1, dueDays),
-            auto_advance: true,
-            metadata,
-          },
+          stripeInvoicePayload,
           {
             idempotencyKey: `${billingDedupeKey}:invoice`,
           },
@@ -1978,6 +2450,14 @@ export class StripeService {
           stripeInvoice.id,
         );
 
+        const storedPdf = await this.persistStripeInvoicePdfToStorage({
+          clientId,
+          condominiumId,
+          invoiceId: invoiceRef.id,
+          stripeInvoiceId: finalizedInvoice.id,
+          invoicePdfUrl: finalizedInvoice.invoice_pdf || null,
+        });
+
         await invoiceRef.set(
           {
             stripeCustomerId,
@@ -1985,6 +2465,12 @@ export class StripeService {
             stripeInvoiceStatus: finalizedInvoice.status || null,
             stripeHostedInvoiceUrl: finalizedInvoice.hosted_invoice_url || null,
             stripeInvoicePdf: finalizedInvoice.invoice_pdf || null,
+            stripeTaxRateId: mxVatTaxRateId,
+            taxBreakdownApplied: Boolean(
+              invoiceAmounts.applyMexicanVat && mxVatTaxRateId,
+            ),
+            invoicePdfStoragePath: storedPdf?.storagePath || null,
+            invoicePdfStorageUrl: storedPdf?.storageUrl || null,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           { merge: true },
@@ -2010,7 +2496,7 @@ export class StripeService {
       condominiumId,
       invoiceId: invoiceRef.id,
       invoiceNumber,
-      amount,
+      amount: invoiceAmounts.totalAmount,
       dueDate,
       userUID: adminUid,
       periodKey,
@@ -2021,6 +2507,11 @@ export class StripeService {
       invoiceId: invoiceRef.id,
       periodKey,
       invoiceNumber,
+      amount: invoiceAmounts.totalAmount,
+      subtotalAmount: invoiceAmounts.subtotalAmount,
+      taxAmount: invoiceAmounts.taxAmount,
+      taxRatePercent: invoiceAmounts.taxRatePercent,
+      nextBillingDate: nextChargeDate.toISOString(),
     };
   }
 

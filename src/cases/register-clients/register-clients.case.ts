@@ -19,6 +19,9 @@ export const RegisterClientCase = async (
     phoneNumber,
     plan = '',
     pricing,
+    pricingWithoutTax,
+    pricingWithoutIVA,
+    pricingWithoutIva,
     proFunctions = [],
     address,
     fullFiscalAddress,
@@ -36,10 +39,60 @@ export const RegisterClientCase = async (
     condominiumLimit,
     termsAccepted = true,
     condominiumInfo,
+    condominiumManager,
     currency = 'MXN',
     language = 'es-MX',
     hasMaintenanceApp,
   } = registerClientDto;
+
+  const normalizePricingValue = (value: unknown): number | string | null => {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+      const numeric = Number(trimmed.replace(/,/g, ''));
+      return Number.isFinite(numeric) ? numeric : trimmed;
+    }
+    return null;
+  };
+  const roundToTwo = (value: number): number =>
+    Math.round((value + Number.EPSILON) * 100) / 100;
+  const extractNumericPricing = (value: number | string | null): number | null => {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) && value > 0 ? value : null;
+    }
+    if (typeof value === 'string') {
+      const numeric = Number(value.replace(/[^0-9.,-]/g, '').replace(/,/g, ''));
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    }
+    return null;
+  };
+
+  const resolvedPricing = normalizePricingValue(pricing);
+  const explicitPricingWithoutTax =
+    normalizePricingValue(pricingWithoutTax) ??
+    normalizePricingValue(pricingWithoutIVA) ??
+    normalizePricingValue(pricingWithoutIva);
+  const pricingNumeric = extractNumericPricing(resolvedPricing);
+  const fallbackPricingWithoutTax =
+    pricingNumeric && pricingNumeric > 0
+      ? roundToTwo(pricingNumeric / 1.16)
+      : null;
+  const resolvedPricingWithoutTax =
+    explicitPricingWithoutTax ??
+    fallbackPricingWithoutTax ??
+    resolvedPricing;
+  const resolvedCondominiumManager =
+    String(
+      condominiumInfo?.condominiumManager || condominiumManager || '',
+    ).trim() || null;
 
   const clientRecord = uuidv4();
   const registrationDate = new Date();
@@ -98,7 +151,8 @@ export const RegisterClientCase = async (
       billingFrequency, // Periodicidad de facturación
       termsAccepted, // Aceptación de términos y condiciones
       plan,
-      pricing: pricing ?? null,
+      pricing: resolvedPricing,
+      pricingWithoutTax: resolvedPricingWithoutTax,
       condominiumLimit,
       createdDate: admin.firestore.FieldValue.serverTimestamp(),
       status: 'active',
@@ -122,8 +176,11 @@ export const RegisterClientCase = async (
     await condominiumRef.set({
       name: condominiumInfo.name,
       address: condominiumInfo.address,
+      condominiumManager: resolvedCondominiumManager,
       uid: condominiumUid,
       plan,
+      pricing: resolvedPricing,
+      pricingWithoutTax: resolvedPricingWithoutTax,
       proFunctions,
       condominiumLimit, // Límite de condominios según el plan
       status: CondominiumStatus.Pending, // Estado inicial del condominio

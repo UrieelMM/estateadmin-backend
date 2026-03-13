@@ -74,6 +74,7 @@ export class ToolsService {
           id: doc.id,
           ...data,
           pricing: data.pricing ?? null,
+          pricingWithoutTax: data.pricingWithoutTax ?? null,
           // Convertir timestamps a formato ISO para facilitar el manejo en el frontend
           registrationDate: data.registrationDate
             ? data.registrationDate.toDate().toISOString()
@@ -804,9 +805,15 @@ export class ToolsService {
       );
 
       // Sanitizar información del condominio
+      const resolvedCondominiumManager = this.sanitizeString(
+        newCustomerInfo.condominiumInfo?.condominiumManager ||
+          newCustomerInfo.condominiumManager ||
+          '',
+      );
       sanitizedData.condominiumInfo = {
         name: this.sanitizeString(newCustomerInfo.condominiumInfo.name),
         address: this.sanitizeString(newCustomerInfo.condominiumInfo.address),
+        condominiumManager: resolvedCondominiumManager || null,
       };
 
       // Sanitizar campos opcionales (si existen)
@@ -878,6 +885,33 @@ export class ToolsService {
           : this.sanitizeString(String(newCustomerInfo.pricing));
       } else {
         sanitizedData.pricing = null;
+      }
+      const incomingPricingWithoutTax =
+        newCustomerInfo.pricingWithoutTax ??
+        (newCustomerInfo as any).pricingWithoutIVA ??
+        (newCustomerInfo as any).pricingWithoutIva;
+      if (
+        incomingPricingWithoutTax !== undefined &&
+        incomingPricingWithoutTax !== null &&
+        String(incomingPricingWithoutTax).trim() !== ''
+      ) {
+        const numericPricingWithoutTax = Number(incomingPricingWithoutTax);
+        sanitizedData.pricingWithoutTax = Number.isFinite(numericPricingWithoutTax)
+          ? numericPricingWithoutTax
+          : this.sanitizeString(String(incomingPricingWithoutTax));
+      } else {
+        const pricingNumeric =
+          typeof sanitizedData.pricing === 'number'
+            ? sanitizedData.pricing
+            : Number(
+                String(sanitizedData.pricing || '')
+                  .replace(/[^0-9.,-]/g, '')
+                  .replace(/,/g, ''),
+              );
+        sanitizedData.pricingWithoutTax =
+          Number.isFinite(pricingNumeric) && pricingNumeric > 0
+            ? Math.round((pricingNumeric / 1.16 + Number.EPSILON) * 100) / 100
+            : sanitizedData.pricing ?? null;
       }
       sanitizedData.billingFrequency =
         newCustomerInfo.billingFrequency || 'monthly';

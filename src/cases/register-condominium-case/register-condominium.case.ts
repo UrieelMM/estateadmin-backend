@@ -5,8 +5,13 @@ import { CondominiumStatus } from 'src/dtos/register-client.dto';
 export const RegisterCondominiumCase = async (condominiumData: {
   name: string;
   address: string;
+  condominiumManager?: string;
   clientId: string;
   plan: string;
+  pricing?: number | string;
+  pricingWithoutTax?: number | string;
+  pricingWithoutIVA?: number | string;
+  pricingWithoutIva?: number | string;
   condominiumLimit: number;
   status: CondominiumStatus;
   proFunctions?: string[];
@@ -17,14 +22,62 @@ export const RegisterCondominiumCase = async (condominiumData: {
     const {
       name,
       address,
+      condominiumManager,
       clientId,
       plan,
+      pricing,
+      pricingWithoutTax,
+      pricingWithoutIVA,
+      pricingWithoutIva,
       condominiumLimit,
       status = CondominiumStatus.Pending,
       proFunctions = [],
       currency = 'MXN',
       language = 'es-MX',
     } = condominiumData;
+    const normalizePricingValue = (value: unknown): number | string | null => {
+      if (value === null || value === undefined) {
+        return null;
+      }
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : null;
+      }
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) {
+          return null;
+        }
+        const numeric = Number(trimmed.replace(/,/g, ''));
+        return Number.isFinite(numeric) ? numeric : trimmed;
+      }
+      return null;
+    };
+    const roundToTwo = (value: number): number =>
+      Math.round((value + Number.EPSILON) * 100) / 100;
+    const extractNumericPricing = (value: number | string | null): number | null => {
+      if (typeof value === 'number') {
+        return Number.isFinite(value) && value > 0 ? value : null;
+      }
+      if (typeof value === 'string') {
+        const numeric = Number(value.replace(/[^0-9.,-]/g, '').replace(/,/g, ''));
+        return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+      }
+      return null;
+    };
+    const resolvedPricing = normalizePricingValue(pricing);
+    const explicitPricingWithoutTax =
+      normalizePricingValue(pricingWithoutTax) ??
+      normalizePricingValue(pricingWithoutIVA) ??
+      normalizePricingValue(pricingWithoutIva);
+    const pricingNumeric = extractNumericPricing(resolvedPricing);
+    const fallbackPricingWithoutTax =
+      pricingNumeric && pricingNumeric > 0
+        ? roundToTwo(pricingNumeric / 1.16)
+        : null;
+    const resolvedPricingWithoutTax =
+      explicitPricingWithoutTax ??
+      fallbackPricingWithoutTax ??
+      resolvedPricing;
     const uid = uuidv4(); // Generamos el UID único
 
     // Verificar que el cliente existe
@@ -49,7 +102,10 @@ export const RegisterCondominiumCase = async (condominiumData: {
         uid,
         name,
         address,
+        condominiumManager: String(condominiumManager || '').trim() || null,
         plan,
+        pricing: resolvedPricing,
+        pricingWithoutTax: resolvedPricingWithoutTax,
         condominiumLimit,
         status,
         proFunctions,
@@ -72,7 +128,10 @@ export const RegisterCondominiumCase = async (condominiumData: {
       id: uid,
       name,
       address,
+      condominiumManager: String(condominiumManager || '').trim() || null,
       plan,
+      pricing: resolvedPricing,
+      pricingWithoutTax: resolvedPricingWithoutTax,
       condominiumLimit,
       status,
       proFunctions,
