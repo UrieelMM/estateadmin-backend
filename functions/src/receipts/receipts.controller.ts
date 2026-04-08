@@ -60,6 +60,11 @@ const parseBoolean = (value: any): boolean => {
   return false;
 };
 
+const isReversedPaymentRecord = (payment: any): boolean =>
+  payment?.isReversed === true ||
+  String(payment?.reversalStatus || '').trim().toLowerCase() === 'reversed' ||
+  !!String(payment?.reversalId || '').trim();
+
 const sanitizeFileNamePart = (value: string): string =>
   value
     .trim()
@@ -376,6 +381,9 @@ export const sendReceiptsByEmail = onRequest(
 
         for (const doc of snapshot.docs) {
           const data = doc.data() || {};
+          if (isReversedPaymentRecord(data)) {
+            continue;
+          }
           console.log(`[sendReceiptsByEmail] Procesando doc ${doc.id}, path=${doc.ref.path}`);
 
           let userName = 'usuario';

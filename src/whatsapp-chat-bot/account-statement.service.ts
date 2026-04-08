@@ -47,6 +47,11 @@ export interface ProcessedAccountData {
   };
 }
 
+const isReversedPayment = (payment: any): boolean =>
+  payment?.isReversed === true ||
+  String(payment?.reversalStatus || '').trim().toLowerCase() === 'reversed' ||
+  !!String(payment?.reversalId || '').trim();
+
 @Injectable()
 export class AccountStatementService {
   private readonly logger = new Logger(AccountStatementService.name);
@@ -100,6 +105,9 @@ export class AccountStatementService {
 
         for (const paymentDoc of paymentsSnapshot.docs) {
           const paymentData = paymentDoc.data() as PaymentData;
+          if (isReversedPayment(paymentData)) {
+            continue;
+          }
           paymentData.id = paymentDoc.id;
           payments.push(paymentData);
         }
