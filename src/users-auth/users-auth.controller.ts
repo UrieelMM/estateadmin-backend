@@ -68,6 +68,7 @@ export class UsersAuthController {
         proFunctions: registerClientDto.proFunctions,
         address: registerClientDto.address,
         fullFiscalAddress: registerClientDto.fullFiscalAddress, // Domicilio fiscal completo
+        CP: registerClientDto.CP,
         RFC: registerClientDto.RFC,
         country: registerClientDto.country,
         businessName: registerClientDto.businessName,
@@ -83,6 +84,8 @@ export class UsersAuthController {
         condominiumManager: registerClientDto.condominiumManager,
         condominiumInfo: registerClientDto.condominiumInfo,
         hasMaintenanceApp: registerClientDto.hasMaintenanceApp, // App de mantenimiento
+        maintenanceAppContractedAt:
+          registerClientDto.maintenanceAppContractedAt,
       },
     );
   }

@@ -788,6 +788,7 @@ export class ToolsService {
       sanitizedData.fullFiscalAddress = this.sanitizeString(
         newCustomerInfo.fullFiscalAddress,
       );
+      sanitizedData.CP = this.sanitizeString(newCustomerInfo.CP);
       sanitizedData.RFC = this.sanitizeString(newCustomerInfo.RFC);
       sanitizedData.country = this.sanitizeString(newCustomerInfo.country);
       sanitizedData.businessName = this.sanitizeString(
@@ -843,6 +844,7 @@ export class ToolsService {
         'phoneNumber',
         'companyName',
         'fullFiscalAddress',
+        'CP',
         'RFC',
         'country',
         'businessName',

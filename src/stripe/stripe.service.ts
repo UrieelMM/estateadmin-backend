@@ -70,11 +70,13 @@ export class StripeService {
       };
     }
 
-    const condominiumBillingConfig = await this.resolveCondominiumBillingConfig({
-      clientId,
-      condominiumId: effectiveCondominiumId,
-      clientData,
-    });
+    const condominiumBillingConfig = await this.resolveCondominiumBillingConfig(
+      {
+        clientId,
+        condominiumId: effectiveCondominiumId,
+        clientData,
+      },
+    );
     const amount = condominiumBillingConfig.amount;
     const currency = condominiumBillingConfig.currency;
     const plan = condominiumBillingConfig.plan;
@@ -175,7 +177,9 @@ export class StripeService {
       for (const clientDoc of clientsSnapshot.docs) {
         try {
           const clientData = clientDoc.data() || {};
-          const clientStatus = String(clientData.status || 'active').toLowerCase();
+          const clientStatus = String(
+            clientData.status || 'active',
+          ).toLowerCase();
           if (clientStatus === 'suspended' || clientStatus === 'inactive') {
             continue;
           }
@@ -218,7 +222,10 @@ export class StripeService {
             ? 365
             : 12;
 
-          while (cursor.getTime() <= now.getTime() && iterations < maxIterations) {
+          while (
+            cursor.getTime() <= now.getTime() &&
+            iterations < maxIterations
+          ) {
             await this.createAutomatedInvoiceForPeriod({
               clientId: clientDoc.id,
               condominiumId,
@@ -236,7 +243,11 @@ export class StripeService {
               billingSourceData: condominiumBillingConfig.sourceData,
             });
 
-            cursor = this.addBillingInterval(cursor, billingFrequency, anchorDay);
+            cursor = this.addBillingInterval(
+              cursor,
+              billingFrequency,
+              anchorDay,
+            );
             iterations++;
           }
 
@@ -251,16 +262,21 @@ export class StripeService {
             );
           }
         } catch (clientError) {
+          const cErr =
+            clientError instanceof Error
+              ? clientError
+              : new Error(String(clientError));
           this.logger.error(
-            `Error en facturación recurrente para clientId=${clientDoc.id}: ${clientError?.message || clientError}`,
-            clientError?.stack,
+            `Error en facturación recurrente para clientId=${clientDoc.id}: ${cErr.message}`,
+            cErr.stack,
           );
         }
       }
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error en scheduler de facturación recurrente: ${error.message}`,
-        error.stack,
+        `Error en scheduler de facturación recurrente: ${err.message}`,
+        err.stack,
       );
     } finally {
       await this.releaseBillingLock();
@@ -341,9 +357,10 @@ export class StripeService {
         await this.tryClearBillingSuspension(clientDoc.id, thresholdTs);
       }
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al ejecutar suspensión automática por mora: ${error.message}`,
-        error.stack,
+        `Error al ejecutar suspensión automática por mora: ${err.message}`,
+        err.stack,
       );
     } finally {
       await this.releaseNamedLock(this.suspensionLockId);
@@ -416,9 +433,10 @@ export class StripeService {
 
       return { id: session.id, url: session.url };
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al crear la sesión de pago: ${error.message}`,
-        error.stack,
+        `Error al crear la sesión de pago: ${err.message}`,
+        err.stack,
       );
       throw new InternalServerErrorException(
         'Error al procesar la solicitud de pago',
@@ -437,9 +455,10 @@ export class StripeService {
         metadata: session.metadata,
       };
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al verificar el estado de la sesión: ${error.message}`,
-        error.stack,
+        `Error al verificar el estado de la sesión: ${err.message}`,
+        err.stack,
       );
       throw new InternalServerErrorException(
         'Error al verificar el estado del pago',
@@ -478,8 +497,9 @@ export class StripeService {
         `Evento ${event.id} registrado en Firestore para auditoría`,
       );
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al registrar evento en Firestore: ${error.message}`,
+        `Error al registrar evento en Firestore: ${err.message}`,
       );
       // No lanzamos error para no interrumpir el flujo principal
     }
@@ -546,7 +566,11 @@ export class StripeService {
 
           return { received: true, verified: false };
         } catch (parseError) {
-          throw new Error(`Error al parsear el payload: ${parseError.message}`);
+          const pErr =
+            parseError instanceof Error
+              ? parseError
+              : new Error(String(parseError));
+          throw new Error(`Error al parsear el payload: ${pErr.message}`);
         }
       }
 
@@ -587,9 +611,8 @@ export class StripeService {
         condominiumId,
       );
 
-      let eventDocRef:
-        | FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>
-        | null = null;
+      let eventDocRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData> | null =
+        null;
 
       if (tenantContext.clientId && tenantContext.condominiumId) {
         // Registrar el evento antes de procesarlo
@@ -679,12 +702,13 @@ export class StripeService {
 
       return { received: true };
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar el webhook: ${error.message}`,
-        error.stack,
+        `Error al procesar el webhook: ${err.message}`,
+        err.stack,
       );
       throw new BadRequestException(
-        `Error al procesar el webhook: ${error.message}`,
+        `Error al procesar el webhook: ${err.message}`,
       );
     }
   }
@@ -834,9 +858,10 @@ export class StripeService {
 
       await this.tryClearBillingSuspension(clientId);
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar el pago completado: ${error.message}`,
-        error.stack,
+        `Error al procesar el pago completado: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -877,7 +902,10 @@ export class StripeService {
         lastError = error;
 
         // Errores que no deberían reintentarse
-        if (error.code === 'not-found' || error.code === 'permission-denied') {
+        if (
+          (error as any).code === 'not-found' ||
+          (error as any).code === 'permission-denied'
+        ) {
           throw error;
         }
 
@@ -1068,9 +1096,10 @@ export class StripeService {
       await mailerSend.email.send(emailParams);
       this.logger.log(`Correo de confirmación enviado a ${email}`);
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al enviar correo de confirmación: ${error.message}`,
-        error.stack,
+        `Error al enviar correo de confirmación: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1102,9 +1131,10 @@ export class StripeService {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar sesión expirada: ${error.message}`,
-        error.stack,
+        `Error al procesar sesión expirada: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1119,9 +1149,10 @@ export class StripeService {
       this.logger.log(`PaymentIntent cancelado: ${paymentIntent.id}`);
       // Aquí puedes implementar lógica adicional si es necesario
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar pago cancelado: ${error.message}`,
-        error.stack,
+        `Error al procesar pago cancelado: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1136,9 +1167,10 @@ export class StripeService {
       this.logger.log(`PaymentIntent en proceso: ${paymentIntent.id}`);
       // Aquí puedes implementar lógica adicional si es necesario
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar pago en proceso: ${error.message}`,
-        error.stack,
+        `Error al procesar pago en proceso: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1171,9 +1203,10 @@ export class StripeService {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar reembolso: ${error.message}`,
-        error.stack,
+        `Error al procesar reembolso: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1186,9 +1219,10 @@ export class StripeService {
       this.logger.log(`Reembolso actualizado: ${refund.id}`);
       // Aquí puedes implementar lógica adicional si es necesario
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar actualización de reembolso: ${error.message}`,
-        error.stack,
+        `Error al procesar actualización de reembolso: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1221,9 +1255,10 @@ export class StripeService {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar disputa creada: ${error.message}`,
-        error.stack,
+        `Error al procesar disputa creada: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1265,9 +1300,10 @@ export class StripeService {
 
       await invoiceRef.update(updateData);
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar disputa cerrada: ${error.message}`,
-        error.stack,
+        `Error al procesar disputa cerrada: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1324,9 +1360,10 @@ export class StripeService {
         { merge: true },
       );
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar invoice.finalized: ${error.message}`,
-        error.stack,
+        `Error al procesar invoice.finalized: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1370,9 +1407,10 @@ export class StripeService {
         await this.tryClearBillingSuspension(String(metadata.clientId));
       }
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar invoice.payment_succeeded: ${error.message}`,
-        error.stack,
+        `Error al procesar invoice.payment_succeeded: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1401,9 +1439,10 @@ export class StripeService {
         { merge: true },
       );
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar invoice.payment_failed: ${error.message}`,
-        error.stack,
+        `Error al procesar invoice.payment_failed: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1434,9 +1473,10 @@ export class StripeService {
         await this.tryClearBillingSuspension(String(metadata.clientId));
       }
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Error al procesar invoice.voided: ${error.message}`,
-        error.stack,
+        `Error al procesar invoice.voided: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -1475,7 +1515,11 @@ export class StripeService {
     condominiumId: string | null;
   } {
     const parts = path.split('/');
-    if (parts.length >= 6 && parts[0] === 'clients' && parts[2] === 'condominiums') {
+    if (
+      parts.length >= 6 &&
+      parts[0] === 'clients' &&
+      parts[2] === 'condominiums'
+    ) {
       return {
         clientId: parts[1] || null,
         condominiumId: parts[3] || null,
@@ -1545,8 +1589,9 @@ export class StripeService {
         updateData.authDisabledByBillingAt =
           admin.firestore.FieldValue.serverTimestamp();
       } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
         this.logger.error(
-          `No se pudo desactivar Auth para ownerAdminUid=${ownerUid} clientId=${clientId}: ${error.message}`,
+          `No se pudo desactivar Auth para ownerAdminUid=${ownerUid} clientId=${clientId}: ${err.message}`,
         );
       }
     }
@@ -1625,8 +1670,9 @@ export class StripeService {
         updateData.authDisabledByBillingAt =
           admin.firestore.FieldValue.delete();
       } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
         this.logger.error(
-          `No se pudo reactivar Auth para ownerAdminUid=${ownerUid} clientId=${clientId}: ${error.message}`,
+          `No se pudo reactivar Auth para ownerAdminUid=${ownerUid} clientId=${clientId}: ${err.message}`,
         );
       }
     }
@@ -1645,8 +1691,9 @@ export class StripeService {
     periodKey: string;
   }): Promise<void> {
     const emitEvent =
-      String(process.env.INVOICE_EMIT_NOTIFICATION_EVENT || '').toLowerCase() ===
-      'true';
+      String(
+        process.env.INVOICE_EMIT_NOTIFICATION_EVENT || '',
+      ).toLowerCase() === 'true';
     if (!emitEvent) {
       return;
     }
@@ -1701,8 +1748,9 @@ export class StripeService {
           condominiumId,
         });
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `No se pudo emitir notificationEvent de factura clientId=${clientId}: ${error.message}`,
+        `No se pudo emitir notificationEvent de factura clientId=${clientId}: ${err.message}`,
       );
     }
   }
@@ -1760,7 +1808,7 @@ export class StripeService {
           await file.makePublic();
         } catch (publicError) {
           this.logger.warn(
-            `No se pudo hacer público el PDF de factura ${invoiceId}: ${publicError?.message || publicError}`,
+            `No se pudo hacer público el PDF de factura ${invoiceId}: ${publicError instanceof Error ? publicError.message : String(publicError)}`,
           );
         }
       }
@@ -1771,26 +1819,28 @@ export class StripeService {
       };
     } catch (error) {
       this.logger.error(
-        `Error al persistir PDF de factura ${invoiceId} en Storage: ${error?.message || error}`,
+        `Error al persistir PDF de factura ${invoiceId} en Storage: ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
     }
   }
 
-  private normalizeBillingFrequency(value: any):
-    | 'monthly'
-    | 'quarterly'
-    | 'biannual'
-    | 'annual' {
+  private normalizeBillingFrequency(
+    value: any,
+  ): 'monthly' | 'quarterly' | 'biannual' | 'annual' {
     const allowed = new Set(['monthly', 'quarterly', 'biannual', 'annual']);
-    const normalized = String(value || 'monthly').toLowerCase().trim();
+    const normalized = String(value || 'monthly')
+      .toLowerCase()
+      .trim();
     return allowed.has(normalized)
       ? (normalized as 'monthly' | 'quarterly' | 'biannual' | 'annual')
       : 'monthly';
   }
 
   private normalizeCurrency(value: any): string {
-    const normalized = String(value || 'MXN').trim().toUpperCase();
+    const normalized = String(value || 'MXN')
+      .trim()
+      .toUpperCase();
     return normalized || 'MXN';
   }
 
@@ -1824,7 +1874,9 @@ export class StripeService {
   }
 
   private resolveBillableBaseAmount(clientData: Record<string, any>): number {
-    const pricingWithoutTax = this.parsePricingAmount(clientData?.pricingWithoutTax);
+    const pricingWithoutTax = this.parsePricingAmount(
+      clientData?.pricingWithoutTax,
+    );
     const pricing = this.parsePricingAmount(clientData?.pricing);
     if (pricingWithoutTax > 0) {
       // Compatibilidad con datos previos donde pricingWithoutTax se guardó igual que pricing.
@@ -1850,7 +1902,9 @@ export class StripeService {
     applyMexicanVat: boolean;
   } {
     const { clientData, billableBaseAmount } = params;
-    const pricingWithoutTax = this.parsePricingAmount(clientData?.pricingWithoutTax);
+    const pricingWithoutTax = this.parsePricingAmount(
+      clientData?.pricingWithoutTax,
+    );
     const pricing = this.parsePricingAmount(clientData?.pricing);
     const shouldUseExplicitBase =
       pricingWithoutTax > 0 &&
@@ -1876,7 +1930,9 @@ export class StripeService {
       const subtotalAmount = this.roundAmount(billableBaseAmount);
       const totalAmount = this.roundAmount(pricing);
       const taxRatePercent = this.mxVatRatePercent;
-      const taxAmount = this.roundAmount(Math.max(totalAmount - subtotalAmount, 0));
+      const taxAmount = this.roundAmount(
+        Math.max(totalAmount - subtotalAmount, 0),
+      );
       return {
         subtotalAmount,
         taxAmount,
@@ -1903,6 +1959,39 @@ export class StripeService {
       .replace(/\s+/g, '');
   }
 
+  private normalizePostalCode(value: any): string {
+    return String(value || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '');
+  }
+
+  private buildFiscalAddressLine1(clientData: Record<string, any>): string {
+    const baseAddress = String(
+      clientData.fullFiscalAddress || clientData.address || '',
+    ).trim();
+    const postalCode = this.normalizePostalCode(clientData?.CP);
+
+    if (!postalCode) {
+      return baseAddress;
+    }
+
+    if (!baseAddress) {
+      return `CP ${postalCode}`;
+    }
+
+    const escapedPostalCode = postalCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const alreadyContainsPostalCode =
+      new RegExp(`\\b${escapedPostalCode}\\b`, 'i').test(baseAddress) ||
+      /C\.?\s*P\.?\s*[:\-]?\s*[A-Z0-9-]+/i.test(baseAddress);
+
+    if (alreadyContainsPostalCode) {
+      return baseAddress;
+    }
+
+    return `${baseAddress}, CP ${postalCode}`;
+  }
+
   private async ensureStripeCustomerTaxId(
     customerId: string,
     clientData: Record<string, any>,
@@ -1925,7 +2014,9 @@ export class StripeService {
         return;
       }
 
-      const previousMxRfc = taxIds.data.find((taxId) => taxId.type === 'mx_rfc');
+      const previousMxRfc = taxIds.data.find(
+        (taxId) => taxId.type === 'mx_rfc',
+      );
       if (previousMxRfc) {
         await this.stripe.customers.deleteTaxId(customerId, previousMxRfc.id);
       }
@@ -1936,7 +2027,7 @@ export class StripeService {
       });
     } catch (error) {
       this.logger.warn(
-        `No se pudo sincronizar RFC en Stripe para customerId=${customerId}: ${error?.message || error}`,
+        `No se pudo sincronizar RFC en Stripe para customerId=${customerId}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -1946,14 +2037,19 @@ export class StripeService {
       return this.mxVatTaxRateIdCache;
     }
 
-    const envTaxRateId = String(process.env.STRIPE_MX_VAT_TAX_RATE_ID || '').trim();
+    const envTaxRateId = String(
+      process.env.STRIPE_MX_VAT_TAX_RATE_ID || '',
+    ).trim();
     if (envTaxRateId) {
       this.mxVatTaxRateIdCache = envTaxRateId;
       return envTaxRateId;
     }
 
     try {
-      const taxRates = await this.stripe.taxRates.list({ active: true, limit: 100 });
+      const taxRates = await this.stripe.taxRates.list({
+        active: true,
+        limit: 100,
+      });
       const existing = taxRates.data.find(
         (taxRate) =>
           !taxRate.inclusive &&
@@ -1985,7 +2081,7 @@ export class StripeService {
       return created.id;
     } catch (error) {
       this.logger.error(
-        `No se pudo resolver/crear taxRate IVA ${this.mxVatRatePercent}%: ${error?.message || error}`,
+        `No se pudo resolver/crear taxRate IVA ${this.mxVatRatePercent}%: ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
     }
@@ -2025,7 +2121,10 @@ export class StripeService {
     return this.billingIntervalOverrideDays;
   }
 
-  private resolveAnchorDay(clientData: Record<string, any>, fallback: Date): number {
+  private resolveAnchorDay(
+    clientData: Record<string, any>,
+    fallback: Date,
+  ): number {
     const fromClient = Number(clientData?.billingAnchorDay);
     if (Number.isFinite(fromClient) && fromClient >= 1 && fromClient <= 31) {
       return Math.floor(fromClient);
@@ -2033,7 +2132,9 @@ export class StripeService {
     return fallback.getDate();
   }
 
-  private resolveDefaultCondominiumId(clientData: Record<string, any>): string | null {
+  private resolveDefaultCondominiumId(
+    clientData: Record<string, any>,
+  ): string | null {
     if (
       clientData?.defaultCondominiumId &&
       String(clientData.defaultCondominiumId).trim()
@@ -2051,9 +2152,15 @@ export class StripeService {
     return null;
   }
 
-  private resolveNextBillingDate(clientData: Record<string, any>, fallback: Date): Date {
+  private resolveNextBillingDate(
+    clientData: Record<string, any>,
+    fallback: Date,
+  ): Date {
     const nextBillingDate = clientData?.nextBillingDate;
-    if (nextBillingDate?.toDate && typeof nextBillingDate.toDate === 'function') {
+    if (
+      nextBillingDate?.toDate &&
+      typeof nextBillingDate.toDate === 'function'
+    ) {
       return nextBillingDate.toDate();
     }
     return fallback;
@@ -2089,7 +2196,7 @@ export class StripeService {
       }
     } catch (error) {
       this.logger.warn(
-        `No se pudo leer configuración de billing del condominio clientId=${clientId} condominiumId=${condominiumId}: ${error?.message || error}`,
+        `No se pudo leer configuración de billing del condominio clientId=${clientId} condominiumId=${condominiumId}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
@@ -2097,7 +2204,9 @@ export class StripeService {
       Object.keys(condominiumData).length > 0 ? condominiumData : clientData;
     const amount = this.resolveBillableBaseAmount(sourceData);
     const currency = this.normalizeCurrency(
-      sourceData?.currency || clientData?.currency || this.defaultBillingCurrency,
+      sourceData?.currency ||
+        clientData?.currency ||
+        this.defaultBillingCurrency,
     );
     const plan = String(sourceData?.plan || clientData?.plan || '').trim();
     const billingFrequency = this.normalizeBillingFrequency(
@@ -2151,7 +2260,9 @@ export class StripeService {
     const year = baseDate.getUTCFullYear();
     const month = baseDate.getUTCMonth() + monthsToAdd;
     const result = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
-    const maxDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)).getUTCDate();
+    const maxDay = new Date(
+      Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0),
+    ).getUTCDate();
     result.setUTCDate(Math.min(anchorDay, maxDay));
     return result;
   }
@@ -2189,7 +2300,10 @@ export class StripeService {
   private formatInvoiceNumber(date: Date, clientId: string): string {
     const year = date.getUTCFullYear();
     const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const suffix = clientId.replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase();
+    const suffix = clientId
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(-6)
+      .toUpperCase();
     const sequence = String(date.getUTCDate()).padStart(2, '0');
     return `EA-${year}${month}-${suffix}${sequence}`;
   }
@@ -2207,7 +2321,10 @@ export class StripeService {
 
     if (clientData?.stripeCustomerId) {
       const existingCustomerId = String(clientData.stripeCustomerId);
-      await this.syncStripeCustomerBillingProfile(existingCustomerId, clientData);
+      await this.syncStripeCustomerBillingProfile(
+        existingCustomerId,
+        clientData,
+      );
       await this.ensureStripeCustomerTaxId(existingCustomerId, clientData);
       return existingCustomerId;
     }
@@ -2229,8 +2346,9 @@ export class StripeService {
 
       return customer.id;
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `No se pudo crear customer en Stripe para clientId=${clientId}: ${error.message}`,
+        `No se pudo crear customer en Stripe para clientId=${clientId}: ${err.message}`,
       );
       return null;
     }
@@ -2251,6 +2369,8 @@ export class StripeService {
       String(clientData.email || '').trim();
 
     const customerRfc = this.normalizeRfc(clientData?.RFC);
+    const customerPostalCode = this.normalizePostalCode(clientData?.CP);
+    const addressLine1 = this.buildFiscalAddressLine1(clientData);
     const addressLine2 = customerRfc ? `RFC: ${customerRfc}` : undefined;
 
     return {
@@ -2258,15 +2378,18 @@ export class StripeService {
       email: String(clientData.email || '').trim() || undefined,
       phone: String(clientData.phoneNumber || '').trim() || undefined,
       address: {
-        line1:
-          String(clientData.fullFiscalAddress || clientData.address || '').trim() ||
-          undefined,
+        line1: addressLine1 || undefined,
         line2: addressLine2,
-        country: String(clientData.country || '').trim().toUpperCase() || undefined,
+        postal_code: customerPostalCode || undefined,
+        country:
+          String(clientData.country || '')
+            .trim()
+            .toUpperCase() || undefined,
       },
       metadata: {
         clientId: String(clientId || '').trim(),
         RFC: String(clientData.RFC || ''),
+        CP: String(clientData.CP || ''),
         country: String(clientData.country || ''),
       },
     };
@@ -2283,10 +2406,11 @@ export class StripeService {
         email: payload.email,
         phone: payload.phone,
         address: payload.address,
+        metadata: payload.metadata,
       });
     } catch (error) {
       this.logger.warn(
-        `No se pudo sincronizar perfil fiscal del customer Stripe ${customerId}: ${error?.message || error}`,
+        `No se pudo sincronizar perfil fiscal del customer Stripe ${customerId}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -2374,10 +2498,11 @@ export class StripeService {
       billingDedupeKey,
       source,
       plan: plan || '',
-      condominiumLimitSnapshot:
-        Number.isFinite(Number(billingSourceData?.condominiumLimit))
-          ? Number(billingSourceData?.condominiumLimit)
-          : null,
+      condominiumLimitSnapshot: Number.isFinite(
+        Number(billingSourceData?.condominiumLimit),
+      )
+        ? Number(billingSourceData?.condominiumLimit)
+        : null,
       pricingSnapshot: invoiceAmounts.totalAmount,
       pricingBaseSnapshot: invoiceAmounts.subtotalAmount,
       paymentStatus: 'pending',
@@ -2435,12 +2560,9 @@ export class StripeService {
           invoiceItemPayload.tax_rates = [mxVatTaxRateId];
         }
 
-        await this.stripe.invoiceItems.create(
-          invoiceItemPayload,
-          {
-            idempotencyKey: `${billingDedupeKey}:invoice-item`,
-          },
-        );
+        await this.stripe.invoiceItems.create(invoiceItemPayload, {
+          idempotencyKey: `${billingDedupeKey}:invoice-item`,
+        });
 
         const issuerRfc = this.normalizeRfc(
           process.env.STRIPE_ISSUER_RFC ||
@@ -2504,14 +2626,18 @@ export class StripeService {
           { merge: true },
         );
       } catch (stripeError) {
+        const sErr =
+          stripeError instanceof Error
+            ? stripeError
+            : new Error(String(stripeError));
         this.logger.error(
-          `Error al crear factura Stripe clientId=${clientId} invoiceId=${invoiceRef.id}: ${stripeError?.message || stripeError}`,
-          stripeError?.stack,
+          `Error al crear factura Stripe clientId=${clientId} invoiceId=${invoiceRef.id}: ${sErr.message}`,
+          sErr.stack,
         );
 
         await invoiceRef.set(
           {
-            stripeSyncError: stripeError?.message || String(stripeError),
+            stripeSyncError: sErr.message,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           { merge: true },
@@ -2560,35 +2686,37 @@ export class StripeService {
     const lockUntilMs = nowMs + ttlMs;
 
     try {
-      const lockAcquired = await admin.firestore().runTransaction(async (tx) => {
-        const lockDoc = await tx.get(lockRef);
-        const currentLockUntil = lockDoc.data()?.lockUntil;
-        const currentLockMs =
-          currentLockUntil?.toMillis && typeof currentLockUntil.toMillis === 'function'
-            ? currentLockUntil.toMillis()
-            : 0;
+      const lockAcquired = await admin
+        .firestore()
+        .runTransaction(async (tx) => {
+          const lockDoc = await tx.get(lockRef);
+          const currentLockUntil = lockDoc.data()?.lockUntil;
+          const currentLockMs =
+            currentLockUntil?.toMillis &&
+            typeof currentLockUntil.toMillis === 'function'
+              ? currentLockUntil.toMillis()
+              : 0;
 
-        if (currentLockMs > nowMs) {
-          return false;
-        }
+          if (currentLockMs > nowMs) {
+            return false;
+          }
 
-        tx.set(
-          lockRef,
-          {
-            lockUntil: admin.firestore.Timestamp.fromMillis(lockUntilMs),
-            worker: process.env.HOSTNAME || 'stripe-billing-cron',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        );
-        return true;
-      });
+          tx.set(
+            lockRef,
+            {
+              lockUntil: admin.firestore.Timestamp.fromMillis(lockUntilMs),
+              worker: process.env.HOSTNAME || 'stripe-billing-cron',
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          );
+          return true;
+        });
 
       return lockAcquired;
     } catch (error) {
-      this.logger.error(
-        `No se pudo adquirir lock "${lockId}": ${error.message}`,
-      );
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error(`No se pudo adquirir lock "${lockId}": ${err.message}`);
       return false;
     }
   }
@@ -2607,7 +2735,8 @@ export class StripeService {
           { merge: true },
         );
     } catch (error) {
-      this.logger.error(`No se pudo liberar lock "${lockId}": ${error.message}`);
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error(`No se pudo liberar lock "${lockId}": ${err.message}`);
     }
   }
 }

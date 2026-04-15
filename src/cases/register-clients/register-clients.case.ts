@@ -25,6 +25,7 @@ export const RegisterClientCase = async (
     proFunctions = [],
     address,
     fullFiscalAddress,
+    CP,
     RFC,
     country,
     businessName,
@@ -43,6 +44,7 @@ export const RegisterClientCase = async (
     currency = 'MXN',
     language = 'es-MX',
     hasMaintenanceApp,
+    maintenanceAppContractedAt,
   } = registerClientDto;
 
   const normalizePricingValue = (value: unknown): number | string | null => {
@@ -64,7 +66,9 @@ export const RegisterClientCase = async (
   };
   const roundToTwo = (value: number): number =>
     Math.round((value + Number.EPSILON) * 100) / 100;
-  const extractNumericPricing = (value: number | string | null): number | null => {
+  const extractNumericPricing = (
+    value: number | string | null,
+  ): number | null => {
     if (typeof value === 'number') {
       return Number.isFinite(value) && value > 0 ? value : null;
     }
@@ -86,13 +90,28 @@ export const RegisterClientCase = async (
       ? roundToTwo(pricingNumeric / 1.16)
       : null;
   const resolvedPricingWithoutTax =
-    explicitPricingWithoutTax ??
-    fallbackPricingWithoutTax ??
-    resolvedPricing;
+    explicitPricingWithoutTax ?? fallbackPricingWithoutTax ?? resolvedPricing;
   const resolvedCondominiumManager =
     String(
       condominiumInfo?.condominiumManager || condominiumManager || '',
     ).trim() || null;
+  const resolvedHasMaintenanceApp = Boolean(
+    condominiumInfo?.hasMaintenanceApp ?? hasMaintenanceApp,
+  );
+  const maintenanceContractDateRaw =
+    condominiumInfo?.maintenanceAppContractedAt || maintenanceAppContractedAt;
+  const resolvedMaintenanceAppContractedAt = (() => {
+    if (!resolvedHasMaintenanceApp) return null;
+
+    if (maintenanceContractDateRaw) {
+      const parsedDate = new Date(maintenanceContractDateRaw);
+      if (!Number.isNaN(parsedDate.getTime())) {
+        return admin.firestore.Timestamp.fromDate(parsedDate);
+      }
+    }
+
+    return admin.firestore.FieldValue.serverTimestamp();
+  })();
 
   const clientRecord = uuidv4();
   const registrationDate = new Date();
@@ -109,7 +128,7 @@ export const RegisterClientCase = async (
         email,
         password,
       });
-    } catch (authError) {
+    } catch (authError: any) {
       // Si falla la creación del usuario en Auth, lanzar error sin crear datos en Firestore
       console.error('Error al crear usuario en Firebase Auth:', authError);
       if (authError.code === 'auth/email-already-exists') {
@@ -139,6 +158,7 @@ export const RegisterClientCase = async (
       phoneNumber,
       address, // Mantenemos para compatibilidad
       fullFiscalAddress, // Nuevo campo para domicilio fiscal completo
+      CP,
       RFC,
       country,
       businessName,
@@ -161,7 +181,6 @@ export const RegisterClientCase = async (
       condominiumsUids: [condominiumUid],
       currency, // Utilizamos la variable extraída de la desestructuración
       language, // Utilizamos la variable extraída de la desestructuración
-      hasMaintenanceApp, // Indica si el cliente tiene la app de mantenimiento
     };
     await clientProfileRef.set(clientData);
 
@@ -180,6 +199,8 @@ export const RegisterClientCase = async (
       billingFrequency,
       proFunctions,
       condominiumLimit, // Límite de condominios según el plan
+      hasMaintenanceApp: resolvedHasMaintenanceApp,
+      maintenanceAppContractedAt: resolvedMaintenanceAppContractedAt,
       status: CondominiumStatus.Pending, // Estado inicial del condominio
       createdDate: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -216,7 +237,7 @@ export const RegisterClientCase = async (
       adminUid: userRecord.uid,
       registrationDate: registrationDate.toISOString(),
     };
-  } catch (error) {
+  } catch (error: any) {
     console.error(
       'Error al registrar el cliente y su cuenta administrativa',
       error,

@@ -41,6 +41,10 @@ export class NewCustomerInfoDto {
   @IsString()
   fullFiscalAddress: string;
 
+  @IsNotEmpty({ message: 'El código postal (CP) es obligatorio' })
+  @IsString()
+  CP: string;
+
   @IsNotEmpty({ message: 'El RFC es obligatorio' })
   @IsString()
   RFC: string;

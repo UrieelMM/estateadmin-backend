@@ -1,8 +1,8 @@
 import * as admin from 'firebase-admin';
-import { 
-  ConflictException, 
+import {
+  ConflictException,
   InternalServerErrorException,
-  Logger 
+  Logger,
 } from '@nestjs/common';
 import { CreateMaintenanceUserDto } from '../../dtos/maintenance-user.dto';
 import { v4 as uuidv4 } from 'uuid';
@@ -11,7 +11,7 @@ const logger = new Logger('CreateMaintenanceUserCase');
 
 export const CreateMaintenanceUserCase = async (
   createMaintenanceUserDto: CreateMaintenanceUserDto,
-  photoFile?: Express.Multer.File
+  photoFile?: Express.Multer.File,
 ) => {
   const {
     email,
@@ -48,7 +48,9 @@ export const CreateMaintenanceUserCase = async (
     if (photoFile) {
       try {
         logger.log(`Subiendo foto de perfil para usuario: ${userId}`);
-        const bucket = admin.storage().bucket('administracioncondominio-93419.appspot.com');
+        const bucket = admin
+          .storage()
+          .bucket('administracioncondominio-93419.appspot.com');
         const fileExtension = photoFile.originalname.split('.').pop();
         const fileName = `${userId}_${Date.now()}.${fileExtension}`;
         const filePath = `clients/${clientId}/maintenanceAppUsers/${userId}/${fileName}`;
@@ -81,13 +83,17 @@ export const CreateMaintenanceUserCase = async (
           blobStream.end(photoFile.buffer);
         });
       } catch (error) {
-        logger.error(`Error al subir foto, continuando sin foto: ${error.message}`);
+        logger.error(
+          `Error al subir foto, continuando sin foto: ${error.message}`,
+        );
         // Continuamos sin foto si hay error
       }
     }
 
     // 4. Guardar perfil del usuario en Firestore
-    logger.log(`Guardando perfil de usuario de mantenimiento en Firestore: ${userId}`);
+    logger.log(
+      `Guardando perfil de usuario de mantenimiento en Firestore: ${userId}`,
+    );
     const userProfileRef = admin
       .firestore()
       .collection(`clients/${clientId}/maintenanceAppUsers`)
@@ -121,13 +127,13 @@ export const CreateMaintenanceUserCase = async (
     };
   } catch (error) {
     logger.error(`Error al crear usuario de mantenimiento: ${error.message}`);
-    
+
     if (error.code === 'auth/email-already-exists') {
       throw new ConflictException('El correo electrónico ya está registrado.');
     } else {
       console.error('Error al crear usuario de mantenimiento', error);
       throw new InternalServerErrorException(
-        'Error al crear usuario de mantenimiento. Intente más tarde'
+        'Error al crear usuario de mantenimiento. Intente más tarde',
       );
     }
   }

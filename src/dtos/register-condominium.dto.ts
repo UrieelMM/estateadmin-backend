@@ -1,5 +1,7 @@
 import {
   IsArray,
+  IsBoolean,
+  IsDateString,
   IsEnum,
   IsNotEmpty,
   IsNumber,
@@ -62,6 +64,14 @@ export class RegisterCondominiumDto {
   @IsOptional()
   @IsArray()
   proFunctions: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  hasMaintenanceApp?: boolean;
+
+  @IsOptional()
+  @IsDateString()
+  maintenanceAppContractedAt?: string;
 
   @IsOptional()
   @IsString()

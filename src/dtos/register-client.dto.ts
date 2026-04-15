@@ -1,5 +1,7 @@
 import {
   IsArray,
+  IsBoolean,
+  IsDateString,
   IsEmail,
   IsEnum,
   IsNotEmpty,
@@ -23,6 +25,14 @@ class CondominiumInfo {
   @IsOptional()
   @IsString()
   condominiumManager?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  hasMaintenanceApp?: boolean;
+
+  @IsOptional()
+  @IsDateString()
+  maintenanceAppContractedAt?: string;
 }
 
 export enum BillingFrequency {
@@ -100,6 +110,11 @@ export class RegisterClientDto {
   @MaxLength(500)
   fullFiscalAddress: string;
 
+  // Código postal para facturación
+  @IsNotEmpty()
+  @IsString()
+  CP: string;
+
   // RFC
   @IsNotEmpty()
   @IsString()
@@ -176,5 +191,11 @@ export class RegisterClientDto {
 
   // Indica si el cliente tiene la app de mantenimiento
   @IsOptional()
+  @IsBoolean()
   hasMaintenanceApp: boolean;
+
+  // Fecha/hora de contratación de la app de mantenimiento (deprecated: usar condominiumInfo)
+  @IsOptional()
+  @IsDateString()
+  maintenanceAppContractedAt?: string;
 }

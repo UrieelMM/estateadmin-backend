@@ -18,6 +18,8 @@ export const RegisterCondominiumCase = async (condominiumData: {
   proFunctions?: string[];
   currency?: string;
   language?: string;
+  hasMaintenanceApp?: boolean;
+  maintenanceAppContractedAt?: string;
 }) => {
   try {
     const {
@@ -36,6 +38,8 @@ export const RegisterCondominiumCase = async (condominiumData: {
       proFunctions = [],
       currency = 'MXN',
       language = 'es-MX',
+      hasMaintenanceApp = false,
+      maintenanceAppContractedAt,
     } = condominiumData;
     const normalizePricingValue = (value: unknown): number | string | null => {
       if (value === null || value === undefined) {
@@ -80,6 +84,29 @@ export const RegisterCondominiumCase = async (condominiumData: {
       explicitPricingWithoutTax ??
       fallbackPricingWithoutTax ??
       resolvedPricing;
+    const resolvedHasMaintenanceApp = Boolean(hasMaintenanceApp);
+    const parsedMaintenanceContractDate = maintenanceAppContractedAt
+      ? new Date(maintenanceAppContractedAt)
+      : null;
+    const hasValidMaintenanceContractDate = Boolean(
+      parsedMaintenanceContractDate &&
+        !Number.isNaN(parsedMaintenanceContractDate.getTime()),
+    );
+    const resolvedMaintenanceAppContractedAtForWrite = (() => {
+      if (!resolvedHasMaintenanceApp) return null;
+
+      if (hasValidMaintenanceContractDate && parsedMaintenanceContractDate) {
+        return admin.firestore.Timestamp.fromDate(parsedMaintenanceContractDate);
+      }
+
+      return admin.firestore.FieldValue.serverTimestamp();
+    })();
+    const resolvedMaintenanceAppContractedAtForResponse =
+      resolvedHasMaintenanceApp
+        ? hasValidMaintenanceContractDate && parsedMaintenanceContractDate
+          ? parsedMaintenanceContractDate.toISOString()
+          : new Date().toISOString()
+        : null;
     const uid = uuidv4(); // Generamos el UID único
 
     // Verificar que el cliente existe
@@ -112,6 +139,8 @@ export const RegisterCondominiumCase = async (condominiumData: {
         condominiumLimit,
         status,
         proFunctions,
+        hasMaintenanceApp: resolvedHasMaintenanceApp,
+        maintenanceAppContractedAt: resolvedMaintenanceAppContractedAtForWrite,
         currency,
         language,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -139,6 +168,8 @@ export const RegisterCondominiumCase = async (condominiumData: {
       condominiumLimit,
       status,
       proFunctions,
+      hasMaintenanceApp: resolvedHasMaintenanceApp,
+      maintenanceAppContractedAt: resolvedMaintenanceAppContractedAtForResponse,
       currency,
       language,
       message: 'Condominio creado exitosamente',

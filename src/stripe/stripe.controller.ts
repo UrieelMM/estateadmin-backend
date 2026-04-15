@@ -149,9 +149,10 @@ export class StripeController {
       this.logger.log('Webhook procesado exitosamente');
       return res.status(HttpStatus.OK).json(result);
     } catch (error) {
-      this.logger.error(`Error en el webhook: ${error.message}`, error.stack);
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error(`Error en el webhook: ${err.message}`, err.stack);
       return res.status(HttpStatus.BAD_REQUEST).json({
-        message: error.message,
+        message: err.message,
       });
     }
   }
