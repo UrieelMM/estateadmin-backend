@@ -9,6 +9,20 @@ import axios from 'axios';
 import * as admin from 'firebase-admin';
 import Stripe from 'stripe';
 
+type BillingFrequency = 'monthly' | 'quarterly' | 'biannual' | 'annual';
+type InvoiceSource = 'auto_initial_registration' | 'auto_scheduler';
+type AutomatedInvoiceType = 'subscription' | 'maintenance_app';
+
+interface CondominiumBillingConfig {
+  amount: number;
+  currency: string;
+  plan: string;
+  billingFrequency: BillingFrequency;
+  condominiumLimit: number | null;
+  sourceData: Record<string, any>;
+  condominiumData: Record<string, any>;
+}
+
 @Injectable()
 export class StripeService {
   private readonly stripe: Stripe;
@@ -22,6 +36,8 @@ export class StripeService {
   private mxVatTaxRateIdCache: string | null = null;
   private readonly defaultBillingCurrency = 'MXN';
   private readonly billingIntervalOverrideDays: number | null;
+  private readonly maintenanceAppDefaultCurrency = 'MXN';
+  private readonly maintenanceAppMonthlyPriceTotalMxn: number;
 
   constructor() {
     // Inicializar Stripe con la clave secreta
@@ -36,6 +52,8 @@ export class StripeService {
         `BILLING_TEST_INTERVAL_DAYS activo: ${this.billingIntervalOverrideDays} día(s).`,
       );
     }
+    this.maintenanceAppMonthlyPriceTotalMxn =
+      this.resolveMaintenanceAppMonthlyPriceTotalMxn();
   }
 
   async bootstrapClientBilling(params: {
@@ -77,57 +95,36 @@ export class StripeService {
         clientData,
       },
     );
-    const amount = condominiumBillingConfig.amount;
-    const currency = condominiumBillingConfig.currency;
-    const plan = condominiumBillingConfig.plan;
-    const billingFrequency = condominiumBillingConfig.billingFrequency;
-
-    if (amount <= 0) {
-      const nextBillingDate = this.addBillingInterval(
+    const condominiumName = this.resolveCondominiumDisplayName(
+      condominiumBillingConfig.condominiumData,
+      effectiveCondominiumId,
+    );
+    const billingResults =
+      await this.createAutomatedInvoicesForCondominiumPeriod({
+        clientId,
+        condominiumId: effectiveCondominiumId,
+        condominiumName,
+        condominiumBillingConfig,
+        adminUid: adminUid || clientData.ownerAdminUid || null,
+        adminEmail: clientData.ownerEmail || clientData.email || null,
         issueDate,
-        billingFrequency,
-        anchorDay,
-      );
-      await clientRef.set(
+        periodDate: issueDate,
+        source: 'auto_initial_registration',
+        dueDays,
+        clientData,
+      });
+
+    const schedulerBillingFrequency = this.resolveClientSchedulerBillingFrequency(
+      [
         {
-          status: clientData.status || 'active',
-          billingAnchorDay: anchorDay,
-          nextBillingDate: admin.firestore.Timestamp.fromDate(nextBillingDate),
-          defaultCondominiumId: effectiveCondominiumId,
-          ownerAdminUid: adminUid || clientData.ownerAdminUid || null,
-          ownerEmail: clientData.ownerEmail || clientData.email || null,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          condominiumBillingConfig,
         },
-        { merge: true },
-      );
-
-      return {
-        success: false,
-        message:
-          'Cliente registrado. La facturación inicial se omitió por pricing inválido o cero.',
-      };
-    }
-
-    const billingResult = await this.createAutomatedInvoiceForPeriod({
-      clientId,
-      condominiumId: effectiveCondominiumId,
-      adminUid: adminUid || clientData.ownerAdminUid || null,
-      adminEmail: clientData.ownerEmail || clientData.email || null,
-      issueDate,
-      billingFrequency,
-      amount,
-      currency,
-      plan,
-      source: 'auto_initial_registration',
-      dueDays,
-      clientData,
-      billingSourceData: condominiumBillingConfig.sourceData,
-      periodDate: issueDate,
-    });
+      ],
+    );
 
     const nextBillingDate = this.addBillingInterval(
       issueDate,
-      billingFrequency,
+      schedulerBillingFrequency,
       anchorDay,
     );
     await clientRef.set(
@@ -135,7 +132,8 @@ export class StripeService {
         status: clientData.status || 'active',
         billingAnchorDay: anchorDay,
         nextBillingDate: admin.firestore.Timestamp.fromDate(nextBillingDate),
-        defaultCondominiumId: effectiveCondominiumId,
+        defaultCondominiumId:
+          clientData.defaultCondominiumId || effectiveCondominiumId,
         ownerAdminUid: adminUid || clientData.ownerAdminUid || null,
         ownerEmail: clientData.ownerEmail || clientData.email || null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -143,10 +141,21 @@ export class StripeService {
       { merge: true },
     );
 
+    if (billingResults.length === 0) {
+      return {
+        success: false,
+        message:
+          'Cliente registrado. La facturación inicial se omitió por pricing inválido o cero.',
+        nextBillingDate: nextBillingDate.toISOString(),
+      };
+    }
+
+    const primaryBillingResult = billingResults[0];
     return {
       success: true,
       message: 'Facturación inicial procesada',
-      ...billingResult,
+      ...primaryBillingResult,
+      generatedInvoices: billingResults,
       nextBillingDate: nextBillingDate.toISOString(),
     };
   }
@@ -186,34 +195,44 @@ export class StripeService {
 
           const anchorDay = this.resolveAnchorDay(clientData, now);
           const dueDays = this.resolveDueDays();
-          const condominiumId =
-            clientData.defaultCondominiumId ||
-            this.resolveDefaultCondominiumId(clientData);
           const adminUid = clientData.ownerAdminUid || null;
           const adminEmail = clientData.ownerEmail || clientData.email || null;
-
-          if (!condominiumId) {
-            this.logger.warn(
-              `No se encontró condominio para facturación recurrente de clientId=${clientDoc.id}`,
-            );
-            continue;
-          }
-          const condominiumBillingConfig =
-            await this.resolveCondominiumBillingConfig({
+          const condominiumsToBill =
+            await this.resolveClientCondominiumsForBilling({
               clientId: clientDoc.id,
-              condominiumId,
               clientData,
             });
-          const amount = condominiumBillingConfig.amount;
-          const currency = condominiumBillingConfig.currency;
-          const plan = condominiumBillingConfig.plan;
-          const billingFrequency = condominiumBillingConfig.billingFrequency;
-          if (amount <= 0) {
+
+          if (condominiumsToBill.length === 0) {
             this.logger.warn(
-              `Se omite facturación recurrente para clientId=${clientDoc.id} condominiumId=${condominiumId} por pricing inválido`,
+              `No se encontraron condominios para facturación recurrente de clientId=${clientDoc.id}`,
             );
             continue;
           }
+
+          const condominiumBillingEntries = await Promise.all(
+            condominiumsToBill.map(async (condominiumEntry) => {
+              const condominiumBillingConfig =
+                await this.resolveCondominiumBillingConfig({
+                  clientId: clientDoc.id,
+                  condominiumId: condominiumEntry.condominiumId,
+                  clientData,
+                  condominiumData: condominiumEntry.condominiumData,
+                });
+
+              return {
+                condominiumId: condominiumEntry.condominiumId,
+                condominiumName: this.resolveCondominiumDisplayName(
+                  condominiumBillingConfig.condominiumData,
+                  condominiumEntry.condominiumId,
+                ),
+                condominiumBillingConfig,
+              };
+            }),
+          );
+
+          const schedulerBillingFrequency =
+            this.resolveClientSchedulerBillingFrequency(condominiumBillingEntries);
 
           const nextBillingDate = this.resolveNextBillingDate(clientData, now);
           let cursor = nextBillingDate;
@@ -226,26 +245,26 @@ export class StripeService {
             cursor.getTime() <= now.getTime() &&
             iterations < maxIterations
           ) {
-            await this.createAutomatedInvoiceForPeriod({
-              clientId: clientDoc.id,
-              condominiumId,
-              adminUid,
-              adminEmail,
-              issueDate: cursor,
-              periodDate: cursor,
-              billingFrequency,
-              amount,
-              currency,
-              plan,
-              source: 'auto_scheduler',
-              dueDays,
-              clientData,
-              billingSourceData: condominiumBillingConfig.sourceData,
-            });
+            for (const condominiumEntry of condominiumBillingEntries) {
+              await this.createAutomatedInvoicesForCondominiumPeriod({
+                clientId: clientDoc.id,
+                condominiumId: condominiumEntry.condominiumId,
+                condominiumName: condominiumEntry.condominiumName,
+                condominiumBillingConfig:
+                  condominiumEntry.condominiumBillingConfig,
+                adminUid,
+                adminEmail,
+                issueDate: cursor,
+                periodDate: cursor,
+                source: 'auto_scheduler',
+                dueDays,
+                clientData,
+              });
+            }
 
             cursor = this.addBillingInterval(
               cursor,
-              billingFrequency,
+              schedulerBillingFrequency,
               anchorDay,
             );
             iterations++;
@@ -1827,13 +1846,13 @@ export class StripeService {
 
   private normalizeBillingFrequency(
     value: any,
-  ): 'monthly' | 'quarterly' | 'biannual' | 'annual' {
+  ): BillingFrequency {
     const allowed = new Set(['monthly', 'quarterly', 'biannual', 'annual']);
     const normalized = String(value || 'monthly')
       .toLowerCase()
       .trim();
     return allowed.has(normalized)
-      ? (normalized as 'monthly' | 'quarterly' | 'biannual' | 'annual')
+      ? (normalized as BillingFrequency)
       : 'monthly';
   }
 
@@ -2166,38 +2185,175 @@ export class StripeService {
     return fallback;
   }
 
+  private async resolveClientCondominiumsForBilling(params: {
+    clientId: string;
+    clientData: Record<string, any>;
+  }): Promise<Array<{ condominiumId: string; condominiumData: Record<string, any> }>> {
+    const { clientId, clientData } = params;
+
+    try {
+      const condominiumsSnapshot = await admin
+        .firestore()
+        .collection(`clients/${clientId}/condominiums`)
+        .get();
+
+      if (!condominiumsSnapshot.empty) {
+        return condominiumsSnapshot.docs.map((doc) => ({
+          condominiumId: doc.id,
+          condominiumData: doc.data() || {},
+        }));
+      }
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo listar condominios para facturación clientId=${clientId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    const fallbackCondominiumId = this.resolveDefaultCondominiumId(clientData);
+    if (!fallbackCondominiumId) {
+      return [];
+    }
+
+    return [
+      {
+        condominiumId: fallbackCondominiumId,
+        condominiumData: {},
+      },
+    ];
+  }
+
+  private resolveCondominiumDisplayName(
+    condominiumData: Record<string, any>,
+    fallbackCondominiumId: string,
+  ): string {
+    return (
+      String(
+        condominiumData?.name ||
+          condominiumData?.condominiumName ||
+          fallbackCondominiumId ||
+          '',
+      ).trim() || fallbackCondominiumId
+    );
+  }
+
+  private parseDateFromUnknown(value: any): Date | null {
+    if (!value) return null;
+
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value?.toDate === 'function') {
+      const parsed = value.toDate();
+      return parsed instanceof Date && !Number.isNaN(parsed.getTime())
+        ? parsed
+        : null;
+    }
+
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      Number.isFinite((value as any)._seconds)
+    ) {
+      const fromSeconds = new Date(Number((value as any)._seconds) * 1000);
+      return Number.isNaN(fromSeconds.getTime()) ? null : fromSeconds;
+    }
+
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private isMaintenanceAppEnabled(condominiumData: Record<string, any>): boolean {
+    return condominiumData?.hasMaintenanceApp === true;
+  }
+
+  private shouldBillMaintenanceAppForPeriod(
+    condominiumData: Record<string, any>,
+    periodDate: Date,
+  ): boolean {
+    if (!this.isMaintenanceAppEnabled(condominiumData)) {
+      return false;
+    }
+
+    const contractedAt = this.parseDateFromUnknown(
+      condominiumData?.maintenanceAppContractedAt,
+    );
+    if (!contractedAt) {
+      return true;
+    }
+
+    return contractedAt.getTime() <= periodDate.getTime();
+  }
+
+  private resolveClientSchedulerBillingFrequency(
+    condominiums: Array<{
+      condominiumBillingConfig: CondominiumBillingConfig;
+    }>,
+  ): BillingFrequency {
+    if (condominiums.length === 0) {
+      return 'monthly';
+    }
+
+    const hasMaintenanceApp = condominiums.some((condominium) =>
+      this.isMaintenanceAppEnabled(
+        condominium.condominiumBillingConfig.condominiumData,
+      ),
+    );
+    if (hasMaintenanceApp) {
+      return 'monthly';
+    }
+
+    const intervalMonths = condominiums.map((condominium) =>
+      this.getBillingIntervalMonths(
+        condominium.condominiumBillingConfig.billingFrequency,
+      ),
+    );
+    const minInterval = Math.min(...intervalMonths);
+
+    if (minInterval <= 1) return 'monthly';
+    if (minInterval <= 3) return 'quarterly';
+    if (minInterval <= 6) return 'biannual';
+    return 'annual';
+  }
+
+  private buildBillingDedupeKey(params: {
+    clientId: string;
+    condominiumId: string;
+    invoiceType: AutomatedInvoiceType;
+    periodKey: string;
+  }): string {
+    const { clientId, condominiumId, invoiceType, periodKey } = params;
+    return `client:${clientId}:condominium:${condominiumId}:type:${invoiceType}:period:${periodKey}`;
+  }
+
   private async resolveCondominiumBillingConfig(params: {
     clientId: string;
     condominiumId: string;
     clientData: Record<string, any>;
-  }): Promise<{
-    amount: number;
-    currency: string;
-    plan: string;
-    billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual';
-    condominiumLimit: number | null;
-    sourceData: Record<string, any>;
-  }> {
+    condominiumData?: Record<string, any>;
+  }): Promise<CondominiumBillingConfig> {
     const { clientId, condominiumId, clientData } = params;
-    let condominiumData: Record<string, any> = {};
+    let condominiumData: Record<string, any> = params.condominiumData || {};
 
-    try {
-      const condominiumDoc = await admin
-        .firestore()
-        .collection(`clients/${clientId}/condominiums`)
-        .doc(condominiumId)
-        .get();
-      if (condominiumDoc.exists) {
-        condominiumData = condominiumDoc.data() || {};
-      } else {
+    if (Object.keys(condominiumData).length === 0) {
+      try {
+        const condominiumDoc = await admin
+          .firestore()
+          .collection(`clients/${clientId}/condominiums`)
+          .doc(condominiumId)
+          .get();
+        if (condominiumDoc.exists) {
+          condominiumData = condominiumDoc.data() || {};
+        } else {
+          this.logger.warn(
+            `No se encontró condominio para configuración de billing clientId=${clientId} condominiumId=${condominiumId}. Se usa fallback a client.`,
+          );
+        }
+      } catch (error) {
         this.logger.warn(
-          `No se encontró condominio para configuración de billing clientId=${clientId} condominiumId=${condominiumId}. Se usa fallback a client.`,
+          `No se pudo leer configuración de billing del condominio clientId=${clientId} condominiumId=${condominiumId}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-    } catch (error) {
-      this.logger.warn(
-        `No se pudo leer configuración de billing del condominio clientId=${clientId} condominiumId=${condominiumId}: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
 
     const sourceData =
@@ -2226,11 +2382,12 @@ export class StripeService {
       billingFrequency,
       condominiumLimit,
       sourceData,
+      condominiumData,
     };
   }
 
   private getBillingIntervalMonths(
-    billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual',
+    billingFrequency: BillingFrequency,
   ): number {
     switch (billingFrequency) {
       case 'quarterly':
@@ -2246,7 +2403,7 @@ export class StripeService {
 
   private addBillingInterval(
     baseDate: Date,
-    billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual',
+    billingFrequency: BillingFrequency,
     anchorDay: number,
   ): Date {
     const intervalDaysOverride = this.resolveBillingIntervalOverrideDays();
@@ -2269,7 +2426,7 @@ export class StripeService {
 
   private buildPeriodKey(
     date: Date,
-    billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual',
+    billingFrequency: BillingFrequency,
   ): string {
     const intervalDaysOverride = this.resolveBillingIntervalOverrideDays();
     if (intervalDaysOverride) {
@@ -2297,15 +2454,25 @@ export class StripeService {
     return `${year}-${String(month).padStart(2, '0')}`;
   }
 
-  private formatInvoiceNumber(date: Date, clientId: string): string {
+  private formatInvoiceNumber(
+    date: Date,
+    clientId: string,
+    condominiumId: string,
+    invoiceType: AutomatedInvoiceType,
+  ): string {
     const year = date.getUTCFullYear();
     const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const suffix = clientId
+    const clientSuffix = clientId
       .replace(/[^a-zA-Z0-9]/g, '')
-      .slice(-6)
+      .slice(-4)
+      .toUpperCase();
+    const condominiumSuffix = condominiumId
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(-4)
       .toUpperCase();
     const sequence = String(date.getUTCDate()).padStart(2, '0');
-    return `EA-${year}${month}-${suffix}${sequence}`;
+    const typeCode = invoiceType === 'maintenance_app' ? 'MA' : 'SU';
+    return `EA-${year}${month}-${clientSuffix}${condominiumSuffix}${sequence}${typeCode}`;
   }
 
   private async ensureStripeCustomer(params: {
@@ -2415,6 +2582,115 @@ export class StripeService {
     }
   }
 
+  private resolveMaintenanceAppMonthlyPriceTotalMxn(): number {
+    const envRaw = String(
+      process.env.MAINTENANCE_APP_MONTHLY_PRICE_MXN || '',
+    ).trim();
+    const envPrice = Number(envRaw.replace(',', '.'));
+    if (Number.isFinite(envPrice) && envPrice > 0) {
+      return this.roundAmount(envPrice);
+    }
+    return 119;
+  }
+
+  private async createAutomatedInvoicesForCondominiumPeriod(params: {
+    clientId: string;
+    condominiumId: string;
+    condominiumName: string;
+    condominiumBillingConfig: CondominiumBillingConfig;
+    adminUid: string | null;
+    adminEmail: string | null;
+    issueDate: Date;
+    periodDate: Date;
+    source: InvoiceSource;
+    dueDays: number;
+    clientData: Record<string, any>;
+  }) {
+    const {
+      clientId,
+      condominiumId,
+      condominiumName,
+      condominiumBillingConfig,
+      adminUid,
+      adminEmail,
+      issueDate,
+      periodDate,
+      source,
+      dueDays,
+      clientData,
+    } = params;
+    const generatedInvoices: Array<Record<string, any>> = [];
+
+    if (condominiumBillingConfig.amount > 0) {
+      const subscriptionResult = await this.createAutomatedInvoiceForPeriod({
+        clientId,
+        condominiumId,
+        adminUid,
+        adminEmail,
+        issueDate,
+        periodDate,
+        billingFrequency: condominiumBillingConfig.billingFrequency,
+        amount: condominiumBillingConfig.amount,
+        currency: condominiumBillingConfig.currency,
+        plan: condominiumBillingConfig.plan,
+        source,
+        dueDays,
+        clientData,
+        billingSourceData: condominiumBillingConfig.sourceData,
+        invoiceType: 'subscription',
+        concept: `Suscripción mensual a EstateAdmin - ${condominiumName}`,
+      });
+      generatedInvoices.push(subscriptionResult);
+    } else {
+      this.logger.warn(
+        `Se omite facturación de suscripción por pricing inválido para clientId=${clientId} condominiumId=${condominiumId}`,
+      );
+    }
+
+    if (
+      this.shouldBillMaintenanceAppForPeriod(
+        condominiumBillingConfig.condominiumData,
+        periodDate,
+      )
+    ) {
+      const maintenanceBillingSourceData: Record<string, any> = {
+        ...condominiumBillingConfig.sourceData,
+        pricing: this.maintenanceAppMonthlyPriceTotalMxn,
+        pricingWithoutTax: null,
+        pricingWithoutIVA: null,
+        pricingWithoutIva: null,
+        currency: this.maintenanceAppDefaultCurrency,
+      };
+
+      const maintenanceAmount = this.resolveBillableBaseAmount(
+        maintenanceBillingSourceData,
+      );
+      if (maintenanceAmount > 0) {
+        const maintenanceResult = await this.createAutomatedInvoiceForPeriod({
+          clientId,
+          condominiumId,
+          adminUid,
+          adminEmail,
+          issueDate,
+          periodDate,
+          billingFrequency: 'monthly',
+          amount: maintenanceAmount,
+          currency: this.maintenanceAppDefaultCurrency,
+          plan: condominiumBillingConfig.plan || 'maintenance_app',
+          source,
+          dueDays,
+          clientData,
+          billingSourceData: maintenanceBillingSourceData,
+          invoiceType: 'maintenance_app',
+          concept: `App de Mantenimiento EstateFix - ${condominiumName}`,
+        });
+        generatedInvoices.push(maintenanceResult);
+      }
+    }
+
+    return generatedInvoices;
+  }
+
   private async createAutomatedInvoiceForPeriod(params: {
     clientId: string;
     condominiumId: string;
@@ -2422,14 +2698,16 @@ export class StripeService {
     adminEmail: string | null;
     issueDate: Date;
     periodDate: Date;
-    billingFrequency: 'monthly' | 'quarterly' | 'biannual' | 'annual';
+    billingFrequency: BillingFrequency;
     amount: number;
     currency: string;
     plan: string;
-    source: 'auto_initial_registration' | 'auto_scheduler';
+    source: InvoiceSource;
     dueDays: number;
     clientData: Record<string, any>;
     billingSourceData: Record<string, any>;
+    invoiceType: AutomatedInvoiceType;
+    concept: string;
   }) {
     const {
       clientId,
@@ -2446,10 +2724,21 @@ export class StripeService {
       dueDays,
       clientData,
       billingSourceData,
+      invoiceType,
+      concept,
     } = params;
 
     const periodKey = this.buildPeriodKey(periodDate, billingFrequency);
-    const billingDedupeKey = `client:${clientId}:period:${periodKey}`;
+    const billingDedupeKey = this.buildBillingDedupeKey({
+      clientId,
+      condominiumId,
+      invoiceType,
+      periodKey,
+    });
+    const legacyBillingDedupeKey =
+      invoiceType === 'subscription'
+        ? `client:${clientId}:period:${periodKey}`
+        : null;
     const invoiceCollectionRef = admin
       .firestore()
       .collection(
@@ -2468,6 +2757,19 @@ export class StripeService {
         periodKey,
       };
     }
+    if (legacyBillingDedupeKey) {
+      const legacyInvoiceSnap = await invoiceCollectionRef
+        .where('billingDedupeKey', '==', legacyBillingDedupeKey)
+        .limit(1)
+        .get();
+      if (!legacyInvoiceSnap.empty) {
+        return {
+          deduped: true,
+          invoiceId: legacyInvoiceSnap.docs[0].id,
+          periodKey,
+        };
+      }
+    }
 
     const dueDate = new Date(issueDate);
     dueDate.setUTCDate(dueDate.getUTCDate() + Math.max(1, dueDays));
@@ -2477,16 +2779,30 @@ export class StripeService {
       billingFrequency,
       anchorDay,
     );
-    const invoiceNumber = this.formatInvoiceNumber(issueDate, clientId);
+    const invoiceNumber = this.formatInvoiceNumber(
+      issueDate,
+      clientId,
+      condominiumId,
+      invoiceType,
+    );
     const invoiceRef = invoiceCollectionRef.doc();
     const invoiceAmounts = this.resolveInvoiceTotals({
       clientData: billingSourceData,
       billableBaseAmount: amount,
     });
+    const stripeLineItemDescription = `${concept} (${periodKey}) - ${invoiceNumber}`.slice(
+      0,
+      500,
+    );
+    const condominiumName = this.resolveCondominiumDisplayName(
+      billingSourceData,
+      condominiumId,
+    );
 
     const invoicePayload: Record<string, any> = {
       invoiceNumber,
-      concept: 'Servicio mensual de administración',
+      concept,
+      invoiceType,
       amount: invoiceAmounts.totalAmount,
       subtotalAmount: invoiceAmounts.subtotalAmount,
       taxAmount: invoiceAmounts.taxAmount,
@@ -2513,6 +2829,7 @@ export class StripeService {
       nextChargeDate: admin.firestore.Timestamp.fromDate(nextChargeDate),
       clientId,
       condominiumId,
+      condominiumName,
       userUID: adminUid || null,
       userEmail: adminEmail || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2548,12 +2865,13 @@ export class StripeService {
           condominiumId,
           invoiceNumber,
           periodKey,
+          invoiceType,
         };
         const invoiceItemPayload: Stripe.InvoiceItemCreateParams = {
           customer: stripeCustomerId,
           currency: currency.toLowerCase(),
           amount: unitAmount,
-          description: `Factura ${periodKey} - ${invoiceNumber}`,
+          description: stripeLineItemDescription,
           metadata,
         };
         if (mxVatTaxRateId) {
@@ -2659,6 +2977,8 @@ export class StripeService {
     return {
       deduped: false,
       invoiceId: invoiceRef.id,
+      invoiceType,
+      concept,
       periodKey,
       invoiceNumber,
       amount: invoiceAmounts.totalAmount,

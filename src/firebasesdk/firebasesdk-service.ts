@@ -199,7 +199,42 @@ export class FirebaseAuthService {
   }
 
   async createCondominium(registerCondominiumDto: RegisterCondominiumDto) {
-    return await RegisterCondominiumCase(registerCondominiumDto);
+    const createdCondominium = await RegisterCondominiumCase(
+      registerCondominiumDto,
+    );
+
+    try {
+      const clientDoc = await this.firestore
+        .collection('clients')
+        .doc(registerCondominiumDto.clientId)
+        .get();
+      const clientData = clientDoc.data() || {};
+
+      const billingResult = await this.stripeService.bootstrapClientBilling({
+        clientId: registerCondominiumDto.clientId,
+        condominiumId: createdCondominium.id,
+        adminUid: String(clientData.ownerAdminUid || ''),
+      });
+
+      return {
+        ...createdCondominium,
+        billing: billingResult,
+      };
+    } catch (billingError) {
+      this.logger.error(
+        `Error al inicializar facturación automática para condominio ${createdCondominium.id}: ${billingError?.message || billingError}`,
+      );
+
+      return {
+        ...createdCondominium,
+        billing: {
+          success: false,
+          message:
+            'Condominio creado, pero la facturación inicial quedó pendiente',
+          error: billingError?.message || String(billingError),
+        },
+      };
+    }
   }
 
   async confirmResetPassword(confirmResetPasswordDto: ConfirmResetPasswordDto) {
