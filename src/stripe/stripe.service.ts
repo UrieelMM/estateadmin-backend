@@ -2264,7 +2264,18 @@ export class StripeService {
   }
 
   private isMaintenanceAppEnabled(condominiumData: Record<string, any>): boolean {
-    return condominiumData?.hasMaintenanceApp === true;
+    const raw = condominiumData?.hasMaintenanceApp;
+    if (raw === true) return true;
+    // Defensivo: si el flag llegó a Firestore como string ('true') o número (1),
+    // aún así debemos considerarlo activo. Evita que el gate devuelva false por
+    // una diferencia de tipo que no tiene que ver con la intención del usuario.
+    if (typeof raw === 'string') {
+      return raw.trim().toLowerCase() === 'true';
+    }
+    if (typeof raw === 'number') {
+      return raw === 1;
+    }
+    return false;
   }
 
   private shouldBillMaintenanceAppForPeriod(
@@ -2272,6 +2283,11 @@ export class StripeService {
     periodDate: Date,
   ): boolean {
     if (!this.isMaintenanceAppEnabled(condominiumData)) {
+      this.logger.debug(
+        `[maintenance-gate] SKIP: hasMaintenanceApp no activo (raw=${JSON.stringify(
+          condominiumData?.hasMaintenanceApp ?? null,
+        )}).`,
+      );
       return false;
     }
 
@@ -2282,7 +2298,25 @@ export class StripeService {
       return true;
     }
 
-    return contractedAt.getTime() <= periodDate.getTime();
+    // Comparamos a nivel de día UTC y no de milisegundo para evitar falsos
+    // negativos cuando contractedAt quedó con microsegundos ligeramente posteriores
+    // al cursor del cron (por ejemplo si el bootstrap se ejecutó en el mismo
+    // segundo que la fecha de contrato). La deduplicación por periodKey +
+    // billingDedupeKey sigue evitando que se emita más de una factura por día.
+    const startOfDayUtc = (date: Date): number =>
+      Date.UTC(
+        date.getUTCFullYear(),
+        date.getUTCMonth(),
+        date.getUTCDate(),
+      );
+
+    const shouldBill = startOfDayUtc(contractedAt) <= startOfDayUtc(periodDate);
+    if (!shouldBill) {
+      this.logger.warn(
+        `[maintenance-gate] SKIP: contractedAt(${contractedAt.toISOString()}) > periodDate(${periodDate.toISOString()}). No se factura mantenimiento este período.`,
+      );
+    }
+    return shouldBill;
   }
 
   private resolveClientSchedulerBillingFrequency(
@@ -2685,6 +2719,10 @@ export class StripeService {
           concept: `App de Mantenimiento EstateFix - ${condominiumName}`,
         });
         generatedInvoices.push(maintenanceResult);
+      } else {
+        this.logger.warn(
+          `Se omite facturación de App de Mantenimiento por pricing inválido para clientId=${clientId} condominiumId=${condominiumId} (maintenanceAmount=${maintenanceAmount}).`,
+        );
       }
     }
 
