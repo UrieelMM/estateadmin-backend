@@ -83,6 +83,8 @@ interface ConversationContext {
   documentKeys?: string[];
   lastInteractionTimestamp?: admin.firestore.Timestamp;
   userId?: string;
+  // Control de reintentos por campo
+  retryCount?: number;
 }
 
 // Colecciones de Firestore
@@ -385,22 +387,25 @@ export class WhatsappChatBotService implements OnModuleInit {
               clientId,
               condominiumId,
             );
-            await this.registerPayment(context, fileUrl); // userId se añade dentro si es necesario
-            context.state = ConversationState.COMPLETED;
-            await this.sendAndLogMessage(
-              {
-                phoneNumber: from,
-                message:
-                  '✅ ¡Excelente! Hemos recibido tu imagen y registrado tu comprobante con éxito. ¡Muchas gracias! 🙌',
-              },
-              context,
-            );
+            const paymentResult = await this.registerPayment(context, fileUrl);
+            if (paymentResult.success) {
+              context.state = ConversationState.COMPLETED;
+              await this.sendAndLogMessage(
+                {
+                  phoneNumber: from,
+                  message:
+                    '✅ ¡Excelente! Hemos recibido tu imagen y registrado tu comprobante con éxito. ¡Muchas gracias! 🙌',
+                },
+                context,
+              );
+            }
+            // Si paymentResult.success === false, registerPayment ya envió el mensaje de error
           } catch (uploadError) {
             this.logger.error(
               `Error al procesar imagen de ${from}: ${uploadError.message}`,
               uploadError.stack,
             );
-            context.state = ConversationState.ERROR; // Marcar estado como error
+            context.state = ConversationState.ERROR;
             await this.sendAndLogMessage(
               {
                 phoneNumber: from,
@@ -414,11 +419,10 @@ export class WhatsappChatBotService implements OnModuleInit {
           await this.sendAndLogMessage(
             {
               phoneNumber: from,
-              message:
-                '🤔 Gracias por la imagen, pero no la esperaba ahora. Si necesitas registrar un pago, por favor escribe "Hola" para iniciar el proceso.',
+              message: `Recibí tu imagen, pero no estaba esperando un archivo en este momento. 😊\n\n${this.getMenuMessage()}`,
             },
             context,
-          ); // Pasar contexto para auditoría
+          );
         }
       } else if (messageObj.type === 'document') {
         this.logger.log(`Recibimos un archivo tipo documento 📄 de ${from}`);
@@ -437,16 +441,19 @@ export class WhatsappChatBotService implements OnModuleInit {
               clientId,
               condominiumId,
             );
-            await this.registerPayment(context, fileUrl);
-            context.state = ConversationState.COMPLETED;
-            await this.sendAndLogMessage(
-              {
-                phoneNumber: from,
-                message:
-                  '✅ ¡Perfecto! Recibimos tu documento y hemos registrado tu comprobante exitosamente. ¡Gracias! 🥳',
-              },
-              context,
-            );
+            const paymentResult = await this.registerPayment(context, fileUrl);
+            if (paymentResult.success) {
+              context.state = ConversationState.COMPLETED;
+              await this.sendAndLogMessage(
+                {
+                  phoneNumber: from,
+                  message:
+                    '✅ ¡Perfecto! Recibimos tu documento y hemos registrado tu comprobante exitosamente. ¡Gracias! 🥳',
+                },
+                context,
+              );
+            }
+            // Si paymentResult.success === false, registerPayment ya envió el mensaje de error
           } catch (uploadError) {
             this.logger.error(
               `Error al procesar documento de ${from}: ${uploadError.message}`,
@@ -466,8 +473,7 @@ export class WhatsappChatBotService implements OnModuleInit {
           await this.sendAndLogMessage(
             {
               phoneNumber: from,
-              message:
-                '📄 Gracias por el documento, pero no estaba esperando uno en este momento. Si quieres registrar un pago, escribe "Hola" para empezar. 😊',
+              message: `Recibí tu documento, pero no estaba esperando un archivo en este momento. 😊\n\n${this.getMenuMessage()}`,
             },
             context,
           );
@@ -477,8 +483,7 @@ export class WhatsappChatBotService implements OnModuleInit {
         await this.sendAndLogMessage(
           {
             phoneNumber: from,
-            message:
-              '😬 Lo siento, por ahora solo puedo procesar mensajes de texto, imágenes (como fotos de comprobantes) y documentos PDF. Si deseas ayuda, escribe "Hola".',
+            message: `Por ahora solo puedo procesar *mensajes de texto*, *fotos* e *imágenes de comprobantes* y *archivos PDF*.\n\n${this.getMenuMessage()}`,
           },
           context,
         );
@@ -520,12 +525,28 @@ export class WhatsappChatBotService implements OnModuleInit {
   private async handleConversation(context: ConversationContext, text: string) {
     const { phoneNumber } = context;
 
+    // Cancelar: regresa al menú desde cualquier estado intermedio
+    if (
+      this.isCancelCommand(text) &&
+      context.state !== ConversationState.INITIAL &&
+      context.state !== ConversationState.MENU_SELECTION
+    ) {
+      this.logger.log(`Usuario ${phoneNumber} canceló el flujo actual.`);
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `↩️ De acuerdo, regresamos al menú principal.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
     // Reinicio global: si el usuario escribe "hola" o similar en cualquier estado (excepto inicial)
     if (this.isGreeting(text) && context.state !== ConversationState.INITIAL) {
-      this.logger.log(
-        `Usuario ${phoneNumber} solicitó reiniciar conversación.`,
-      );
-      // Reiniciar contexto
+      this.logger.log(`Usuario ${phoneNumber} solicitó reiniciar conversación.`);
       this.resetContext(context);
     }
 
@@ -536,7 +557,7 @@ export class WhatsappChatBotService implements OnModuleInit {
           await this.sendAndLogMessage(
             {
               phoneNumber,
-              message: this.getMenuMessage(),
+              message: `👋 ¡Hola! Bienvenido al asistente de tu condominio.\n\n${this.getMenuMessage()}`,
             },
             context,
           );
@@ -544,8 +565,7 @@ export class WhatsappChatBotService implements OnModuleInit {
           await this.sendAndLogMessage(
             {
               phoneNumber,
-              message:
-                '🤖 ¡Hola! Para comenzar, simplemente escribe "Hola" y te mostraré las opciones disponibles. ¡Estoy aquí para ayudarte! 😊',
+              message: `👋 ¡Hola! Soy el asistente virtual de tu condominio.\n\nEscribe *hola* para ver el menú de opciones. 😊`,
             },
             context,
           );
@@ -578,7 +598,7 @@ export class WhatsappChatBotService implements OnModuleInit {
           {
             phoneNumber,
             message:
-              '⏳ Estoy esperando tu archivo (imagen JPG/PNG o PDF). Por favor, adjúntalo directamente en esta conversación para que pueda registrar tu pago. O si prefieres, escribe "Hola" para reiniciar.',
+              '📎 Solo falta que me envíes tu comprobante. Puede ser una *foto* (JPG/PNG) o un *archivo PDF*, directamente en este chat.\n\n_(Si quieres cancelar, escribe *cancelar*)_',
           },
           context,
         );
@@ -623,38 +643,36 @@ export class WhatsappChatBotService implements OnModuleInit {
         break;
 
       case ConversationState.COMPLETED:
+        context.state = ConversationState.MENU_SELECTION;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message:
-              '🎉 ¡Ya completaste tu consulta anterior! Si necesitas algo más, simplemente escribe "Hola" para ver el menú de opciones. ¡Estoy aquí para ayudarte!',
+            message: `¿Hay algo más en lo que pueda ayudarte?\n\n${this.getMenuMessage()}`,
           },
           context,
         );
         break;
 
       case ConversationState.ERROR:
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message:
-              '😥 Parece que hubo un error en nuestro sistema durante el proceso anterior. ¿Podrías por favor escribir "Hola" para intentarlo de nuevo? Disculpa las molestias.',
+            message: `Ocurrió un problema con la solicitud anterior. ¡Intentemos de nuevo!\n\n${this.getMenuMessage()}`,
           },
           context,
         );
-        this.resetContext(context);
         break;
 
       default:
-        this.logger.warn(
-          `Estado desconocido ${context.state} para ${phoneNumber}`,
-        );
+        this.logger.warn(`Estado desconocido ${context.state} para ${phoneNumber}`);
         this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message:
-              '🤔 Algo inesperado ocurrió. Vamos a empezar de nuevo. Escribe "Hola" para ver el menú.',
+            message: `Algo inesperado ocurrió. ¡Empecemos de nuevo!\n\n${this.getMenuMessage()}`,
           },
           context,
         );
@@ -665,20 +683,14 @@ export class WhatsappChatBotService implements OnModuleInit {
   // --- Nuevas funciones para el manejo del menú ---
 
   private getMenuMessage(): string {
-    return `👋 ¡Hola! Bienvenido al asistente virtual de tu condominio. 
+    return `¿En qué te puedo ayudar? 😊
 
-¿En qué puedo ayudarte hoy?
+1️⃣ Registrar comprobante de pago
+2️⃣ Consultar documentos del condominio
+3️⃣ Ver mi estado de cuenta
 
-1️⃣ *Registrar comprobante de pago*
-     Sube tu comprobante de pago para registro
-
-2️⃣ *Consultar documentos*
-     Accede al reglamento, manual de convivencia y políticas
-
-3️⃣ *Estado de cuenta*
-     Consulta tu estado de cuenta
-
-Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
+Responde con *1*, *2* o *3*.
+_(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   }
 
   private async handleMenuSelection(
@@ -690,39 +702,39 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
 
     switch (option) {
       case 1:
-        // Flujo de registro de comprobante
         context.state = ConversationState.PAYMENT_AWAITING_EMAIL;
+        context.retryCount = 0;
         await this.sendAndLogMessage(
           {
             phoneNumber,
             message:
-              '💳 *Registro de Comprobante de Pago*\n\n¡Perfecto! Vamos a registrar tu comprobante. Para empezar, ¿podrías proporcionarme tu correo electrónico registrado en la plataforma?',
+              '💳 *Registrar comprobante de pago*\n\nPrimero necesito verificar tu identidad.\n\n¿Cuál es tu correo electrónico registrado en la plataforma?',
           },
           context,
         );
         break;
 
       case 2:
-        // Flujo de consulta de documentos
         context.state = ConversationState.DOCUMENTS_AWAITING_EMAIL;
+        context.retryCount = 0;
         await this.sendAndLogMessage(
           {
             phoneNumber,
             message:
-              '📚 *Consulta de Documentos*\n\n¡Excelente! Te ayudo a acceder a los documentos de tu condominio. Primero, necesito tu correo electrónico registrado en la plataforma.',
+              '📋 *Documentos del condominio*\n\nPrimero necesito verificar tu identidad.\n\n¿Cuál es tu correo electrónico registrado en la plataforma?',
           },
           context,
         );
         break;
 
       case 3:
-        // Flujo de consulta de estado de cuenta
         context.state = ConversationState.ACCOUNT_AWAITING_EMAIL;
+        context.retryCount = 0;
         await this.sendAndLogMessage(
           {
             phoneNumber,
             message:
-              '💵 *Consulta de Estado de Cuenta*\n\n¡Perfecto! Te ayudo a consultar tu estado de cuenta. Primero, necesito tu correo electrónico registrado en la plataforma.',
+              '📊 *Estado de cuenta*\n\nPrimero necesito verificar tu identidad.\n\n¿Cuál es tu correo electrónico registrado en la plataforma?',
           },
           context,
         );
@@ -732,8 +744,7 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message:
-              '🤔 Opción no válida. Por favor, responde con:\n\n*1* para registrar comprobante\n*2* para consultar documentos\n*3* para consultar estado de cuenta\n\nO escribe "Hola" para ver el menú completo.',
+            message: `Hmm, no entendí esa opción 🤔\n\n${this.getMenuMessage()}`,
           },
           context,
         );
@@ -752,6 +763,13 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     context.availableDocuments = undefined;
     context.documentKeys = undefined;
     context.userId = undefined;
+    context.retryCount = 0;
+  }
+
+  /** Verifica si el usuario quiere cancelar y regresar al menú */
+  private isCancelCommand(text: string): boolean {
+    const cancelWords = ['cancelar', 'cancel', 'salir', 'exit', 'menu', 'menú', 'volver', 'regresar', 'inicio'];
+    return cancelWords.some((w) => text === w);
   }
 
   // --- Funciones para el flujo de pagos (adaptadas del código original) ---
@@ -763,11 +781,25 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     const { phoneNumber } = context;
 
     if (!this.isValidEmail(text)) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '😅 Parece que hay un problema con el correo. Volvamos al menú para intentarlo de nuevo.\n\n' + this.getMenuMessage(),
+          },
+          context,
+        );
+        return;
+      }
       await this.sendAndLogMessage(
         {
           phoneNumber,
           message:
-            '📧 Parece que el correo electrónico no tiene un formato válido. ¿Podrías verificarlo e ingresarlo de nuevo, por favor? Asegúrate de que incluya un "@" y un dominio (ej. ".com").',
+            `📧 Ese correo no parece válido. Asegúrate de que tenga el formato correcto, por ejemplo: *nombre@gmail.com*\n\n_(Intento ${context.retryCount} de 3 — escribe *cancelar* para salir)_`,
         },
         context,
       );
@@ -775,12 +807,12 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     }
 
     context.email = this.cleanInputKeepArroba(text);
+    context.retryCount = 0;
     context.state = ConversationState.PAYMENT_AWAITING_DEPARTMENT;
     await this.sendAndLogMessage(
       {
         phoneNumber,
-        message:
-          '👍 ¡Correo recibido! Ahora, por favor, indícame tu número de departamento o casa (tal como está registrado en la plataforma).',
+        message: '✉️ Perfecto. Ahora dime tu *número de departamento o casa* tal como aparece en tu contrato (ej: 101, A-3, 463).',
       },
       context,
     );
@@ -802,20 +834,28 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
       );
 
       if (!possibleCondos || possibleCondos.length === 0) {
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message:
-              '⚠️ No logré encontrar condominios asociados con la información que proporcionaste. Por favor, verifica que los datos sean correctos.',
-          },
-          context,
-        );
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message:
+                '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número de departamento coincidan exactamente con los que tienes registrados en la plataforma.\n\nSi el problema persiste, contacta a tu administrador.\n\n' + this.getMenuMessage(),
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
         context.state = ConversationState.PAYMENT_AWAITING_EMAIL;
         await this.sendAndLogMessage(
           {
             phoneNumber,
             message:
-              'Vamos a intentarlo de nuevo. ¿Podrías darme tu correo electrónico registrado, por favor?',
+              `🔍 No encontré ninguna cuenta con esos datos. Puede ser un pequeño error de escritura.\n\n¿Puedes intentarlo de nuevo? Ingresa tu *correo electrónico* registrado en la plataforma.\n\n_(Intento ${context.retryCount} de 3)_`,
           },
           context,
         );
@@ -826,11 +866,12 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
 
       if (possibleCondos.length === 1) {
         context.selectedCondominium = possibleCondos[0];
+        context.retryCount = 0;
         context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message: `✅ ¡Encontrado! Estás registrado en el condominio: ${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}. Ahora buscaré tus cargos pendientes...`,
+            message: `✅ ¡Te encontré! Estás en *${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}*.\n\nBuscando tus cargos pendientes... ⏳`,
           },
           context,
         );
@@ -843,8 +884,11 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
       }
     } catch (error) {
       this.logger.error(
-        `Error buscando condominios para pagos en ${phoneNumber}: ${error.message}`,
+        `❌ [handlePaymentDept] Error buscando condominios para pagos en ${phoneNumber}: ${error.message}`,
         error.stack,
+      );
+      this.logger.error(
+        `❌ [handlePaymentDept] Datos usados - email: "${context.email}", dept: "${context.departmentNumber}", phone: "${phoneNumber}"`,
       );
       context.state = ConversationState.ERROR;
       await this.sendAndLogMessage(
@@ -988,11 +1032,20 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     const { phoneNumber } = context;
 
     if (!this.isValidEmail(text)) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          { phoneNumber, message: '😅 Parece que hay un problema con el correo. Volvamos al menú.\n\n' + this.getMenuMessage() },
+          context,
+        );
+        return;
+      }
       await this.sendAndLogMessage(
         {
           phoneNumber,
-          message:
-            '📧 El formato del correo no parece correcto. ¿Podrías verificarlo e ingresarlo nuevamente? Debe incluir "@" y un dominio válido.',
+          message: `📧 Ese correo no parece válido. Debe tener el formato *nombre@dominio.com*\n\n_(Intento ${context.retryCount} de 3 — escribe *cancelar* para salir)_`,
         },
         context,
       );
@@ -1000,13 +1053,10 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     }
 
     context.email = this.cleanInputKeepArroba(text);
+    context.retryCount = 0;
     context.state = ConversationState.DOCUMENTS_AWAITING_DEPARTMENT;
     await this.sendAndLogMessage(
-      {
-        phoneNumber,
-        message:
-          '👍 ¡Perfecto! Ahora necesito tu número de departamento o casa (como está registrado en la plataforma).',
-      },
+      { phoneNumber, message: '✉️ Perfecto. Ahora dime tu *número de departamento o casa* (ej: 101, A-3, 463).' },
       context,
     );
   }
@@ -1027,20 +1077,26 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
       );
 
       if (!possibleCondos || possibleCondos.length === 0) {
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message:
-              '⚠️ No encontré información con los datos proporcionados. Verifiquemos tu correo electrónico.',
-          },
-          context,
-        );
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message: '😅 No logramos encontrar tu cuenta. Verifica que el correo y número de departamento sean exactamente los que tienes en la plataforma.\n\n' + this.getMenuMessage(),
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
         context.state = ConversationState.DOCUMENTS_AWAITING_EMAIL;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message:
-              'Por favor, proporciona nuevamente tu correo electrónico registrado.',
+            message: `🔍 No encontré ninguna cuenta con esos datos. Puede ser un pequeño error de escritura.\n\n¿Puedes intentarlo de nuevo? Ingresa tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
           },
           context,
         );
@@ -1051,11 +1107,12 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
 
       if (possibleCondos.length === 1) {
         context.selectedCondominium = possibleCondos[0];
+        context.retryCount = 0;
         context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message: `✅ ¡Perfecto! Te encuentro registrado en: ${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}. Buscando documentos disponibles...`,
+            message: `✅ ¡Te encontré! Estás en *${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}*.\n\nBuscando documentos disponibles... 📋`,
           },
           context,
         );
@@ -1068,8 +1125,11 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
       }
     } catch (error) {
       this.logger.error(
-        `Error buscando condominios para documentos en ${phoneNumber}: ${error.message}`,
+        `❌ [handleDocumentsDept] Error buscando condominios para documentos en ${phoneNumber}: ${error.message}`,
         error.stack,
+      );
+      this.logger.error(
+        `❌ [handleDocumentsDept] Datos usados - email: "${context.email}", dept: "${context.departmentNumber}", phone: "${phoneNumber}"`,
       );
       context.state = ConversationState.ERROR;
       await this.sendAndLogMessage(
@@ -1326,11 +1386,20 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     const { phoneNumber } = context;
 
     if (!this.isValidEmail(text)) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          { phoneNumber, message: '😅 Parece que hay un problema con el correo. Volvamos al menú.\n\n' + this.getMenuMessage() },
+          context,
+        );
+        return;
+      }
       await this.sendAndLogMessage(
         {
           phoneNumber,
-          message:
-            '📧 El formato del correo no parece correcto. ¿Podrías verificarlo e ingresarlo nuevamente? Debe incluir "@" y un dominio válido.',
+          message: `📧 Ese correo no parece válido. Debe tener el formato *nombre@dominio.com*\n\n_(Intento ${context.retryCount} de 3 — escribe *cancelar* para salir)_`,
         },
         context,
       );
@@ -1338,13 +1407,10 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     }
 
     context.email = this.cleanInputKeepArroba(text);
+    context.retryCount = 0;
     context.state = ConversationState.ACCOUNT_AWAITING_DEPARTMENT;
     await this.sendAndLogMessage(
-      {
-        phoneNumber,
-        message:
-          '👍 ¡Perfecto! Ahora necesito tu número de departamento o casa (como está registrado en la plataforma).',
-      },
+      { phoneNumber, message: '✉️ Perfecto. Ahora dime tu *número de departamento o casa* (ej: 101, A-3, 463).' },
       context,
     );
   }
@@ -1365,20 +1431,26 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
       );
 
       if (!possibleCondos || possibleCondos.length === 0) {
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message:
-              '⚠️ No encontré información con los datos proporcionados. Verifiquemos tu correo electrónico.',
-          },
-          context,
-        );
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message: '😅 No logramos encontrar tu cuenta. Verifica que el correo y número de departamento sean exactamente los que tienes en la plataforma.\n\n' + this.getMenuMessage(),
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
         context.state = ConversationState.ACCOUNT_AWAITING_EMAIL;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message:
-              'Por favor, proporciona nuevamente tu correo electrónico registrado.',
+            message: `🔍 No encontré ninguna cuenta con esos datos. Puede ser un pequeño error de escritura.\n\n¿Puedes intentarlo de nuevo? Ingresa tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
           },
           context,
         );
@@ -1389,11 +1461,12 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
 
       if (possibleCondos.length === 1) {
         context.selectedCondominium = possibleCondos[0];
+        context.retryCount = 0;
         context.state = ConversationState.ACCOUNT_GENERATING;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message: `✅ ¡Perfecto! Te encuentro registrado en: ${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}. Generando tu estado de cuenta... 📄`,
+            message: `✅ ¡Te encontré! Estás en *${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}*.\n\nGenerando tu estado de cuenta, un momento... 📊`,
           },
           context,
         );
@@ -1406,8 +1479,11 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
       }
     } catch (error) {
       this.logger.error(
-        `Error buscando condominios para estado de cuenta en ${phoneNumber}: ${error.message}`,
+        `❌ [handleAccountDept] Error buscando condominios para estado de cuenta en ${phoneNumber}: ${error.message}`,
         error.stack,
+      );
+      this.logger.error(
+        `❌ [handleAccountDept] Datos usados - email: "${context.email}", dept: "${context.departmentNumber}", phone: "${phoneNumber}"`,
       );
       context.state = ConversationState.ERROR;
       await this.sendAndLogMessage(
@@ -1642,7 +1718,7 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
 
       // ... resto del código de envío de WhatsApp ...
 
-      const apiUrl = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+      const apiUrl = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
       const payload = {
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
@@ -1990,29 +2066,86 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
     const phoneForDB = this.toTenDigits(originalPhoneWithPrefix);
     const cleanedEmail = this.cleanInputKeepArroba(email);
     const cleanedDept = this.cleanInput(departmentNumber);
+    const deptAsNumber = Number(cleanedDept); // Por si el campo está guardado como número en Firestore
+    const deptIsNumeric = !isNaN(deptAsNumber);
 
     this.logger.log('Buscando condominios para usuario con datos:', {
+      phoneOriginal: originalPhoneWithPrefix,
       phoneForDB,
       email: cleanedEmail,
       departmentNumber: cleanedDept,
+      departmentAsNumber: deptIsNumeric ? deptAsNumber : 'no numérico',
     });
 
     try {
-      const snapshot = await this.firestore
-        .collectionGroup('users')
-        .where('phone', '==', phoneForDB)
-        .where('email', '==', cleanedEmail)
-        .where('number', '==', cleanedDept)
-        .get();
+      // --- Estrategia 1: email + número de casa (string) ---
+      this.logger.log('🔍 [findUser] Intento 1: email + número (string)');
+      let snapshot: FirebaseFirestore.QuerySnapshot | null = null;
 
-      this.logger.log(
-        `Usuarios encontrados con la triple condición: ${snapshot.size}`,
-      );
+      try {
+        snapshot = await this.firestore
+          .collectionGroup('users')
+          .where('email', '==', cleanedEmail)
+          .where('number', '==', cleanedDept)
+          .get();
+        this.logger.log(`✅ [findUser] Intento 1 OK - encontrados: ${snapshot.size}`);
+      } catch (e1) {
+        this.logger.error(`❌ [findUser] Intento 1 falló: ${e1.message}`);
+        if (e1.message?.includes('index')) {
+          this.logger.error(`📌 [findUser] Crea el índice en Firestore: ${e1.message}`);
+        }
+        snapshot = null;
+      }
 
-      if (snapshot.empty) {
+      // --- Estrategia 2: email + número de casa (número/int) ---
+      if ((!snapshot || snapshot.empty) && deptIsNumeric) {
+        this.logger.log('🔍 [findUser] Intento 2: email + número (int)');
+        try {
+          snapshot = await this.firestore
+            .collectionGroup('users')
+            .where('email', '==', cleanedEmail)
+            .where('number', '==', deptAsNumber)
+            .get();
+          this.logger.log(`✅ [findUser] Intento 2 OK - encontrados: ${snapshot.size}`);
+        } catch (e2) {
+          this.logger.error(`❌ [findUser] Intento 2 falló: ${e2.message}`);
+          snapshot = null;
+        }
+      }
+
+      // --- Estrategia 3: solo por email (diagnóstico) ---
+      if (!snapshot || snapshot.empty) {
+        this.logger.log('🔍 [findUser] Intento 3: solo por email (diagnóstico)');
+        try {
+          const emailOnlySnapshot = await this.firestore
+            .collectionGroup('users')
+            .where('email', '==', cleanedEmail)
+            .get();
+
+          this.logger.log(
+            `✅ [findUser] Intento 3 OK - usuarios con ese email: ${emailOnlySnapshot.size}`,
+          );
+
+          if (!emailOnlySnapshot.empty) {
+            emailOnlySnapshot.docs.slice(0, 3).forEach((doc) => {
+              const data = doc.data();
+              this.logger.warn(
+                `👤 [findUser] Usuario en DB - path: ${doc.ref.path} | number: "${data.number}" (${typeof data.number}) | phone: "${data.phone}" (${typeof data.phone}) | email: "${data.email}"`,
+              );
+            });
+          } else {
+            this.logger.warn(
+              `⚠️ [findUser] No existe ningún usuario con email: "${cleanedEmail}" en toda la DB`,
+            );
+          }
+        } catch (e3) {
+          this.logger.error(`❌ [findUser] Intento 3 falló: ${e3.message}`);
+        }
+
         return [];
       }
 
+      // Procesar resultados encontrados
       const results: Array<{
         clientId: string;
         condominiumId: string;
@@ -2035,6 +2168,15 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
           const clientId = pathSegments[1];
           const condominiumId = pathSegments[3];
           const userId = doc.id;
+
+          // Verificación suave del teléfono: solo advertencia, no bloquea
+          const userData = doc.data();
+          const phoneInDB = userData.phone ? String(userData.phone) : '';
+          if (phoneInDB && phoneInDB !== phoneForDB) {
+            this.logger.warn(
+              `Teléfono en DB "${phoneInDB}" ≠ teléfono del chat "${phoneForDB}" para usuario ${userId}. Continuando de todas formas.`,
+            );
+          }
 
           let condominiumName: string | undefined = undefined;
           try {
@@ -2198,11 +2340,12 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
 
   /**
    * Registra el comprobante de pago en Firestore bajo la colección paymentsVouchers del condominio.
+   * Retorna { success: true/false } para que el caller pueda decidir qué mensaje enviar.
    */
   private async registerPayment(
     context: ConversationContext,
     fileUrl: string,
-  ): Promise<void> {
+  ): Promise<{ success: boolean }> {
     const {
       phoneNumber,
       email,
@@ -2212,50 +2355,59 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
       userId,
     } = context;
 
-    if (
-      !selectedCondominium ||
-      !selectedChargeIds ||
-      !userId ||
-      !email ||
-      !departmentNumber
-    ) {
+    // Log del estado del contexto para diagnóstico
+    this.logger.log(`[registerPayment] Contexto recibido:`, {
+      hasSelectedCondominium: !!selectedCondominium,
+      hasSelectedChargeIds: !!selectedChargeIds,
+      selectedChargeIds: selectedChargeIds ?? 'undefined',
+      hasUserId: !!userId,
+      userId: userId ?? 'undefined',
+      hasEmail: !!email,
+      hasDepartmentNumber: !!departmentNumber,
+    });
+
+    // selectedCondominium, userId, email y departmentNumber son obligatorios
+    // selectedChargeIds es OPCIONAL (puede ser vacío si el usuario no tenía cargos pendientes)
+    if (!selectedCondominium || !userId || !email || !departmentNumber) {
       this.logger.error(
-        `Faltan datos en el contexto para registrar el pago de ${phoneNumber}`,
+        `[registerPayment] ❌ Faltan datos obligatorios en el contexto para ${phoneNumber}. selectedCondominium=${!!selectedCondominium}, userId=${!!userId}, email=${!!email}, dept=${!!departmentNumber}`,
       );
       await this.sendAndLogMessage(
         {
-          phoneNumber: phoneNumber,
+          phoneNumber,
           message:
             '❗ Hubo un problema interno, parece que falta información para registrar tu pago. Por favor, inicia de nuevo con "Hola".',
         },
         context,
       );
       context.state = ConversationState.ERROR;
-      return;
+      return { success: false };
     }
 
     const { clientId, condominiumId } = selectedCondominium;
     const phoneForDB = this.toTenDigits(phoneNumber);
+    // Si no hay cargos seleccionados (flujo sin cargos pendientes), se guarda array vacío
+    const chargeIds = selectedChargeIds ?? [];
 
     const voucherData = {
       phoneNumber: phoneForDB,
       originalPhoneNumber: phoneNumber,
       email: this.cleanInputKeepArroba(email),
       departmentNumber: this.cleanInput(departmentNumber),
-      userId: userId,
+      userId,
       paymentProofUrl: fileUrl,
-      selectedChargeIds: selectedChargeIds,
+      selectedChargeIds: chargeIds,
       status: 'pending_review',
       uploadedBy: 'whatsapp-bot',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       condominiumName: selectedCondominium.condominiumName || null,
     };
 
-    this.logger.log('Registrando comprobante de pago con datos:', {
+    this.logger.log('[registerPayment] Guardando comprobante:', {
       clientId,
       condominiumId,
       userId,
-      chargeIds: selectedChargeIds.join(', '),
+      chargeIds: chargeIds.length > 0 ? chargeIds.join(', ') : '(ninguno)',
     });
 
     try {
@@ -2265,22 +2417,24 @@ Por favor, responde con el *número* de la opción que deseas (1, 2 o 3).`;
         )
         .add(voucherData);
       this.logger.log(
-        `Comprobante registrado con ID: ${voucherRef.id} para usuario ${userId}`,
+        `[registerPayment] ✅ Comprobante registrado con ID: ${voucherRef.id} para usuario ${userId}`,
       );
+      return { success: true };
     } catch (error) {
       this.logger.error(
-        `Error al guardar comprobante en Firestore para ${userId}: ${error.message}`,
+        `[registerPayment] ❌ Error al guardar en Firestore para ${userId}: ${error.message}`,
         error.stack,
       );
       await this.sendAndLogMessage(
         {
-          phoneNumber: phoneNumber,
+          phoneNumber,
           message:
             '❌ Ocurrió un error guardando tu comprobante en nuestra base de datos. Por favor, intenta adjuntar el archivo de nuevo. Si persiste, contacta a soporte.',
         },
         context,
       );
       context.state = ConversationState.ERROR;
+      return { success: false };
     }
   }
 
