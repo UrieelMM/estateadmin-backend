@@ -306,6 +306,18 @@ service firebase.storage {
       allow update, delete: if false;
     }
 
+    /* ─── QR de visitas programadas (chatbot WhatsApp) ───
+       Lectura pública: necesaria para que la API de WhatsApp pueda
+       descargar la imagen al enviarla al residente, y para que la
+       caseta la pueda escanear desde su app sin auth.
+       Escritura: solo el backend (Admin SDK), por eso `false` para
+       el cliente (Admin SDK bypasea estas reglas). */
+    match /clients/{clientId}/condominiums/{condominiumId}/scheduledVisitsQR/{qrFile} {
+      allow read:           if true;
+      allow create, update: if false;
+      allow delete:         if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+    }
+
     /* ─── Public Documents (nuevo) ─── */
     match /clients/{clientId}/condominiums/{condominiumId}/publicDocuments/{docFile} {
       allow read:            if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());

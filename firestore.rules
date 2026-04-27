@@ -1,19 +1,588 @@
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    // ───────────── Funciones ─────────────
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function hasRole(role) {
+      return isAuthenticated() && (
+        (request.auth.token.role is string && request.auth.token.role == role)
+        || (request.auth.token.userRole is string && request.auth.token.userRole == role)
+        || (request.auth.token.roles is list && request.auth.token.roles.hasAny([role]))
+      );
+    }
+    function isSuperAdmin() {
+      return hasRole('super-provider-admin');
+    }
+    function isAdmin() {
+      return hasRole('admin');
+    }
+    function isAdminAssistant() {
+      return hasRole('admin-assistant');
+    }
+    function isAdminOrAssistant() {
+      return isAdmin() || isAdminAssistant();
+    }
+    function isMaintenanceUser() {
+      return hasRole('maintenance');
+    }
+    function belongsToClient(clientId) {
+      return isAuthenticated() && request.auth.token.clientId == clientId;
+    }
+    function belongsToClientOrSuperAdmin(clientId) {
+      return belongsToClient(clientId) || isSuperAdmin();
+    }
+    function isValidSupportTicketCreate() {
+      return request.resource.data.keys().hasAll([
+        'ticketNumber','email','title','description','issueType','priority','module',
+        'currentPath','userAgent','attachmentUrls','status','createdBy',
+        'createdAt','updatedAt','condominiumId','clientId'
+      ])
+      && request.resource.data.ticketNumber is string
+      && request.resource.data.ticketNumber.matches('^EA-SUPPORT-[A-Z0-9]{16}$')
+      && request.resource.data.clientId is string
+      && request.resource.data.clientId == request.auth.token.clientId
+      && request.resource.data.condominiumId is string
+      && request.resource.data.email is string
+      && request.resource.data.title is string
+      && request.resource.data.description is string
+      && request.resource.data.issueType is string
+      && request.resource.data.priority is string
+      && request.resource.data.module is string
+      && request.resource.data.currentPath is string
+      && request.resource.data.userAgent is string
+      && request.resource.data.attachmentUrls is list
+      && request.resource.data.status == 'pending'
+      && request.resource.data.createdBy == request.auth.uid
+      && request.resource.data.createdAt is timestamp
+      && request.resource.data.updatedAt is timestamp;
+    }
+    function isProtectedCondominiumCollection(collectionName) {
+      return [
+        'paymentReconciliations',
+        'expenseReconciliations',
+        'notificationEvents',
+        'notificationQueue'
+      ].hasAny([collectionName]);
+    }
+    function isSameClientUser(clientId, userId) {
+      return isAuthenticated()
+             && belongsToClient(clientId)
+             && request.auth.uid == userId;
+    }
+    function isSafeNotificationStateUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'read',
+        'readAt',
+        'archivedAt',
+        'seen',
+        'seenAt',
+        'updatedAt'
+      ]);
+    }
+    function canMaintenanceUpdateInventoryItem() {
+      let changedKeys = request.resource.data.diff(resource.data).changedKeys();
+      return isMaintenanceUser()
+             && resource.data.managedByMaintenanceApp == true
+             && request.resource.data.managedByMaintenanceApp == true
+             && !changedKeys.hasAny([
+               'category',
+               'categoryName',
+               'type',
+               'images',
+               'createdAt',
+               'createdBy',
+               'managedByMaintenanceApp'
+             ])
+             && request.resource.data.updatedAt is timestamp
+             && request.resource.data.updatedBy == request.auth.uid
+             && (!changedKeys.hasAny(['name']) || (request.resource.data.name is string && request.resource.data.name.size() > 0))
+             && (!changedKeys.hasAny(['description']) || request.resource.data.description is string)
+             && (!changedKeys.hasAny(['location']) || request.resource.data.location is string)
+             && (!changedKeys.hasAny(['supplier']) || request.resource.data.supplier is string)
+             && (!changedKeys.hasAny(['brand']) || request.resource.data.brand is string)
+             && (!changedKeys.hasAny(['model']) || request.resource.data.model is string)
+             && (!changedKeys.hasAny(['serialNumber']) || request.resource.data.serialNumber is string)
+             && (!changedKeys.hasAny(['notes']) || request.resource.data.notes is string)
+             && (!changedKeys.hasAny(['stock']) || (request.resource.data.stock is number && request.resource.data.stock >= 0))
+             && (!changedKeys.hasAny(['minStock']) || (request.resource.data.minStock is number && request.resource.data.minStock >= 0))
+             && (!changedKeys.hasAny(['price']) || request.resource.data.price == null || (request.resource.data.price is number && request.resource.data.price >= 0))
+             && (!changedKeys.hasAny(['status']) || [
+               'active',
+               'inactive',
+               'maintenance',
+               'retired',
+               'discontinued'
+             ].hasAny([request.resource.data.status]));
+    }
+    function canMaintenanceCreateInventoryMovement() {
+      return isMaintenanceUser()
+             && request.resource.data.keys().hasAll([
+               'itemId',
+               'itemName',
+               'type',
+               'createdAt',
+               'createdBy',
+               'createdByName'
+             ])
+             && request.resource.data.itemId is string
+             && request.resource.data.itemName is string
+             && request.resource.data.createdAt is timestamp
+             && request.resource.data.createdBy == request.auth.uid
+             && request.resource.data.createdByName is string
+             && [
+               'created',
+               'updated',
+               'consumed',
+               'transferred',
+               'added',
+               'removed',
+               'maintenance',
+               'status_change'
+             ].hasAny([request.resource.data.type])
+             && (!request.resource.data.keys().hasAny(['quantity']) || request.resource.data.quantity == null || request.resource.data.quantity is number)
+             && (!request.resource.data.keys().hasAny(['previousQuantity']) || request.resource.data.previousQuantity == null || request.resource.data.previousQuantity is number)
+             && (!request.resource.data.keys().hasAny(['newQuantity']) || request.resource.data.newQuantity == null || request.resource.data.newQuantity is number)
+             && (!request.resource.data.keys().hasAny(['location']) || request.resource.data.location == null || request.resource.data.location is string)
+             && (!request.resource.data.keys().hasAny(['newLocation']) || request.resource.data.newLocation == null || request.resource.data.newLocation is string)
+             && (!request.resource.data.keys().hasAny(['notes']) || request.resource.data.notes == null || request.resource.data.notes is string)
+             && (!request.resource.data.keys().hasAny(['previousStatus']) || request.resource.data.previousStatus == null || [
+               'active',
+               'inactive',
+               'maintenance',
+               'retired',
+               'discontinued'
+             ].hasAny([request.resource.data.previousStatus]))
+             && (!request.resource.data.keys().hasAny(['newStatus']) || request.resource.data.newStatus == null || [
+               'active',
+               'inactive',
+               'maintenance',
+               'retired',
+               'discontinued'
+             ].hasAny([request.resource.data.newStatus]));
+    }
+    
+    // ─── Colección de Links de Noticias y Guías (ahora lectura pública) ───
+    match /linksNewsAndGuides/{docId} {
+      allow read:   if true;
+      allow create, update, delete: if isSuperAdmin();
+    }
+    
+    // ─── Colección de tickets de soporte ───
+    match /supportTickets/{ticketId} {
+      allow create: if isAdminOrAssistant() && isValidSupportTicketCreate();
+      allow read: if isSuperAdmin();
+      allow update, delete: if false;
+    }
+    
+    // ─── Nivel Cliente ───
+    match /clients/{clientId} {
+      allow read:  if belongsToClientOrSuperAdmin(clientId);
+      allow write: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+      
+      // ─── Usuarios de App de Mantenimiento ───
+      match /maintenanceAppUsers/{userId} {
+        // Lectura: admin, super-admin, o el propio usuario de mantenimiento
+        allow read: if (isAdmin() && belongsToClient(clientId)) 
+                    || isSuperAdmin()
+                    || (isMaintenanceUser() && belongsToClient(clientId) && request.auth.uid == userId);
+        allow create, update: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+      }
+      
+      // ─── Nivel Condominios ───
+      match /condominiums/{condominiumId} {
+        allow read:  if belongsToClientOrSuperAdmin(clientId)
+                     || (isMaintenanceUser() && belongsToClient(clientId));
+        allow write: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        
+        // ─── Empleados ───
+        match /employees/{employeeId} {
+          // Lectura: admin, assistant, super-admin, o usuario de mantenimiento vinculado
+          allow read: if belongsToClientOrSuperAdmin(clientId)
+                      || (isMaintenanceUser() && belongsToClient(clientId));
+          allow create, update: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        }
+        
+        // ─── Tickets de Mantenimiento ───
+        match /ticketsMaintenance/{ticketId} {
+          // Lectura: admin, assistant, super-admin, o usuario de mantenimiento del cliente
+          allow read: if belongsToClientOrSuperAdmin(clientId)
+                      || (isMaintenanceUser() && belongsToClient(clientId));
+          // Actualización: admin, assistant, super-admin, o usuario de mantenimiento del cliente
+          allow update: if (isAdminOrAssistant() && belongsToClient(clientId)) 
+                        || isSuperAdmin()
+                        || (isMaintenanceUser() && belongsToClient(clientId));
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        }
 
-    // This rule allows anyone with your Firestore database reference to view, edit,
-    // and delete all data in your Firestore database. It is useful for getting
-    // started, but it is configured to expire after 30 days because it
-    // leaves your app open to attackers. At that time, all client
-    // requests to your Firestore database will be denied.
-    //
-    // Make sure to write security rules for your app before that time, or else
-    // all client requests to your Firestore database will be denied until you Update
-    // your rules
-    match /{document=**} {
-      allow read, write: if request.time < timestamp.date(2024, 4, 11);
+        // ─── Inventario ───
+        match /inventory_items/{itemId} {
+          // Lectura: admin, assistant, super-admin o mantenimiento del cliente
+          allow read: if belongsToClientOrSuperAdmin(clientId)
+                      || (isMaintenanceUser() && belongsToClient(clientId));
+          // Creación: solo admin/assistant/super-admin
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          // Actualización: admin/assistant/super-admin, o mantenimiento con restricciones
+          allow update: if (isAdminOrAssistant() && belongsToClient(clientId))
+                        || isSuperAdmin()
+                        || (belongsToClient(clientId) && canMaintenanceUpdateInventoryItem());
+          // Eliminación: solo admin/super-admin
+          allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        }
+
+        // ─── Movimientos de Inventario ───
+        match /inventory_movements/{movementId} {
+          // Lectura: admin, assistant, super-admin o mantenimiento del cliente
+          allow read: if belongsToClientOrSuperAdmin(clientId)
+                      || (isMaintenanceUser() && belongsToClient(clientId));
+          // Creación: admin/assistant/super-admin o mantenimiento con payload validado
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId))
+                        || isSuperAdmin()
+                        || (belongsToClient(clientId) && canMaintenanceCreateInventoryMovement());
+          // Actualización/eliminación: solo admin/super-admin
+          allow update, delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        }
+        
+        // ─── Reportes de App de Mantenimiento ───
+        match /reportsMaintenanceApp/{reportId} {
+          // Lectura: admin, assistant, super-admin, o usuario de mantenimiento del cliente
+          allow read: if belongsToClientOrSuperAdmin(clientId)
+                      || (isMaintenanceUser() && belongsToClient(clientId));
+          // Creación: solo usuarios de mantenimiento, admin, assistant o super-admin
+          allow create: if (isMaintenanceUser() && belongsToClient(clientId))
+                        || (isAdminOrAssistant() && belongsToClient(clientId))
+                        || isSuperAdmin();
+          // Actualización: solo quien lo creó o admin/super-admin
+          allow update: if (isMaintenanceUser() && belongsToClient(clientId) && request.auth.uid == resource.data.maintenanceUserId)
+                        || (isAdminOrAssistant() && belongsToClient(clientId))
+                        || isSuperAdmin();
+          allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        }
+        
+        // ─── Mantenimiento Programado ───
+        match /scheduledMaintenance/{taskId} {
+          // Lectura: solo usuarios de mantenimiento del cliente
+          allow read: if (isMaintenanceUser() && belongsToClient(clientId));
+          // Creación: solo usuarios de mantenimiento del cliente
+          allow create: if (isMaintenanceUser() && belongsToClient(clientId));
+          // Actualización: solo usuarios de mantenimiento del cliente
+          allow update: if (isMaintenanceUser() && belongsToClient(clientId));
+          // Eliminación: solo usuarios de mantenimiento del cliente
+          allow delete: if (isMaintenanceUser() && belongsToClient(clientId));
+        }
+        
+        // ─── Tokens de Notificaciones Push ───
+        match /pushTokens/{userId} {
+          // Lectura: solo el propio usuario, admin o super-admin
+          allow read: if (isAuthenticated() && request.auth.uid == userId && belongsToClient(clientId))
+                      || (isAdminOrAssistant() && belongsToClient(clientId))
+                      || isSuperAdmin();
+          // Escritura: solo el propio usuario puede crear/actualizar su token
+          allow create, update: if isAuthenticated() && request.auth.uid == userId && belongsToClient(clientId);
+          // Eliminación: el usuario, admin o super-admin
+          allow delete: if (isAuthenticated() && request.auth.uid == userId && belongsToClient(clientId))
+                        || (isAdmin() && belongsToClient(clientId))
+                        || isSuperAdmin();
+        }
+        
+        // ─── Subcolección: Áreas Comunes ───
+        match /commonAreas/{areaId} {
+          // Lectura: super-admin, admin y admin-assistant
+          allow read:   if isSuperAdmin()
+                          || (belongsToClient(clientId) && isAdminOrAssistant());
+          // Crear/Actualizar: super-admin, admin y admin-assistant
+          allow create, update: if isSuperAdmin()
+                                  || (belongsToClient(clientId) && isAdminOrAssistant());
+          // Borrar: solo super-admin y admin
+          allow delete: if isSuperAdmin()
+                          || (belongsToClient(clientId) && isAdmin());
+        }
+
+        // ─── Usuarios del condominio (incluye referencia de avatar/photoURL) ───
+        match /users/{userId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create, update: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+
+          // ─── Notificaciones internas por usuario ───
+          match /notifications/{notificationId} {
+            allow read: if belongsToClientOrSuperAdmin(clientId) || isSameClientUser(clientId, userId);
+            allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+            allow update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+                          || (isSameClientUser(clientId, userId) && isSafeNotificationStateUpdate());
+            allow delete: if false;
+          }
+        }
+
+        // ─── Eventos y cola de notificaciones (base escalable) ───
+        match /notificationEvents/{eventId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow update, delete: if false;
+        }
+
+        match /notificationQueue/{queueId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow update, delete: if false;
+        }
+
+        // ─── QR de asistencia (lectura pública para escaneo) ───
+        match /attendanceQR/{qrId} {
+          allow read: if true;
+          allow create, update: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        }
+
+        // ─── Visitas programadas vía chatbot de WhatsApp ───
+        // Escritura: solo el backend (Admin SDK) crea las visitas — desde el
+        // panel únicamente admins pueden actualizar (cancelar) o leer.
+        // No exponemos lectura pública: la caseta valida vía endpoint HTTP
+        // que usa Admin SDK y verifica el `accessToken`.
+        match /scheduledVisits/{visitId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          // Crear desde el panel está deshabilitado (lo hace el backend).
+          // Permitimos updates solo a admin/assistant para cancelar/cerrar visitas.
+          allow create: if isSuperAdmin();
+          allow update: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow delete: if isSuperAdmin();
+
+          // Entradas/salidas de visitas recurrentes. El backend (Admin SDK) las
+          // crea cuando la caseta escanea el QR. Solo lectura para admin del
+          // tenant — son inmutables.
+          match /entries/{entryId} {
+            allow read: if belongsToClientOrSuperAdmin(clientId);
+            allow create, update, delete: if isSuperAdmin();
+          }
+        }
+
+        // ─── Registros de asistencia (creación pública controlada por QR activo) ───
+        match /attendance/{attendanceId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          // Público para registro desde QR sin autenticación del empleado
+          allow create: if true;
+          allow update, delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+        }
+
+        // ─── Conciliaciones financieras (inmutables para trazabilidad) ───
+        match /paymentReconciliations/{sessionId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+                        && resource.data.status == 'draft';
+          allow delete: if false;
+        }
+
+        match /expenseReconciliations/{sessionId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+                        && resource.data.status == 'draft';
+          allow delete: if false;
+        }
+
+        // ─── Bitácora de auditoría transversal ───
+        match /auditLogs/{logId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow update, delete: if false;
+        }
+        
+        // ─── Subcolecciones genéricas de segundo nivel ───
+        match /{collection}/{docId} {
+          allow read:   if belongsToClientOrSuperAdmin(clientId);
+          allow create, update: if !isProtectedCondominiumCollection(collection)
+                                  && ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
+          allow delete: if !isProtectedCondominiumCollection(collection)
+                         && ((isAdmin() && belongsToClient(clientId)) || isSuperAdmin());
+          
+          // ─── Cargos ───
+          match /charges/{chargeId} {
+            allow read:   if belongsToClientOrSuperAdmin(clientId);
+            allow create, update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+                                   && isValidCharge();
+            allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+            
+            // ─── Pagos dentro de Cargos ───
+            match /payments/{paymentId} {
+              allow read:   if belongsToClientOrSuperAdmin(clientId);
+              allow create, update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+                                     && isValidPayment();
+              allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+            }
+          }
+          
+          // ─── Otras subcolecciones de tercer nivel ───
+          match /{subcollection}/{subdocId} {
+            allow read:   if belongsToClientOrSuperAdmin(clientId);
+            allow create, update: if !['notifications'].hasAny([subcollection])
+                                  && ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
+            allow delete: if !['notifications'].hasAny([subcollection])
+                          && ((isAdmin() && belongsToClient(clientId)) || isSuperAdmin());
+          }
+        }
+
+        // ─── Uso de IA (cuotas, agregados y eventos) ───
+        match /aiUsageQuota/{featureId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create, update: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow delete: if isSuperAdmin();
+        }
+
+        match /aiUsageDaily/{dateKey} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create, update: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow delete: if isSuperAdmin();
+        }
+
+        match /aiUsageEvents/{eventId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create: if (isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin();
+          allow update, delete: if isSuperAdmin();
+        }
+      }
+    }
+    
+    // ─── CollectionGroup: pagos (solo lectura para su propio clientId) ───
+    match /{path=**}/payments/{paymentId} {
+      allow read: if isSuperAdmin()
+                  || (isAuthenticated() && resource.data.clientId == request.auth.token.clientId);
+    }
+    
+    // ─── CollectionGroup: cargos (solo lectura para su propio clientId) ───
+    match /{path=**}/charges/{chargeId} {
+      allow read: if isSuperAdmin()
+                  || (isAuthenticated() && resource.data.clientId == request.auth.token.clientId);
+    }
+
+    // ─── CollectionGroup: facturas generadas ───
+    match /{path=**}/invoicesGenerated/{invoiceId} {
+      allow read: if isSuperAdmin()
+                  || (isAuthenticated() && resource.data.clientId == request.auth.token.clientId);
+    }
+
+    // ─── CollectionGroup: consumo IA diario ───
+    match /{path=**}/aiUsageDaily/{docId} {
+      allow read: if isSuperAdmin()
+                  || (isAuthenticated() && resource.data.clientId == request.auth.token.clientId);
+    }
+
+    // ─── CollectionGroup: eventos de consumo IA ───
+    match /{path=**}/aiUsageEvents/{docId} {
+      allow read: if isSuperAdmin()
+                  || (isAuthenticated() && resource.data.clientId == request.auth.token.clientId);
+    }
+    
+    // ─── publicQRs en ruta específica ───
+    match /clients/{clientId}/condominiums/{condominiumId}/publicQRs/{qrId} {
+      allow read:   if true;
+      allow create: if isAuthenticated()
+                    && (request.resource.data.clientId == request.auth.token.clientId || isSuperAdmin());
+      allow update, delete: if false;
+    }
+    
+    // ─── CollectionGroup: publicQRs (solo lectura) ───
+    match /{path=**}/publicQRs/{qrId} {
+      allow read: if true;
+    }
+
+    // ─── CollectionGroup: attendanceQR (lectura pública para escaneo) ───
+    match /{path=**}/attendanceQR/{qrId} {
+      allow read: if true;
+    }
+
+    // ─── CollectionGroup: visitas programadas (lectura por tenant) ───
+    // Permite al panel admin consultar todas las visitas de su cliente
+    // a través de queries collectionGroup('scheduledVisits').
+    match /{path=**}/scheduledVisits/{visitId} {
+      allow read: if isSuperAdmin()
+                  || (isAuthenticated() && resource.data.clientId == request.auth.token.clientId);
+    }
+
+    // ─── CollectionGroup: attendance (registro público por QR) ───
+    match /{path=**}/attendance/{attendanceId} {
+      allow create: if true;
+    }
+
+    // ─── Rutas absolutas públicas de asistencia (fallback explícito) ───
+    match /clients/{clientId}/condominiums/{condominiumId}/attendanceQR/{qrId} {
+      allow read: if true;
+    }
+
+    match /clients/{clientId}/condominiums/{condominiumId}/publicQRs/{qrId} {
+      allow read: if true;
+      allow create: if true;
+    }
+
+    match /clients/{clientId}/condominiums/{condominiumId}/attendance/{attendanceId} {
+      allow create: if true;
+    }
+    
+    // ─── Validaciones para "charges" y "payments" ───
+    function isValidCharge() {
+      return request.resource.data.keys().hasAll([
+        'amount','clientId','concept','condominiumId',
+        'dueDate','generatedAt','paid','referenceAmount',
+        'startAt','email','name','notificationSent','chargeId'
+      ])
+      && (request.resource.data.amount is int || request.resource.data.amount is float)
+      && request.resource.data.clientId is string
+      && request.resource.data.concept is string
+      && request.resource.data.condominiumId is string
+      && request.resource.data.dueDate is string
+      && request.resource.data.startAt is string
+      && request.resource.data.generatedAt is timestamp
+      && request.resource.data.paid is bool
+      && (request.resource.data.referenceAmount is int || request.resource.data.referenceAmount is float)
+      && request.resource.data.email is string
+      && request.resource.data.name is string
+      && request.resource.data.notificationSent is bool
+      && request.resource.data.chargeId is string;
+    }
+    function isValidPayment() {
+      return request.resource.data.keys().hasAll([
+        'amountPaid','amountPending','attachmentPayment','chargeUID',
+        'clientId','comments','concept','condominiumId',
+        'creditBalance','creditUsed','dateRegistered','email',
+        'financialAccountId','folio','invoiceRequired','month',
+        'numberCondominium','paymentDate','paymentGroupId',
+        'paymentReference',
+        'paymentId','paymentType','phone','startAt',
+        'userId','yearMonth', 'paymentAmountReference'
+      ])
+      && (request.resource.data.amountPaid is int || request.resource.data.amountPaid is float)
+      && (request.resource.data.amountPending is int || request.resource.data.amountPending is float)
+      && (request.resource.data.paymentAmountReference is int || request.resource.data.paymentAmountReference is float)
+      && request.resource.data.attachmentPayment is string
+      && request.resource.data.chargeUID is string
+      && request.resource.data.clientId is string
+      && request.resource.data.comments is string
+      && request.resource.data.concept is string
+      && request.resource.data.condominiumId is string
+      && (request.resource.data.creditBalance is int || request.resource.data.creditBalance is float)
+      && (request.resource.data.creditUsed is int || request.resource.data.creditUsed is float)
+      && request.resource.data.dateRegistered is timestamp
+      && request.resource.data.email is string
+      && request.resource.data.financialAccountId is string
+      && request.resource.data.folio is string
+      && request.resource.data.invoiceRequired is bool
+      && request.resource.data.month is string
+      && request.resource.data.numberCondominium is string
+      && request.resource.data.paymentDate is timestamp
+      && request.resource.data.paymentGroupId is string
+      && request.resource.data.paymentReference is string
+      && request.resource.data.paymentId is string
+      && request.resource.data.paymentType is string
+      && (request.resource.data.phone is int || request.resource.data.phone is float)
+      && request.resource.data.startAt is string
+      && request.resource.data.userId is string
+      && request.resource.data.userId.size() > 0
+      && request.resource.data.yearMonth is string;
     }
   }
 }

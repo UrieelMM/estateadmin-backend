@@ -9,6 +9,11 @@ import {
   AttendanceQrRegisterDto,
   AttendanceRegisterType,
 } from './attendance-qr.dto';
+import {
+  ValidateVisitQrQueryDto,
+  RegisterVisitEntryDto,
+  VisitRegisterType,
+} from './visit-qr.dto';
 
 export class SearchPlacesDto {
   latitude: number;
@@ -49,4 +54,7 @@ export {
   AttendanceQrValidateQueryDto,
   AttendanceQrRegisterDto,
   AttendanceRegisterType,
+  ValidateVisitQrQueryDto,
+  RegisterVisitEntryDto,
+  VisitRegisterType,
 };

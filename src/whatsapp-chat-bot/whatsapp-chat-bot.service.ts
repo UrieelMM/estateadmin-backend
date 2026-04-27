@@ -14,6 +14,10 @@ import {
   AccountStatementService,
   ProcessedAccountData,
 } from './account-statement.service';
+import {
+  ScheduledVisitsService,
+  ParsedDateTime,
+} from './scheduled-visits.service';
 
 // Asegúrate de inicializar Firebase Admin en tu módulo principal (e.g., app.module.ts)
 // import * as admin from 'firebase-admin';
@@ -50,6 +54,26 @@ enum ConversationState {
   ACCOUNT_MULTIPLE_CONDOMINIUMS = 'ACCOUNT_MULTIPLE_CONDOMINIUMS',
   ACCOUNT_AWAITING_CONDOMINIUM_SELECTION = 'ACCOUNT_AWAITING_CONDOMINIUM_SELECTION',
   ACCOUNT_GENERATING = 'ACCOUNT_GENERATING',
+
+  // Estados para registrar visita programada (opción 4)
+  VISIT_AWAITING_EMAIL = 'VISIT_AWAITING_EMAIL',
+  VISIT_AWAITING_DEPARTMENT = 'VISIT_AWAITING_DEPARTMENT',
+  VISIT_AWAITING_TOWER = 'VISIT_AWAITING_TOWER',
+  VISIT_AWAITING_CONDOMINIUM_SELECTION = 'VISIT_AWAITING_CONDOMINIUM_SELECTION',
+  VISIT_AWAITING_TYPE = 'VISIT_AWAITING_TYPE',
+  VISIT_AWAITING_VISITOR_NAME = 'VISIT_AWAITING_VISITOR_NAME',
+  // Flujo único
+  VISIT_AWAITING_ARRIVAL = 'VISIT_AWAITING_ARRIVAL',
+  VISIT_AWAITING_DEPARTURE = 'VISIT_AWAITING_DEPARTURE',
+  // Flujo recurrente
+  VISIT_AWAITING_DAYS_OF_WEEK = 'VISIT_AWAITING_DAYS_OF_WEEK',
+  VISIT_AWAITING_DAILY_ARRIVAL = 'VISIT_AWAITING_DAILY_ARRIVAL',
+  VISIT_AWAITING_DAILY_DEPARTURE = 'VISIT_AWAITING_DAILY_DEPARTURE',
+  VISIT_AWAITING_START_DATE = 'VISIT_AWAITING_START_DATE',
+  VISIT_AWAITING_END_DATE = 'VISIT_AWAITING_END_DATE',
+  // Compartidos final
+  VISIT_AWAITING_VEHICLE = 'VISIT_AWAITING_VEHICLE',
+  VISIT_CONFIRMING = 'VISIT_CONFIRMING',
 
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR',
@@ -98,6 +122,24 @@ interface ConversationContext {
   // Para flujo de documentos
   availableDocuments?: DocumentsConfig;
   documentKeys?: string[];
+  // Para flujo de visitas programadas
+  visitDraft?: {
+    visitType?: 'single' | 'recurring';
+    visitorName?: string;
+    // Visita única
+    arrivalAtISO?: string; // ISO string para serializar en Firestore
+    arrivalLabel?: string;
+    departureAtISO?: string;
+    departureLabel?: string;
+    // Visita recurrente
+    daysOfWeek?: number[]; // 0..6
+    dailyArrivalTime?: string; // "HH:MM" 24h
+    dailyDepartureTime?: string;
+    startDateISO?: string; // 00:00 del primer día
+    endDateISO?: string;   // 23:59:59 del último día
+    vehiclePlates?: string;
+    vehicleDescription?: string;
+  };
   lastInteractionTimestamp?: admin.firestore.Timestamp;
   userId?: string;
   // Control de reintentos por campo
@@ -116,6 +158,7 @@ export class WhatsappChatBotService implements OnModuleInit {
   constructor(
     private readonly publicDocumentsService: PublicDocumentsService,
     private readonly accountStatementService: AccountStatementService,
+    private readonly scheduledVisitsService: ScheduledVisitsService,
   ) {}
 
   onModuleInit() {
@@ -671,6 +714,67 @@ export class WhatsappChatBotService implements OnModuleInit {
         await this.handleAccountGenerating(context);
         break;
 
+      // Estados para registrar visita programada (opción 4)
+      case ConversationState.VISIT_AWAITING_EMAIL:
+        await this.handleVisitEmailInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_DEPARTMENT:
+        await this.handleVisitDepartmentInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_TOWER:
+        await this.handleVisitTowerInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_CONDOMINIUM_SELECTION:
+        await this.handleVisitCondominiumSelection(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_TYPE:
+        await this.handleVisitTypeInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_VISITOR_NAME:
+        await this.handleVisitVisitorNameInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_ARRIVAL:
+        await this.handleVisitArrivalInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_DEPARTURE:
+        await this.handleVisitDepartureInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_DAYS_OF_WEEK:
+        await this.handleVisitDaysOfWeekInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_DAILY_ARRIVAL:
+        await this.handleVisitDailyArrivalInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_DAILY_DEPARTURE:
+        await this.handleVisitDailyDepartureInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_START_DATE:
+        await this.handleVisitStartDateInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_END_DATE:
+        await this.handleVisitEndDateInput(context, text);
+        break;
+
+      case ConversationState.VISIT_AWAITING_VEHICLE:
+        await this.handleVisitVehicleInput(context, text);
+        break;
+
+      case ConversationState.VISIT_CONFIRMING:
+        await this.handleVisitConfirmation(context, text);
+        break;
+
       case ConversationState.COMPLETED:
         context.state = ConversationState.MENU_SELECTION;
         await this.sendAndLogMessage(
@@ -717,8 +821,9 @@ export class WhatsappChatBotService implements OnModuleInit {
 1️⃣ Registrar comprobante de pago
 2️⃣ Consultar documentos del condominio
 3️⃣ Ver mi estado de cuenta
+4️⃣ Registrar una visita y obtener QR
 
-Responde con *1*, *2* o *3*.
+Responde con *1*, *2*, *3* o *4*.
 _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   }
 
@@ -769,6 +874,20 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         );
         break;
 
+      case 4:
+        context.state = ConversationState.VISIT_AWAITING_EMAIL;
+        context.retryCount = 0;
+        context.visitDraft = {};
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '🛎️ *Registrar visita programada*\n\nVoy a generarte un QR para que tu visita ingrese sin complicaciones. Primero necesito verificar tu identidad.\n\n¿Cuál es tu correo electrónico registrado en la plataforma?',
+          },
+          context,
+        );
+        break;
+
       default:
         await this.sendAndLogMessage(
           {
@@ -793,6 +912,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     context.selectedChargeIds = undefined;
     context.availableDocuments = undefined;
     context.documentKeys = undefined;
+    context.visitDraft = undefined;
     context.userId = undefined;
     context.retryCount = 0;
   }
@@ -3482,6 +3602,1267 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         success: false,
         message: `Error al enviar documento: ${error.message}`,
       };
+    }
+  }
+
+  // =========================================================================
+  // Flujo de visitas programadas (opción 4)
+  // =========================================================================
+
+  private async handleVisitEmailInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    if (!this.isValidEmail(text)) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '😅 Parece que hay un problema con el correo. Volvamos al menú.\n\n' +
+              this.getMenuMessage(),
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `📧 Ese correo no parece válido. Debe tener el formato *nombre@dominio.com*\n\n_(Intento ${context.retryCount} de 3 — escribe *cancelar* para salir)_`,
+        },
+        context,
+      );
+      return;
+    }
+    context.email = this.cleanInputKeepArroba(text);
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_DEPARTMENT;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          '✉️ Perfecto. Ahora dime tu *número de departamento o casa* tal como aparece en la plataforma (ej: 101, A-3, 463).',
+      },
+      context,
+    );
+  }
+
+  private async handleVisitDepartmentInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    context.departmentNumber = text;
+
+    try {
+      const possibleCondos = await this.findUserCondominiums(
+        context.phoneNumber,
+        context.email,
+        context.departmentNumber,
+      );
+
+      if (!possibleCondos || possibleCondos.length === 0) {
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message:
+                '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número coincidan exactamente con los registrados.\n\n' +
+                this.getMenuMessage(),
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.VISIT_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔍 No encontré ninguna cuenta con esos datos. ¿Puedes intentarlo de nuevo? Ingresa tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+
+      // Auto-desambiguación por teléfono (mismo patrón que pagos/documentos)
+      const disambiguated = this.autoDisambiguateByPhone(possibleCondos);
+      if (disambiguated.length === 0) {
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.VISIT_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔒 Por seguridad, los datos deben coincidir con el teléfono registrado. Vuelve a intentarlo con tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+      const matches = disambiguated;
+
+      const ambiguousTowers = this.detectTowerAmbiguity(matches);
+      if (ambiguousTowers.length > 0) {
+        context.possibleCondominiums = matches;
+        context.possibleTowers = ambiguousTowers;
+        context.retryCount = 0;
+        context.state = ConversationState.VISIT_AWAITING_TOWER;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: this.formatTowerOptionsMessage(ambiguousTowers),
+          },
+          context,
+        );
+        return;
+      }
+
+      if (matches.length === 1) {
+        context.userId = matches[0].userId;
+        context.selectedCondominium = matches[0];
+        context.retryCount = 0;
+        context.state = ConversationState.VISIT_AWAITING_TYPE;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `✅ ¡Te encontré! Estás en *${matches[0].condominiumName || matches[0].condominiumId}*.\n\n${this.getVisitTypePrompt()}`,
+          },
+          context,
+        );
+      } else {
+        context.userId = undefined;
+        context.possibleCondominiums = matches;
+        context.state =
+          ConversationState.VISIT_AWAITING_CONDOMINIUM_SELECTION;
+        await this.showCondominiumOptions(context, matches);
+      }
+    } catch (error) {
+      this.logger.error(
+        `❌ [handleVisitDept] Error buscando condominios para visitas en ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema buscando tu información. Por favor, intenta de nuevo más tarde escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  private async handleVisitTowerInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    if (
+      !context.possibleTowers ||
+      context.possibleTowers.length === 0 ||
+      !context.possibleCondominiums
+    ) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    const resolved = this.resolveTowerFromInput(text, context.possibleTowers);
+    if (!resolved) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré identificar la torre. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🤔 No reconocí esa torre. Responde con el *número* o el *nombre exacto*:\n\n${context.possibleTowers
+            .map((t, i) => `${i + 1}. ${t}`)
+            .join('\n')}\n\n_(Intento ${context.retryCount} de 3)_`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.tower = resolved;
+    const filtered = context.possibleCondominiums.filter(
+      (m) =>
+        m.tower &&
+        this.cleanInput(String(m.tower)) === this.cleanInput(resolved),
+    );
+
+    if (filtered.length === 0) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema filtrando por torre. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const phoneConflict = filtered.every(
+      (m) => m.phoneInDB === true && m.phoneMatches !== true,
+    );
+    if (phoneConflict) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.retryCount = 0;
+    context.possibleTowers = undefined;
+    if (filtered.length === 1) {
+      context.userId = filtered[0].userId;
+      context.selectedCondominium = filtered[0];
+      context.possibleCondominiums = undefined;
+      context.state = ConversationState.VISIT_AWAITING_TYPE;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `✅ ¡Te encontré! Estás en *${filtered[0].condominiumName || filtered[0].condominiumId}*, torre *${resolved}*.\n\n${this.getVisitTypePrompt()}`,
+        },
+        context,
+      );
+    } else {
+      context.userId = undefined;
+      context.possibleCondominiums = filtered;
+      context.state =
+        ConversationState.VISIT_AWAITING_CONDOMINIUM_SELECTION;
+      await this.showCondominiumOptions(context, filtered);
+    }
+  }
+
+  private async handleVisitCondominiumSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const index = parseInt(text, 10);
+    if (
+      isNaN(index) ||
+      !context.possibleCondominiums ||
+      index < 1 ||
+      index > context.possibleCondominiums.length
+    ) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🚫 Opción no válida. Escribe el número correspondiente al condominio de la lista.',
+        },
+        context,
+      );
+      return;
+    }
+    const selected = context.possibleCondominiums[index - 1];
+    context.selectedCondominium = selected;
+    if (selected.userId) context.userId = selected.userId;
+    if (selected.tower) context.tower = selected.tower;
+    context.state = ConversationState.VISIT_AWAITING_TYPE;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `✔️ Seleccionado: ${selected.condominiumName || selected.condominiumId}.\n\n${this.getVisitTypePrompt()}`,
+      },
+      context,
+    );
+  }
+
+  /**
+   * Mensaje que pregunta si la visita es única o recurrente.
+   */
+  private getVisitTypePrompt(): string {
+    return `🔁 ¿Esta visita es *única* o *recurrente*?\n\n1️⃣ Única (una sola vez)\n2️⃣ Recurrente (limpieza, maestros, mantenimiento, etc.)\n\nResponde *1* o *2*.`;
+  }
+
+  private async handleVisitTypeInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const t = text.trim().toLowerCase();
+    let chosen: 'single' | 'recurring' | null = null;
+
+    if (t === '1' || t === 'unica' || t === 'única' || t === 'una vez' || t === 'una') {
+      chosen = 'single';
+    } else if (
+      t === '2' ||
+      t === 'recurrente' ||
+      t === 'recurrentes' ||
+      t === 'multiple' ||
+      t === 'varias' ||
+      t === 'repetida'
+    ) {
+      chosen = 'recurring';
+    }
+
+    if (!chosen) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No te entendí. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🤔 Responde *1* (única) o *2* (recurrente).`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.visitDraft = context.visitDraft || {};
+    context.visitDraft.visitType = chosen;
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_VISITOR_NAME;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          chosen === 'single'
+            ? '👤 ¿Cuál es el *nombre completo de tu visitante*?'
+            : '👤 ¿Cuál es el *nombre completo* de la persona o servicio? (ej: *Lupita Hernández* o *Equipo de limpieza Limpio Total*)',
+      },
+      context,
+    );
+  }
+
+  private async handleVisitVisitorNameInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const trimmed = text.trim();
+    // Validación: debe ser nombre razonable (entre 3 y 80 chars, al menos 1 espacio o palabra)
+    if (trimmed.length < 3 || trimmed.length > 80) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré obtener un nombre válido. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 Necesito el *nombre completo* del visitante (entre 3 y 80 caracteres). Por ejemplo: *Juan Pérez*.',
+        },
+        context,
+      );
+      return;
+    }
+    context.visitDraft = context.visitDraft || {};
+    // Capitalizar suavemente cada palabra
+    context.visitDraft.visitorName = trimmed
+      .split(/\s+/)
+      .map((w) =>
+        w.length > 0 ? w[0].toLocaleUpperCase('es-MX') + w.slice(1) : w,
+      )
+      .join(' ');
+    context.retryCount = 0;
+
+    if (context.visitDraft.visitType === 'recurring') {
+      context.state = ConversationState.VISIT_AWAITING_DAYS_OF_WEEK;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `📆 ¿Qué *días de la semana* viene ${context.visitDraft.visitorName}?\n\nEjemplos:\n• *lunes y miércoles*\n• *lunes a viernes*\n• *martes, jueves y sábado*\n• *fines de semana*\n• *todos los días*`,
+        },
+        context,
+      );
+    } else {
+      context.state = ConversationState.VISIT_AWAITING_ARRIVAL;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `📅 *¿Cuándo llega ${context.visitDraft.visitorName}?*\n\nPuedes escribirlo natural, por ejemplo:\n• *hoy 4pm*\n• *mañana 10am*\n• *sábado 18:00*\n• *27/04 14:30*`,
+        },
+        context,
+      );
+    }
+  }
+
+  private async handleVisitArrivalInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const parsed = this.scheduledVisitsService.parseSpanishDateTime(text);
+    if (!parsed) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré entender la fecha y hora. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 No entendí esa fecha. Intenta con un formato como:\n• *hoy 4pm*\n• *mañana 10am*\n• *sábado 18:00*\n• *27/04 14:30*',
+        },
+        context,
+      );
+      return;
+    }
+
+    const validation = this.scheduledVisitsService.validateArrival(parsed.date);
+    if (!validation.ok) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No pudimos validar la fecha de llegada. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        { phoneNumber, message: `⚠️ ${validation.reason}` },
+        context,
+      );
+      return;
+    }
+
+    context.visitDraft = context.visitDraft || {};
+    context.visitDraft.arrivalAtISO = parsed.date.toISOString();
+    context.visitDraft.arrivalLabel = parsed.humanLabel;
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_DEPARTURE;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `🕒 Llegada: *${parsed.humanLabel}*\n\n¿*Hasta qué hora* puede estar el visitante? (ej: *6pm*, *18:30*, *mañana 9am*)`,
+      },
+      context,
+    );
+  }
+
+  private async handleVisitDepartureInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const arrivalISO = context.visitDraft?.arrivalAtISO;
+    if (!arrivalISO) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+    const arrival = new Date(arrivalISO);
+
+    const parsed =
+      this.scheduledVisitsService.parseDepartureRelativeToArrival(
+        text,
+        arrival,
+      );
+    if (!parsed) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré entender la hora de salida. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 No entendí esa hora. Intenta con *6pm*, *18:30* o *mañana 9am*.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const validation = this.scheduledVisitsService.validateDeparture(
+      arrival,
+      parsed.date,
+    );
+    if (!validation.ok) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No pudimos validar la hora de salida. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        { phoneNumber, message: `⚠️ ${validation.reason}` },
+        context,
+      );
+      return;
+    }
+
+    context.visitDraft = context.visitDraft || {};
+    context.visitDraft.departureAtISO = parsed.date.toISOString();
+    context.visitDraft.departureLabel = parsed.humanLabel;
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_VEHICLE;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `🚗 ¿Tu visitante llegará en *vehículo*? Si sí, comparte las *placas* (y si quieres, modelo/color). Ejemplo: *ABC-123 Mazda gris*.\n\nSi no aplica, responde *no*.`,
+      },
+      context,
+    );
+  }
+
+  // ─── Flujo recurrente ───
+
+  private async handleVisitDaysOfWeekInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const days = this.scheduledVisitsService.parseDaysOfWeek(text);
+    if (!days || days.length === 0) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré entender los días. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 No entendí esos días. Intenta con *lunes y miércoles*, *lunes a viernes*, *fines de semana*, etc.',
+        },
+        context,
+      );
+      return;
+    }
+    context.visitDraft = context.visitDraft || {};
+    context.visitDraft.daysOfWeek = days;
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_DAILY_ARRIVAL;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `🕗 Días: *${this.scheduledVisitsService.formatDaysOfWeek(days)}*\n\n¿A qué *hora llega* cada día? (ej: *8am*, *07:30*, *14:00*)`,
+      },
+      context,
+    );
+  }
+
+  private async handleVisitDailyArrivalInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const time = this.scheduledVisitsService.parseTimeOfDay(text);
+    if (!time) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré entender la hora. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 No entendí esa hora. Intenta con *8am*, *07:30* o *14:00*.',
+        },
+        context,
+      );
+      return;
+    }
+    context.visitDraft = context.visitDraft || {};
+    context.visitDraft.dailyArrivalTime = time;
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_DAILY_DEPARTURE;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `🕓 Llegada diaria: *${time}*\n\n¿A qué *hora se va* cada día?`,
+      },
+      context,
+    );
+  }
+
+  private async handleVisitDailyDepartureInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const time = this.scheduledVisitsService.parseTimeOfDay(text);
+    if (!time) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré entender la hora. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 No entendí esa hora. Intenta con *6pm*, *18:30* o *14:00*.',
+        },
+        context,
+      );
+      return;
+    }
+
+    // Validar arrival < departure
+    const arr = context.visitDraft?.dailyArrivalTime;
+    if (!arr) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+    const arrMin = +arr.split(':')[0] * 60 + +arr.split(':')[1];
+    const depMin = +time.split(':')[0] * 60 + +time.split(':')[1];
+    if (depMin - arrMin < 5) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '⚠️ La hora de salida debe ser al menos 5 minutos después de la entrada. Intenta otra hora.',
+        },
+        context,
+      );
+      return;
+    }
+
+    context.visitDraft = context.visitDraft || {};
+    context.visitDraft.dailyDepartureTime = time;
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_START_DATE;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `🕔 Salida diaria: *${time}*\n\n📅 ¿Desde qué *fecha empieza*? (ej: *hoy*, *mañana*, *5/5/2026*)`,
+      },
+      context,
+    );
+  }
+
+  private async handleVisitStartDateInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const startDate = this.scheduledVisitsService.parseStartDate(text);
+    if (!startDate) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré entender la fecha. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 No entendí esa fecha. Intenta con *hoy*, *mañana*, *lunes*, *5/5* o *5/5/2026*.',
+        },
+        context,
+      );
+      return;
+    }
+
+    // Validar que no sea muy en el pasado (tolerancia de 1 día)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (startDate.getTime() < today.getTime()) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '⚠️ La fecha de inicio no puede ser anterior a hoy. Intenta otra fecha.',
+        },
+        context,
+      );
+      return;
+    }
+
+    context.visitDraft = context.visitDraft || {};
+    context.visitDraft.startDateISO = startDate.toISOString();
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_END_DATE;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `📅 Inicia: *${this.scheduledVisitsService.formatHumanDate(startDate)}*\n\n¿Hasta cuándo? (ej: *1 mes*, *3 meses*, *31/12*, *indefinido*)\n\n_Máx. 6 meses._`,
+      },
+      context,
+    );
+  }
+
+  private async handleVisitEndDateInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const startISO = context.visitDraft?.startDateISO;
+    if (!startISO) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+    const startDate = new Date(startISO);
+    const endDate = this.scheduledVisitsService.parseEndDate(text, startDate);
+    if (!endDate) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré entender la fecha final. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 No entendí. Intenta con *1 mes*, *3 meses*, *31/12* o *indefinido*.',
+        },
+        context,
+      );
+      return;
+    }
+
+    // Validar la recurrencia completa
+    if (
+      !context.visitDraft?.daysOfWeek ||
+      !context.visitDraft?.dailyArrivalTime ||
+      !context.visitDraft?.dailyDepartureTime
+    ) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+    const validation = this.scheduledVisitsService.validateRecurrence({
+      daysOfWeek: context.visitDraft.daysOfWeek,
+      dailyArrivalTime: context.visitDraft.dailyArrivalTime,
+      dailyDepartureTime: context.visitDraft.dailyDepartureTime,
+      startDate,
+      endDate,
+    });
+    if (!validation.ok) {
+      await this.sendAndLogMessage(
+        { phoneNumber, message: `⚠️ ${validation.reason}` },
+        context,
+      );
+      return;
+    }
+
+    context.visitDraft.endDateISO = endDate.toISOString();
+    context.retryCount = 0;
+    context.state = ConversationState.VISIT_AWAITING_VEHICLE;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `📅 Termina: *${this.scheduledVisitsService.formatHumanDate(endDate)}*\n\n🚗 ¿Llega en *vehículo*? Comparte placas (ej: *ABC-123 Mazda gris*) o responde *no*.`,
+      },
+      context,
+    );
+  }
+
+  // ─── Vehículo y resumen (compartido) ───
+
+  private async handleVisitVehicleInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const cleaned = text.trim();
+    const skipWords = ['no', 'ninguno', 'no aplica', 'na', 'sin auto', 'sin carro'];
+    const isSkip = skipWords.includes(cleaned.toLowerCase());
+
+    context.visitDraft = context.visitDraft || {};
+    if (!isSkip && cleaned.length > 0) {
+      // Heurística sencilla: lo primero parecido a placas se guarda como plates,
+      // el resto como descripción. Si no detectamos placas, todo va a description.
+      const platesMatch = cleaned.match(/[A-Z0-9]{3,4}[\s-]?[A-Z0-9]{2,4}/i);
+      if (platesMatch) {
+        context.visitDraft.vehiclePlates = platesMatch[0]
+          .toUpperCase()
+          .replace(/\s+/g, '');
+        const description = cleaned.replace(platesMatch[0], '').trim();
+        if (description) {
+          context.visitDraft.vehicleDescription = description;
+        }
+      } else {
+        context.visitDraft.vehicleDescription = cleaned;
+      }
+    }
+
+    context.state = ConversationState.VISIT_CONFIRMING;
+    await this.sendVisitSummary(context);
+  }
+
+  private async sendVisitSummary(context: ConversationContext) {
+    const { phoneNumber, visitDraft, selectedCondominium, tower } = context;
+    if (!visitDraft || !selectedCondominium) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const vehicleLine = visitDraft.vehiclePlates
+      ? `🚗 Vehículo: *${visitDraft.vehiclePlates}*${visitDraft.vehicleDescription ? ` (${visitDraft.vehicleDescription})` : ''}`
+      : visitDraft.vehicleDescription
+        ? `🚗 Vehículo: ${visitDraft.vehicleDescription}`
+        : '🚗 Sin vehículo';
+
+    const lines: string[] = [
+      '📋 *Confirma los datos de la visita:*',
+      '',
+      `👤 Visitante: *${visitDraft.visitorName}*`,
+      `🏢 Condominio: ${selectedCondominium.condominiumName || selectedCondominium.condominiumId}${tower ? ` · Torre ${tower}` : ''}`,
+      `🚪 Departamento: ${context.departmentNumber}`,
+    ];
+
+    if (visitDraft.visitType === 'recurring') {
+      const daysLabel = this.scheduledVisitsService.formatDaysOfWeek(
+        visitDraft.daysOfWeek || [],
+      );
+      const startD = visitDraft.startDateISO
+        ? this.scheduledVisitsService.formatHumanDate(
+            new Date(visitDraft.startDateISO),
+          )
+        : '—';
+      const endD = visitDraft.endDateISO
+        ? this.scheduledVisitsService.formatHumanDate(
+            new Date(visitDraft.endDateISO),
+          )
+        : '—';
+      lines.push(`🔁 Tipo: *Recurrente*`);
+      lines.push(`📆 Días: *${daysLabel}*`);
+      lines.push(
+        `🕓 Horario diario: *${visitDraft.dailyArrivalTime} – ${visitDraft.dailyDepartureTime}*`,
+      );
+      lines.push(`📅 Vigencia: *${startD}* a *${endD}*`);
+    } else {
+      lines.push(`🕓 Llegada: *${visitDraft.arrivalLabel}*`);
+      lines.push(`🕕 Salida: *${visitDraft.departureLabel}*`);
+    }
+
+    lines.push(vehicleLine);
+    lines.push('');
+    lines.push(
+      'Responde *sí* para confirmar y generar el QR, o *no* para cancelar.',
+    );
+
+    await this.sendAndLogMessage(
+      { phoneNumber, message: lines.join('\n') },
+      context,
+    );
+  }
+
+  private async handleVisitConfirmation(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const t = text.trim().toLowerCase();
+    const yes = ['si', 'sí', 'yes', 'confirmar', 'ok', 'dale', 'correcto'];
+    const no = ['no', 'cancelar', 'cancel', 'nel', 'incorrecto'];
+
+    if (no.includes(t)) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `❎ Visita cancelada. ¿Hay algo más en lo que pueda ayudarte?\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    if (!yes.includes(t)) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 Responde *sí* para confirmar y generar el QR, o *no* para cancelar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    // Confirmación: crear visita y enviar QR
+    await this.finalizeVisitRegistration(context);
+  }
+
+  private async finalizeVisitRegistration(context: ConversationContext) {
+    const { phoneNumber, visitDraft, selectedCondominium, userId, email, departmentNumber, tower } =
+      context;
+
+    const visitType = visitDraft?.visitType || 'single';
+
+    // Validación común
+    const baseMissing =
+      !visitDraft ||
+      !visitDraft.visitorName ||
+      !selectedCondominium ||
+      !userId ||
+      !email ||
+      !departmentNumber;
+
+    // Validación específica por tipo
+    const singleMissing =
+      visitType === 'single' &&
+      (!visitDraft?.arrivalAtISO ||
+        !visitDraft?.departureAtISO ||
+        !visitDraft?.arrivalLabel ||
+        !visitDraft?.departureLabel);
+
+    const recurringMissing =
+      visitType === 'recurring' &&
+      (!visitDraft?.daysOfWeek ||
+        !visitDraft?.dailyArrivalTime ||
+        !visitDraft?.dailyDepartureTime ||
+        !visitDraft?.startDateISO ||
+        !visitDraft?.endDateISO);
+
+    if (baseMissing || singleMissing || recurringMissing) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno al guardar la visita. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    try {
+      // Recuperar datos extra del residente para trazabilidad
+      let residentName: string | undefined;
+      let residentLastName: string | undefined;
+      try {
+        const userDocRef = this.firestore.doc(
+          `clients/${selectedCondominium.clientId}/condominiums/${selectedCondominium.condominiumId}/users/${userId}`,
+        );
+        const userDoc = await userDocRef.get();
+        if (userDoc.exists) {
+          const u = userDoc.data();
+          residentName = u?.name;
+          residentLastName = u?.lastName;
+        }
+      } catch (e) {
+        this.logger.warn(
+          `No se pudo leer datos del residente ${userId}: ${e.message}`,
+        );
+      }
+
+      // Construir labels finales y payload según tipo
+      let arrivalLabel: string;
+      let departureLabel: string;
+      let arrivalAt: Date | undefined;
+      let departureAt: Date | undefined;
+      let recurrence:
+        | {
+            daysOfWeek: number[];
+            dailyArrivalTime: string;
+            dailyDepartureTime: string;
+            startDate: Date;
+            endDate: Date;
+          }
+        | undefined;
+
+      if (visitType === 'single') {
+        arrivalAt = new Date(visitDraft!.arrivalAtISO!);
+        departureAt = new Date(visitDraft!.departureAtISO!);
+        arrivalLabel = visitDraft!.arrivalLabel!;
+        departureLabel = visitDraft!.departureLabel!;
+      } else {
+        recurrence = {
+          daysOfWeek: visitDraft!.daysOfWeek!,
+          dailyArrivalTime: visitDraft!.dailyArrivalTime!,
+          dailyDepartureTime: visitDraft!.dailyDepartureTime!,
+          startDate: new Date(visitDraft!.startDateISO!),
+          endDate: new Date(visitDraft!.endDateISO!),
+        };
+        const daysLabel = this.scheduledVisitsService.formatDaysOfWeek(
+          recurrence.daysOfWeek,
+        );
+        const startD = this.scheduledVisitsService.formatHumanDate(
+          recurrence.startDate,
+        );
+        const endD = this.scheduledVisitsService.formatHumanDate(
+          recurrence.endDate,
+        );
+        arrivalLabel = `${daysLabel}, ${recurrence.dailyArrivalTime} (desde ${startD})`;
+        departureLabel = `${recurrence.dailyDepartureTime} (hasta ${endD})`;
+      }
+
+      const result = await this.scheduledVisitsService.createScheduledVisit({
+        clientId: selectedCondominium.clientId,
+        condominiumId: selectedCondominium.condominiumId,
+        condominiumName: selectedCondominium.condominiumName,
+        resident: {
+          userId,
+          email,
+          departmentNumber,
+          tower: tower || selectedCondominium.tower || null,
+          phoneNumber,
+          name: residentName,
+          lastName: residentLastName,
+        },
+        visitorName: visitDraft!.visitorName!,
+        visitorVehicle:
+          visitDraft!.vehiclePlates || visitDraft!.vehicleDescription
+            ? {
+                plates: visitDraft!.vehiclePlates,
+                description: visitDraft!.vehicleDescription,
+              }
+            : undefined,
+        visitType,
+        arrivalAt,
+        departureAt,
+        recurrence,
+        arrivalLabel,
+        departureLabel,
+      });
+
+      const caption =
+        visitType === 'recurring'
+          ? `✅ *Visita recurrente registrada para ${visitDraft!.visitorName}*\n` +
+            `📆 ${this.scheduledVisitsService.formatDaysOfWeek(recurrence!.daysOfWeek)}\n` +
+            `🕓 ${recurrence!.dailyArrivalTime} – ${recurrence!.dailyDepartureTime}\n\n` +
+            `Este *mismo QR* se podrá usar cada día válido del rango. Compártelo con tu visita.`
+          : `✅ *Visita registrada para ${visitDraft!.visitorName}*\n` +
+            `🕓 ${arrivalLabel} → ${departureLabel}\n\n` +
+            `Comparte este QR con tu visita. La caseta lo escaneará al llegar.`;
+
+      const sent = await this.scheduledVisitsService.sendQrImageMessage(
+        phoneNumber,
+        result.qrImageUrl,
+        caption,
+      );
+
+      if (!sent.success) {
+        // Fallback: enviar URL si no se pudo mandar la imagen
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              `✅ Visita registrada. Si no te llegó el QR como imagen, ábrelo aquí: ${result.qrImageUrl}`,
+          },
+          context,
+        );
+      } else {
+        // Auditar el envío del QR
+        await this.logToAudit(
+          context,
+          'out',
+          {
+            type: 'visit_qr',
+            visitId: result.visitId,
+            qrId: result.qrId,
+          },
+          { phoneNumber },
+        );
+      }
+
+      context.state = ConversationState.COMPLETED;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🎉 ¡Listo! La visita está programada y la caseta podrá validar el QR cuando llegue. Si necesitas algo más, escribe *Hola*.',
+        },
+        context,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Error al crear visita programada para ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema generando la visita. Por favor, intenta nuevamente escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  /**
+   * Cron diario que marca como expiradas las visitas vencidas.
+   * Se ejecuta cada 30 minutos para mantener el estado actualizado sin
+   * sobrecargar Firestore.
+   */
+  @Cron('0 */30 * * * *')
+  async runScheduledVisitsExpiry(): Promise<void> {
+    try {
+      const expired = await this.scheduledVisitsService.expireOverdueVisits();
+      if (expired > 0) {
+        this.logger.log(`runScheduledVisitsExpiry: ${expired} visitas marcadas como expiradas.`);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error al expirar visitas vencidas: ${error.message}`,
+        error.stack,
+      );
     }
   }
 }
