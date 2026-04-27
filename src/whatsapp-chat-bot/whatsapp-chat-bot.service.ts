@@ -29,6 +29,7 @@ enum ConversationState {
   // Estados para registrar comprobante (flujo original)
   PAYMENT_AWAITING_EMAIL = 'PAYMENT_AWAITING_EMAIL',
   PAYMENT_AWAITING_DEPARTMENT = 'PAYMENT_AWAITING_DEPARTMENT',
+  PAYMENT_AWAITING_TOWER = 'PAYMENT_AWAITING_TOWER',
   PAYMENT_MULTIPLE_CONDOMINIUMS = 'PAYMENT_MULTIPLE_CONDOMINIUMS',
   PAYMENT_AWAITING_CONDOMINIUM_SELECTION = 'PAYMENT_AWAITING_CONDOMINIUM_SELECTION',
   PAYMENT_AWAITING_CHARGE_SELECTION = 'PAYMENT_AWAITING_CHARGE_SELECTION',
@@ -37,6 +38,7 @@ enum ConversationState {
   // Estados para consultar documentos (nuevo flujo)
   DOCUMENTS_AWAITING_EMAIL = 'DOCUMENTS_AWAITING_EMAIL',
   DOCUMENTS_AWAITING_DEPARTMENT = 'DOCUMENTS_AWAITING_DEPARTMENT',
+  DOCUMENTS_AWAITING_TOWER = 'DOCUMENTS_AWAITING_TOWER',
   DOCUMENTS_MULTIPLE_CONDOMINIUMS = 'DOCUMENTS_MULTIPLE_CONDOMINIUMS',
   DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION = 'DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION',
   DOCUMENTS_AWAITING_DOCUMENT_SELECTION = 'DOCUMENTS_AWAITING_DOCUMENT_SELECTION',
@@ -44,6 +46,7 @@ enum ConversationState {
   // Estados para estado de cuenta (nuevo flujo)
   ACCOUNT_AWAITING_EMAIL = 'ACCOUNT_AWAITING_EMAIL',
   ACCOUNT_AWAITING_DEPARTMENT = 'ACCOUNT_AWAITING_DEPARTMENT',
+  ACCOUNT_AWAITING_TOWER = 'ACCOUNT_AWAITING_TOWER',
   ACCOUNT_MULTIPLE_CONDOMINIUMS = 'ACCOUNT_MULTIPLE_CONDOMINIUMS',
   ACCOUNT_AWAITING_CONDOMINIUM_SELECTION = 'ACCOUNT_AWAITING_CONDOMINIUM_SELECTION',
   ACCOUNT_GENERATING = 'ACCOUNT_GENERATING',
@@ -60,15 +63,29 @@ interface ConversationContext {
   phoneNumber: string; // Ej. '5215531139560'
   email?: string;
   departmentNumber?: string;
+  // Torre/bloque del residente. Se utiliza solo en condominios cuyos residentes
+  // tienen el campo `tower` poblado en Firestore. Si no aplica, queda undefined.
+  tower?: string;
+  // Lista de torres candidatas cuando hay ambigüedad (mismo email+number en
+  // distintas torres). Se llena únicamente cuando se requiere preguntar.
+  possibleTowers?: string[];
   possibleCondominiums?: Array<{
     clientId: string;
     condominiumId: string;
     condominiumName?: string;
+    userId?: string;
+    tower?: string;
+    phoneMatches?: boolean;
+    phoneInDB?: boolean;
   }>;
   selectedCondominium?: {
     clientId: string;
     condominiumId: string;
     condominiumName?: string;
+    userId?: string;
+    tower?: string;
+    phoneMatches?: boolean;
+    phoneInDB?: boolean;
   };
   // Para flujo de pagos
   pendingCharges?: Array<{
@@ -585,6 +602,10 @@ export class WhatsappChatBotService implements OnModuleInit {
         await this.handlePaymentDepartmentInput(context, text);
         break;
 
+      case ConversationState.PAYMENT_AWAITING_TOWER:
+        await this.handlePaymentTowerInput(context, text);
+        break;
+
       case ConversationState.PAYMENT_AWAITING_CONDOMINIUM_SELECTION:
         await this.handlePaymentCondominiumSelection(context, text);
         break;
@@ -613,6 +634,10 @@ export class WhatsappChatBotService implements OnModuleInit {
         await this.handleDocumentsDepartmentInput(context, text);
         break;
 
+      case ConversationState.DOCUMENTS_AWAITING_TOWER:
+        await this.handleDocumentsTowerInput(context, text);
+        break;
+
       case ConversationState.DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION:
         await this.handleDocumentsCondominiumSelection(context, text);
         break;
@@ -628,6 +653,10 @@ export class WhatsappChatBotService implements OnModuleInit {
 
       case ConversationState.ACCOUNT_AWAITING_DEPARTMENT:
         await this.handleAccountDepartmentInput(context, text);
+        break;
+
+      case ConversationState.ACCOUNT_AWAITING_TOWER:
+        await this.handleAccountTowerInput(context, text);
         break;
 
       case ConversationState.ACCOUNT_MULTIPLE_CONDOMINIUMS:
@@ -756,6 +785,8 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     context.state = ConversationState.INITIAL;
     context.email = undefined;
     context.departmentNumber = undefined;
+    context.tower = undefined;
+    context.possibleTowers = undefined;
     context.possibleCondominiums = undefined;
     context.selectedCondominium = undefined;
     context.pendingCharges = undefined;
@@ -862,25 +893,86 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         return;
       }
 
-      context.userId = possibleCondos[0].userId;
+      // Intento de auto-desambiguación por teléfono antes de preguntar torre.
+      // - Si al menos un match tiene phone == chat, filtramos a esos (suele
+      //   dejar 1 y evita preguntar torre).
+      // - Si todos tienen phone distinto del chat, bloqueamos (posible intento
+      //   de suplantación con email+número de otro).
+      // - Si ninguno tiene phone poblado, se mantiene la lista y seguimos.
+      const disambiguated = this.autoDisambiguateByPhone(possibleCondos);
+      if (disambiguated.length === 0) {
+        this.logger.warn(
+          `[handlePaymentDept] Bloqueado por phone mismatch para ${phoneNumber}. ` +
+            `Todos los matches tenían teléfono registrado y ninguno coincide con el chat.`,
+        );
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.PAYMENT_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔒 Por seguridad, los datos deben coincidir con el teléfono registrado. Vuelve a intentarlo con tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+      const matches = disambiguated;
 
-      if (possibleCondos.length === 1) {
-        context.selectedCondominium = possibleCondos[0];
+      // Detectar ambigüedad por torre sobre los matches ya filtrados por phone.
+      const ambiguousTowers = this.detectTowerAmbiguity(matches);
+      if (ambiguousTowers.length > 0) {
+        context.possibleCondominiums = matches;
+        context.possibleTowers = ambiguousTowers;
+        context.retryCount = 0;
+        context.state = ConversationState.PAYMENT_AWAITING_TOWER;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: this.formatTowerOptionsMessage(ambiguousTowers),
+          },
+          context,
+        );
+        return;
+      }
+
+      if (matches.length === 1) {
+        // Única coincidencia: fijamos userId directamente.
+        context.userId = matches[0].userId;
+        context.selectedCondominium = matches[0];
         context.retryCount = 0;
         context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message: `✅ ¡Te encontré! Estás en *${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}*.\n\nBuscando tus cargos pendientes... ⏳`,
+            message: `✅ ¡Te encontré! Estás en *${matches[0].condominiumName || matches[0].condominiumId}*.\n\nBuscando tus cargos pendientes... ⏳`,
           },
           context,
         );
         await this.showPendingCharges(context);
       } else {
-        context.possibleCondominiums = possibleCondos;
+        // NO fijamos userId aquí: el usuario debe elegir explícitamente para
+        // evitar aplicar pagos/consultas al residente equivocado cuando hay
+        // duplicados indistinguibles por email+number (el handler de selección
+        // de condominio fija context.userId con el de la opción elegida).
+        context.userId = undefined;
+        context.possibleCondominiums = matches;
         context.state =
           ConversationState.PAYMENT_AWAITING_CONDOMINIUM_SELECTION;
-        await this.showCondominiumOptions(context, possibleCondos);
+        await this.showCondominiumOptions(context, matches);
       }
     } catch (error) {
       this.logger.error(
@@ -899,6 +991,139 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         },
         context,
       );
+    }
+  }
+
+  /**
+   * Maneja la respuesta del usuario cuando el bot detectó ambigüedad de torre
+   * (mismo email+número de depto en más de una torre) dentro del flujo de pagos.
+   */
+  private async handlePaymentTowerInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (
+      !context.possibleTowers ||
+      context.possibleTowers.length === 0 ||
+      !context.possibleCondominiums
+    ) {
+      this.logger.warn(
+        `[handlePaymentTower] Estado inconsistente para ${phoneNumber}. Reiniciando.`,
+      );
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    const resolved = this.resolveTowerFromInput(text, context.possibleTowers);
+    if (!resolved) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré identificar la torre después de varios intentos. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🤔 No reconocí esa torre. Responde con el *número* o el *nombre exacto*:\n\n${context.possibleTowers
+            .map((t, i) => `${i + 1}. ${t}`)
+            .join('\n')}\n\n_(Intento ${context.retryCount} de 3)_`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.tower = resolved;
+    const filtered = context.possibleCondominiums.filter(
+      (m) =>
+        m.tower && this.cleanInput(String(m.tower)) === this.cleanInput(resolved),
+    );
+
+    if (filtered.length === 0) {
+      // No debería ocurrir: las torres se calculan desde possibleCondominiums.
+      this.logger.error(
+        `[handlePaymentTower] Torre "${resolved}" resuelta pero sin coincidencias en possibleCondominiums.`,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema filtrando por torre. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    // Validación estricta de pertenencia: si el usuario de la torre elegida
+    // tiene teléfono registrado y no coincide con el del chat, se rechaza.
+    // Los residentes sin phone poblado en BD quedan exentos (condominios donde
+    // el admin no ha poblado el campo).
+    const phoneConflict = filtered.every(
+      (m) => m.phoneInDB === true && m.phoneMatches !== true,
+    );
+    if (phoneConflict) {
+      this.logger.warn(
+        `[handlePaymentTower] Rechazado: torre "${resolved}" pertenece a otro teléfono (${phoneNumber}).`,
+      );
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.retryCount = 0;
+    context.possibleTowers = undefined;
+    // Solo fijamos userId cuando la torre filtra a un único match. Si quedan
+    // varios (caso residual: mismo condo+torre con 2 userIds), delegamos en
+    // showCondominiumOptions para que el usuario elija explícitamente.
+    if (filtered.length === 1) {
+      context.userId = filtered[0].userId;
+    } else {
+      context.userId = undefined;
+    }
+
+    if (filtered.length === 1) {
+      context.selectedCondominium = filtered[0];
+      context.possibleCondominiums = undefined;
+      context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `✅ ¡Te encontré! Estás en *${filtered[0].condominiumName || filtered[0].condominiumId}*, torre *${resolved}*.\n\nBuscando tus cargos pendientes... ⏳`,
+        },
+        context,
+      );
+      await this.showPendingCharges(context);
+    } else {
+      context.possibleCondominiums = filtered;
+      context.state = ConversationState.PAYMENT_AWAITING_CONDOMINIUM_SELECTION;
+      await this.showCondominiumOptions(context, filtered);
     }
   }
 
@@ -928,6 +1153,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
 
     const selected = context.possibleCondominiums[index - 1];
     context.selectedCondominium = selected;
+    // Aseguramos que el userId corresponda al condo seleccionado
+    // (cada condominio tiene un documento de usuario distinto).
+    if (selected.userId) context.userId = selected.userId;
+    if (selected.tower) context.tower = selected.tower;
     context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
 
     await this.sendAndLogMessage(
@@ -1103,25 +1332,73 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         return;
       }
 
-      context.userId = possibleCondos[0].userId;
+      const disambiguated = this.autoDisambiguateByPhone(possibleCondos);
+      if (disambiguated.length === 0) {
+        this.logger.warn(
+          `[handleDocumentsDept] Bloqueado por phone mismatch para ${phoneNumber}.`,
+        );
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.DOCUMENTS_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔒 Por seguridad, los datos deben coincidir con el teléfono registrado. Vuelve a intentarlo con tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+      const matches = disambiguated;
 
-      if (possibleCondos.length === 1) {
-        context.selectedCondominium = possibleCondos[0];
+      const ambiguousTowers = this.detectTowerAmbiguity(matches);
+      if (ambiguousTowers.length > 0) {
+        context.possibleCondominiums = matches;
+        context.possibleTowers = ambiguousTowers;
+        context.retryCount = 0;
+        context.state = ConversationState.DOCUMENTS_AWAITING_TOWER;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: this.formatTowerOptionsMessage(ambiguousTowers),
+          },
+          context,
+        );
+        return;
+      }
+
+      if (matches.length === 1) {
+        context.userId = matches[0].userId;
+        context.selectedCondominium = matches[0];
         context.retryCount = 0;
         context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message: `✅ ¡Te encontré! Estás en *${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}*.\n\nBuscando documentos disponibles... 📋`,
+            message: `✅ ¡Te encontré! Estás en *${matches[0].condominiumName || matches[0].condominiumId}*.\n\nBuscando documentos disponibles... 📋`,
           },
           context,
         );
         await this.showAvailableDocuments(context);
       } else {
-        context.possibleCondominiums = possibleCondos;
+        context.userId = undefined;
+        context.possibleCondominiums = matches;
         context.state =
           ConversationState.DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION;
-        await this.showCondominiumOptions(context, possibleCondos);
+        await this.showCondominiumOptions(context, matches);
       }
     } catch (error) {
       this.logger.error(
@@ -1140,6 +1417,125 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         },
         context,
       );
+    }
+  }
+
+  private async handleDocumentsTowerInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (
+      !context.possibleTowers ||
+      context.possibleTowers.length === 0 ||
+      !context.possibleCondominiums
+    ) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    const resolved = this.resolveTowerFromInput(text, context.possibleTowers);
+    if (!resolved) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré identificar la torre. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🤔 No reconocí esa torre. Responde con el *número* o el *nombre exacto*:\n\n${context.possibleTowers
+            .map((t, i) => `${i + 1}. ${t}`)
+            .join('\n')}\n\n_(Intento ${context.retryCount} de 3)_`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.tower = resolved;
+    const filtered = context.possibleCondominiums.filter(
+      (m) =>
+        m.tower && this.cleanInput(String(m.tower)) === this.cleanInput(resolved),
+    );
+
+    if (filtered.length === 0) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema filtrando por torre. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const phoneConflict = filtered.every(
+      (m) => m.phoneInDB === true && m.phoneMatches !== true,
+    );
+    if (phoneConflict) {
+      this.logger.warn(
+        `[handleDocumentsTower] Rechazado: torre "${resolved}" pertenece a otro teléfono (${phoneNumber}).`,
+      );
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.retryCount = 0;
+    context.possibleTowers = undefined;
+    // Solo fijamos userId cuando la torre filtra a un único match. Si quedan
+    // varios (caso residual: mismo condo+torre con 2 userIds), delegamos en
+    // showCondominiumOptions para que el usuario elija explícitamente.
+    if (filtered.length === 1) {
+      context.userId = filtered[0].userId;
+    } else {
+      context.userId = undefined;
+    }
+
+    if (filtered.length === 1) {
+      context.selectedCondominium = filtered[0];
+      context.possibleCondominiums = undefined;
+      context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `✅ ¡Te encontré! Estás en *${filtered[0].condominiumName || filtered[0].condominiumId}*, torre *${resolved}*.\n\nBuscando documentos disponibles... 📋`,
+        },
+        context,
+      );
+      await this.showAvailableDocuments(context);
+    } else {
+      context.possibleCondominiums = filtered;
+      context.state =
+        ConversationState.DOCUMENTS_AWAITING_CONDOMINIUM_SELECTION;
+      await this.showCondominiumOptions(context, filtered);
     }
   }
 
@@ -1169,6 +1565,8 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
 
     const selected = context.possibleCondominiums[index - 1];
     context.selectedCondominium = selected;
+    if (selected.userId) context.userId = selected.userId;
+    if (selected.tower) context.tower = selected.tower;
     context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
 
     await this.sendAndLogMessage(
@@ -1457,25 +1855,73 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         return;
       }
 
-      context.userId = possibleCondos[0].userId;
+      const disambiguated = this.autoDisambiguateByPhone(possibleCondos);
+      if (disambiguated.length === 0) {
+        this.logger.warn(
+          `[handleAccountDept] Bloqueado por phone mismatch para ${phoneNumber}.`,
+        );
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.ACCOUNT_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔒 Por seguridad, los datos deben coincidir con el teléfono registrado. Vuelve a intentarlo con tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+      const matches = disambiguated;
 
-      if (possibleCondos.length === 1) {
-        context.selectedCondominium = possibleCondos[0];
+      const ambiguousTowers = this.detectTowerAmbiguity(matches);
+      if (ambiguousTowers.length > 0) {
+        context.possibleCondominiums = matches;
+        context.possibleTowers = ambiguousTowers;
+        context.retryCount = 0;
+        context.state = ConversationState.ACCOUNT_AWAITING_TOWER;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: this.formatTowerOptionsMessage(ambiguousTowers),
+          },
+          context,
+        );
+        return;
+      }
+
+      if (matches.length === 1) {
+        context.userId = matches[0].userId;
+        context.selectedCondominium = matches[0];
         context.retryCount = 0;
         context.state = ConversationState.ACCOUNT_GENERATING;
         await this.sendAndLogMessage(
           {
             phoneNumber,
-            message: `✅ ¡Te encontré! Estás en *${possibleCondos[0].condominiumName || possibleCondos[0].condominiumId}*.\n\nGenerando tu estado de cuenta, un momento... 📊`,
+            message: `✅ ¡Te encontré! Estás en *${matches[0].condominiumName || matches[0].condominiumId}*.\n\nGenerando tu estado de cuenta, un momento... 📊`,
           },
           context,
         );
         await this.handleAccountGenerating(context);
       } else {
-        context.possibleCondominiums = possibleCondos;
+        context.userId = undefined;
+        context.possibleCondominiums = matches;
         context.state =
           ConversationState.ACCOUNT_AWAITING_CONDOMINIUM_SELECTION;
-        await this.showCondominiumOptions(context, possibleCondos);
+        await this.showCondominiumOptions(context, matches);
       }
     } catch (error) {
       this.logger.error(
@@ -1505,6 +1951,125 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     await this.handleAccountCondominiumSelection(context, text);
   }
 
+  private async handleAccountTowerInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (
+      !context.possibleTowers ||
+      context.possibleTowers.length === 0 ||
+      !context.possibleCondominiums
+    ) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    const resolved = this.resolveTowerFromInput(text, context.possibleTowers);
+    if (!resolved) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré identificar la torre. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🤔 No reconocí esa torre. Responde con el *número* o el *nombre exacto*:\n\n${context.possibleTowers
+            .map((t, i) => `${i + 1}. ${t}`)
+            .join('\n')}\n\n_(Intento ${context.retryCount} de 3)_`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.tower = resolved;
+    const filtered = context.possibleCondominiums.filter(
+      (m) =>
+        m.tower && this.cleanInput(String(m.tower)) === this.cleanInput(resolved),
+    );
+
+    if (filtered.length === 0) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema filtrando por torre. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const phoneConflict = filtered.every(
+      (m) => m.phoneInDB === true && m.phoneMatches !== true,
+    );
+    if (phoneConflict) {
+      this.logger.warn(
+        `[handleAccountTower] Rechazado: torre "${resolved}" pertenece a otro teléfono (${phoneNumber}).`,
+      );
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.retryCount = 0;
+    context.possibleTowers = undefined;
+    // Solo fijamos userId cuando la torre filtra a un único match. Si quedan
+    // varios (caso residual: mismo condo+torre con 2 userIds), delegamos en
+    // showCondominiumOptions para que el usuario elija explícitamente.
+    if (filtered.length === 1) {
+      context.userId = filtered[0].userId;
+    } else {
+      context.userId = undefined;
+    }
+
+    if (filtered.length === 1) {
+      context.selectedCondominium = filtered[0];
+      context.possibleCondominiums = undefined;
+      context.state = ConversationState.ACCOUNT_GENERATING;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `✅ ¡Te encontré! Estás en *${filtered[0].condominiumName || filtered[0].condominiumId}*, torre *${resolved}*.\n\nGenerando tu estado de cuenta, un momento... 📊`,
+        },
+        context,
+      );
+      await this.handleAccountGenerating(context);
+    } else {
+      context.possibleCondominiums = filtered;
+      context.state =
+        ConversationState.ACCOUNT_AWAITING_CONDOMINIUM_SELECTION;
+      await this.showCondominiumOptions(context, filtered);
+    }
+  }
+
   private async handleAccountCondominiumSelection(
     context: ConversationContext,
     text: string,
@@ -1531,6 +2096,8 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
 
     const selected = context.possibleCondominiums[index - 1];
     context.selectedCondominium = selected;
+    if (selected.userId) context.userId = selected.userId;
+    if (selected.tower) context.tower = selected.tower;
     context.state = ConversationState.ACCOUNT_GENERATING;
 
     await this.sendAndLogMessage(
@@ -1935,17 +2502,46 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       clientId: string;
       condominiumId: string;
       condominiumName?: string;
+      tower?: string;
+      userId?: string;
     }>,
   ) {
-    const { phoneNumber } = context;
+    const { phoneNumber, departmentNumber } = context;
 
-    let msg =
-      '🔎 Tienes registro en múltiples condominios. Selecciona el correcto:\n\n';
+    // Detectamos si hay múltiples opciones dentro del mismo condominio: en ese
+    // caso el nombre del condominio no alcanza como discriminador y debemos
+    // agregar torre / número de depto / fragmento de userId.
+    const condoCountById = new Map<string, number>();
+    for (const c of condominiums) {
+      const key = `${c.clientId}/${c.condominiumId}`;
+      condoCountById.set(key, (condoCountById.get(key) ?? 0) + 1);
+    }
+    const hasIntraCondoDuplicates = Array.from(condoCountById.values()).some(
+      (n) => n > 1,
+    );
+
+    const header = hasIntraCondoDuplicates
+      ? '🔎 Encontré varias unidades con esos datos. Selecciona la tuya:\n\n'
+      : '🔎 Tienes registro en múltiples condominios. Selecciona el correcto:\n\n';
+
+    let msg = header;
     condominiums.forEach((condo, index) => {
       const name = condo.condominiumName
         ? `"${condo.condominiumName}"`
         : `(ID: ${condo.condominiumId})`;
-      msg += `${index + 1}. Condominio ${name}\n`;
+
+      // Construimos un sufijo con torre + número cuando ayude a distinguir
+      const parts: string[] = [];
+      if (condo.tower) parts.push(`Torre ${condo.tower}`);
+      if (departmentNumber) parts.push(`#${departmentNumber}`);
+      // Como último recurso, mostramos los últimos 6 caracteres del userId
+      // para que dos opciones idénticas sigan siendo distinguibles.
+      if (hasIntraCondoDuplicates && condo.userId && parts.length === 0) {
+        parts.push(`ID ${condo.userId.slice(-6)}`);
+      }
+      const suffix = parts.length > 0 ? ` — ${parts.join(' · ')}` : '';
+
+      msg += `${index + 1}. Condominio ${name}${suffix}\n`;
     });
     msg += '\nEscribe el número de la opción deseada. 🙏';
 
@@ -2051,15 +2647,126 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
    * Busca en la colección 'users' dentro de cada condominio.
    * Devuelve clientId, condominiumId, userId y opcionalmente condominiumName.
    */
+  // ============================================================
+  // Helpers para el manejo de torres (flujo opcional)
+  // ============================================================
+
+  /**
+   * Detecta si las coincidencias encontradas pertenecen a torres distintas.
+   * Retorna el listado único de torres cuando hay ambigüedad (>=2 torres
+   * diferentes). Si hay una sola coincidencia, o todas las coincidencias
+   * están en la misma torre, o ninguna tiene torre (condominio sin torres),
+   * retorna arreglo vacío.
+   */
+  private detectTowerAmbiguity(
+    matches: Array<{ tower?: string }>,
+  ): string[] {
+    if (!matches || matches.length <= 1) return [];
+    const towers = Array.from(
+      new Set(
+        matches
+          .map((m) => (m.tower ? String(m.tower).trim() : ''))
+          .filter(Boolean),
+      ),
+    );
+    return towers.length > 1 ? towers : [];
+  }
+
+  /**
+   * Resuelve la torre a partir del texto del usuario.
+   * Acepta:
+   *  - Nombre exacto de la torre ("A", "B1", "Torre 2", "1", "2"...)
+   *  - Variantes tipo "torre A" cuando la torre se llama "A"
+   *  - Índice numérico ("1", "2"...) según el orden mostrado, SOLO si no hay
+   *    match por nombre (para condominios con torres numéricas, ej. "1" y "2",
+   *    siempre gana el match literal).
+   * La comparación es case-insensitive y normaliza espacios/acentos via cleanInput.
+   */
+  private resolveTowerFromInput(
+    text: string,
+    possibleTowers: string[],
+  ): string | null {
+    if (!possibleTowers || possibleTowers.length === 0) return null;
+    const cleaned = this.cleanInput(text);
+    if (!cleaned) return null;
+
+    // 1) Match por nombre (prioritario). Incluye variante "torre X".
+    const withoutPrefix = cleaned.replace(/^torre/, '').trim();
+    for (const t of possibleTowers) {
+      const normalized = this.cleanInput(String(t));
+      if (normalized === cleaned) return t;
+      if (withoutPrefix && normalized === withoutPrefix) return t;
+    }
+
+    // 2) Fallback por índice (1..n). Solo se usa cuando ninguna torre coincide
+    //    literalmente con el texto — así evitamos que en condominios con torres
+    //    "1" y "2" un input "2" devuelva la 2ª torre por posición cuando
+    //    realmente el usuario se refería a la torre llamada "2".
+    const asIndex = parseInt(cleaned, 10);
+    if (
+      !isNaN(asIndex) &&
+      String(asIndex) === cleaned &&
+      asIndex >= 1 &&
+      asIndex <= possibleTowers.length
+    ) {
+      return possibleTowers[asIndex - 1];
+    }
+
+    return null;
+  }
+
+  /**
+   * Intenta desambiguar por teléfono cuando hay varios matches.
+   * Regla:
+   *  - Si al menos un match tiene `phoneMatches === true`, devolvemos solo los
+   *    que coinciden (y suele quedar exactamente uno, caso sano).
+   *  - Si ninguno coincide pero todos tienen phone poblado y distinto, devolvemos
+   *    [] para que el caller rechace (posible suplantación).
+   *  - Si ninguno tiene phone poblado, devolvemos la lista original (no podemos
+   *    usar phone para filtrar → caemos al flujo de torre).
+   */
+  private autoDisambiguateByPhone<
+    T extends { phoneMatches?: boolean; phoneInDB?: boolean },
+  >(matches: T[]): T[] {
+    if (!matches || matches.length === 0) return matches;
+
+    const anyMatch = matches.some((m) => m.phoneMatches === true);
+    if (anyMatch) {
+      return matches.filter((m) => m.phoneMatches === true);
+    }
+
+    const allHavePhone = matches.every((m) => m.phoneInDB === true);
+    if (allHavePhone) {
+      // Todos tienen phone poblado pero ninguno coincide → no es este usuario
+      return [];
+    }
+
+    // Al menos uno sin phone poblado → no podemos decidir por phone, seguimos
+    return matches;
+  }
+
+  private formatTowerOptionsMessage(towers: string[]): string {
+    const list = towers.map((t, i) => `${i + 1}. ${t}`).join('\n');
+    return `🏢 Encontré varias unidades con ese número en distintas torres.\n\n¿En qué *torre* vives?\n\n${list}\n\nResponde con el *número* de la opción o el *nombre de la torre*.`;
+  }
+
   private async findUserCondominiums(
     originalPhoneWithPrefix: string, // Ej: 52155...
     email?: string,
     departmentNumber?: string,
+    tower?: string,
   ): Promise<Array<{
     clientId: string;
     condominiumId: string;
     userId: string;
     condominiumName?: string;
+    tower?: string;
+    // Si el teléfono en BD del residente coincide con el del chat. Se usa
+    // para auto-desambiguar y para validación estricta al elegir torre.
+    phoneMatches?: boolean;
+    // Indica si el residente tiene algún teléfono registrado. Cuando es false,
+    // no podemos validar pertenencia vía phone (admins que no poblaron phone).
+    phoneInDB?: boolean;
   }> | null> {
     if (!email || !departmentNumber) return null;
 
@@ -2068,6 +2775,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     const cleanedDept = this.cleanInput(departmentNumber);
     const deptAsNumber = Number(cleanedDept); // Por si el campo está guardado como número en Firestore
     const deptIsNumeric = !isNaN(deptAsNumber);
+    const cleanedTower = tower ? this.cleanInput(tower) : '';
 
     this.logger.log('Buscando condominios para usuario con datos:', {
       phoneOriginal: originalPhoneWithPrefix,
@@ -2151,6 +2859,9 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         condominiumId: string;
         userId: string;
         condominiumName?: string;
+        tower?: string;
+        phoneMatches?: boolean;
+        phoneInDB?: boolean;
       }> = [];
       const uniquePaths = new Set<string>();
 
@@ -2169,13 +2880,42 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
           const condominiumId = pathSegments[3];
           const userId = doc.id;
 
-          // Verificación suave del teléfono: solo advertencia, no bloquea
+          // Verificación de teléfono: se registra si coincide o no con el chat.
+          // NO se bloquea aquí (hay residentes sin phone poblado). Los callers
+          // deciden: auto-desambiguar cuando hay varios matches, o rechazar
+          // después de que el usuario elige torre si el phone no coincide.
           const userData = doc.data();
-          const phoneInDB = userData.phone ? String(userData.phone) : '';
-          if (phoneInDB && phoneInDB !== phoneForDB) {
+          const phoneInDBRaw = userData.phone ? String(userData.phone) : '';
+          // Normalizamos a 10 dígitos para comparar (tolerante a lada/prefijos)
+          const phoneInDBNormalized = phoneInDBRaw
+            ? this.toTenDigits(phoneInDBRaw)
+            : '';
+          const phoneMatches =
+            !!phoneInDBNormalized && phoneInDBNormalized === phoneForDB;
+          if (phoneInDBRaw && !phoneMatches) {
             this.logger.warn(
-              `Teléfono en DB "${phoneInDB}" ≠ teléfono del chat "${phoneForDB}" para usuario ${userId}. Continuando de todas formas.`,
+              `Teléfono en DB "${phoneInDBRaw}" (normalizado: "${phoneInDBNormalized}") ≠ chat "${phoneForDB}" para usuario ${userId}.`,
             );
+          }
+
+          // Torre del usuario (puede estar ausente o vacía; se preserva como
+          // viene para mostrarla al usuario, la comparación se hace con
+          // cleanInput para ser tolerante a mayúsculas/espacios).
+          const userTowerRaw =
+            userData.tower !== undefined && userData.tower !== null
+              ? String(userData.tower).trim()
+              : '';
+
+          // Si se pasó `tower` como filtro, descartar usuarios cuya torre
+          // no coincida. Si el usuario en BD no tiene torre, no lo descartamos
+          // porque puede ser un condominio sin torres que por casualidad
+          // comparte número — pero en ese caso el caller solo debería pasar
+          // `tower` cuando ya detectó ambigüedad.
+          if (cleanedTower) {
+            const userTowerClean = this.cleanInput(userTowerRaw);
+            if (!userTowerClean || userTowerClean !== cleanedTower) {
+              continue;
+            }
           }
 
           let condominiumName: string | undefined = undefined;
@@ -2196,7 +2936,15 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
             );
           }
 
-          results.push({ clientId, condominiumId, userId, condominiumName });
+          results.push({
+            clientId,
+            condominiumId,
+            userId,
+            condominiumName,
+            tower: userTowerRaw || undefined,
+            phoneMatches,
+            phoneInDB: !!phoneInDBRaw,
+          });
         } else {
           this.logger.warn(
             `Ruta de usuario encontrada no coincide con el patrón esperado: ${doc.ref.path}`,
