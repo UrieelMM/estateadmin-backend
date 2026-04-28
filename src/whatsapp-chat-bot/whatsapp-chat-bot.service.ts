@@ -3458,6 +3458,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
 
   /**
    * Verifica si el texto es un saludo o palabra clave para iniciar/reiniciar.
+   *
+   * Usa coincidencia por *palabra completa* (regex con boundaries de espacio)
+   * en lugar de substring para no falsear con nombres como "Alonso" (que
+   * contenía "alo") o emails como "info@..." (que contenía "info").
    */
   private isGreeting(text: string): boolean {
     const greetings = [
@@ -3485,7 +3489,13 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       'comprobante',
       'recibo',
     ];
-    return greetings.some((g) => text.includes(g));
+    return greetings.some((g) => {
+      const escaped = g.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // (inicio | espacio) seguido del saludo y (fin | espacio) — exige que
+      // el saludo sea una palabra/frase completa, no parte de otra palabra.
+      const re = new RegExp(`(^|\\s)${escaped}(\\s|$)`);
+      return re.test(text);
+    });
   }
 
   /**
