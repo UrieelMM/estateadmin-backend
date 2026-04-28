@@ -4,6 +4,7 @@ import { ToolsService } from './tools.service';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AttendanceQrController } from './attendance-qr.controller';
 import { ScheduledVisitsQrController } from './scheduled-visits-qr.controller';
+import { ScheduledVisitsCasetaController } from './scheduled-visits-caseta.controller';
 import { WhatsappChatBotModule } from '../whatsapp-chat-bot/whatsapp-chat-bot.module';
 
 @Module({
@@ -22,6 +23,7 @@ import { WhatsappChatBotModule } from '../whatsapp-chat-bot/whatsapp-chat-bot.mo
     ToolsController,
     AttendanceQrController,
     ScheduledVisitsQrController,
+    ScheduledVisitsCasetaController,
   ],
   providers: [ToolsService],
   exports: [ToolsService],

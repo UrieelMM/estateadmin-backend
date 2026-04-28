@@ -34,4 +34,9 @@ export class RegisterVisitEntryDto {
   @IsOptional()
   @IsString()
   condominiumId?: string;
+
+  /** PIN de 6 dígitos de la caseta. Requerido si el condominio tiene PIN configurado. */
+  @IsOptional()
+  @IsString()
+  pin?: string;
 }

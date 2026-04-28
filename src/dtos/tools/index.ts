@@ -14,6 +14,11 @@ import {
   RegisterVisitEntryDto,
   VisitRegisterType,
 } from './visit-qr.dto';
+import {
+  SetCasetaPinDto,
+  CasetaPinStatusQueryDto,
+  ClearCasetaPinDto,
+} from './visit-caseta-pin.dto';
 
 export class SearchPlacesDto {
   latitude: number;
@@ -57,4 +62,7 @@ export {
   ValidateVisitQrQueryDto,
   RegisterVisitEntryDto,
   VisitRegisterType,
+  SetCasetaPinDto,
+  CasetaPinStatusQueryDto,
+  ClearCasetaPinDto,
 };

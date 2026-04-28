@@ -79,6 +79,9 @@ export interface CreateScheduledVisitResult {
 }
 
 const VISITS_SUBCOLLECTION = 'scheduledVisits';
+// Path de la configuración de caseta dentro de cada condominio
+const CASETA_SETTINGS_PATH = 'settings';
+const CASETA_SETTINGS_DOC = 'scheduledVisitsCaseta';
 // Zona horaria por defecto. Si en el futuro el condominio tiene su propia tz,
 // podríamos leerla del documento del condominio.
 const DEFAULT_TIMEZONE = 'America/Mexico_City';
@@ -87,6 +90,17 @@ const DEFAULT_TIMEZONE = 'America/Mexico_City';
 const GRACE_MINUTES_AFTER_DEPARTURE = 120;
 // Máximo número de días en el futuro para programar una visita.
 const MAX_DAYS_IN_FUTURE = 30;
+// Ventana de tolerancia para registrar entrada/salida en la caseta:
+// el visitante puede llegar 1 h antes y hasta 4 h después de la hora
+// programada de llegada. Para la salida, 1 h antes y 4 h después de la
+// hora programada de salida.
+const CHECK_IN_EARLY_GRACE_MIN = 60;
+const CHECK_IN_LATE_TOLERANCE_HOURS = 4;
+const CHECK_OUT_EARLY_GRACE_MIN = 60;
+const CHECK_OUT_LATE_TOLERANCE_HOURS = 4;
+// Hard cap absoluto: incluso con tolerancia, una visita "en curso" sin checkout
+// se da por cerrada después de 24 h del check-in real.
+const MAX_AFTER_CHECKIN_MS = 24 * 60 * 60_000;
 
 @Injectable()
 export class ScheduledVisitsService implements OnModuleInit {
@@ -826,9 +840,9 @@ export class ScheduledVisitsService implements OnModuleInit {
     todayArrival.setHours(aH, aM, 0, 0);
     const todayDeparture = new Date(now);
     todayDeparture.setHours(dH, dM, 0, 0);
-    // Permitimos 30 min antes y 2h después como periodo de gracia
-    const grace = 30 * 60_000;
-    const tail = 120 * 60_000;
+    // Tolerancia: 30 min antes de la llegada y 4h después de la salida
+    const grace = CHECK_IN_EARLY_GRACE_MIN * 60_000;
+    const tail = CHECK_OUT_LATE_TOLERANCE_HOURS * 60 * 60_000;
     if (now.getTime() < todayArrival.getTime() - grace) return false;
     if (now.getTime() > todayDeparture.getTime() + tail) return false;
     return true;
@@ -1136,6 +1150,10 @@ export class ScheduledVisitsService implements OnModuleInit {
   ): Promise<{
     valid: boolean;
     reason?: string;
+    /** Acción que la caseta debería tomar: 'check-in' | 'check-out' | null */
+    action?: 'check-in' | 'check-out' | null;
+    /** Indica si el condominio tiene PIN configurado para registrar entradas. */
+    requiresPin?: boolean;
     visit?: any;
   }> {
     const snap = await this.findVisitByQrId(qrId, clientId, condominiumId);
@@ -1153,19 +1171,126 @@ export class ScheduledVisitsService implements OnModuleInit {
     if (data.status === 'expired') {
       return { valid: false, reason: 'Visita expirada.' };
     }
-
-    const nowDate = new Date();
-    const expiresAt: admin.firestore.Timestamp | undefined = data.expiresAt;
-    if (expiresAt && expiresAt.toMillis() < nowDate.getTime()) {
-      await snap.ref.update({
-        status: 'expired',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      return { valid: false, reason: 'Visita expirada.' };
+    // Visita única ya completada (entrada y salida registradas)
+    if (
+      data.visitType !== 'recurring' &&
+      data.usedAt &&
+      data.exitAt
+    ) {
+      return {
+        valid: false,
+        reason: 'Visita ya completada (entrada y salida registradas).',
+      };
     }
 
-    // Validación específica por tipo de visita
+    const nowDate = new Date();
+    const nowMs = nowDate.getTime();
+
     const isRecurring = data.visitType === 'recurring' && data.recurrence;
+    const isSinglePreCheckIn =
+      data.visitType !== 'recurring' && !data.usedAt;
+    const isSingleInProgress =
+      data.visitType !== 'recurring' && !!data.usedAt && !data.exitAt;
+
+    // Tolerancia para visitas SINGLE (recurrentes usan isWithinRecurrenceWindow)
+    if (isSinglePreCheckIn && data.arrivalAt) {
+      const scheduledArrivalMs = data.arrivalAt.toMillis();
+      const earliestCheckInMs =
+        scheduledArrivalMs - CHECK_IN_EARLY_GRACE_MIN * 60_000;
+      const latestCheckInMs =
+        scheduledArrivalMs + CHECK_IN_LATE_TOLERANCE_HOURS * 60 * 60_000;
+      if (nowMs < earliestCheckInMs) {
+        return {
+          valid: false,
+          reason: `Aún es muy temprano. Puedes registrar la entrada desde 1 hora antes de la hora programada.`,
+        };
+      }
+      if (nowMs > latestCheckInMs) {
+        // Marcamos como expirada para no procesarla en futuros escaneos
+        if (data.status === 'active') {
+          await snap.ref.update({
+            status: 'expired',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+        return {
+          valid: false,
+          reason: `Pasaron más de ${CHECK_IN_LATE_TOLERANCE_HOURS}h de la hora programada de llegada. La visita venció.`,
+        };
+      }
+    } else if (isSingleInProgress) {
+      const scheduledDepartureMs = data.departureAt
+        ? data.departureAt.toMillis()
+        : 0;
+      const usedAtMs =
+        data.usedAt && typeof data.usedAt.toMillis === 'function'
+          ? data.usedAt.toMillis()
+          : 0;
+      // Tope flexible: 4h después de la salida programada O 4h después del
+      // check-in real (lo que dé más margen, para cubrir check-ins muy tardíos).
+      const departureToleranceMs =
+        scheduledDepartureMs + CHECK_OUT_LATE_TOLERANCE_HOURS * 60 * 60_000;
+      const checkinToleranceMs =
+        usedAtMs + CHECK_OUT_LATE_TOLERANCE_HOURS * 60 * 60_000;
+      const latestCheckOutMs = Math.max(
+        departureToleranceMs,
+        checkinToleranceMs,
+      );
+      const earliestCheckOutMs = scheduledDepartureMs
+        ? scheduledDepartureMs - CHECK_OUT_EARLY_GRACE_MIN * 60_000
+        : 0;
+
+      // Hard cap absoluto: 24h después del check-in
+      if (usedAtMs && nowMs > usedAtMs + MAX_AFTER_CHECKIN_MS) {
+        await snap.ref.update({
+          status: 'expired',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        return {
+          valid: false,
+          reason:
+            'Pasaron más de 24 horas desde la entrada sin registrar salida. Contacta al administrador.',
+        };
+      }
+      // Tope suave por tolerancia
+      if (nowMs > latestCheckOutMs) {
+        return {
+          valid: false,
+          reason: `Pasaron más de ${CHECK_OUT_LATE_TOLERANCE_HOURS}h del horario de salida programado.`,
+        };
+      }
+      // Permitimos check-outs anticipados desde el check-in (no bloqueamos por
+      // earliestCheckOutMs porque a veces el visitante sale antes de la hora
+      // programada y eso es válido).
+      void earliestCheckOutMs;
+    } else if (!isRecurring) {
+      // Edge case: visita single ya completada cae arriba; aquí caen recurrentes
+      // o estados inesperados. Aplicamos expiresAt clásico.
+      const expiresAt: admin.firestore.Timestamp | undefined = data.expiresAt;
+      if (expiresAt && expiresAt.toMillis() < nowMs) {
+        if (data.status === 'active') {
+          await snap.ref.update({
+            status: 'expired',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+        return { valid: false, reason: 'Visita expirada.' };
+      }
+    } else {
+      // Recurrente: aplicar expiresAt (= recurrence.endDate + grace)
+      const expiresAt: admin.firestore.Timestamp | undefined = data.expiresAt;
+      if (expiresAt && expiresAt.toMillis() < nowMs) {
+        if (data.status === 'active') {
+          await snap.ref.update({
+            status: 'expired',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+        return { valid: false, reason: 'Visita expirada.' };
+      }
+    }
+
+    // Validación específica por tipo de visita (single ya validado arriba con tolerancia)
     if (isRecurring) {
       const r = data.recurrence;
       const recurrence: VisitRecurrence = {
@@ -1184,17 +1309,57 @@ export class ScheduledVisitsService implements OnModuleInit {
         };
       }
     }
-    // Para 'single' no aplicamos check de ventana — si no expiró, es válido en
-    // cualquier momento del rango (la caseta es la responsable del juicio final).
+
+    // ¿Está configurado un PIN de caseta para este condominio?
+    const requiresPin = await this.isCasetaPinConfigured(
+      data.clientId,
+      data.condominiumId,
+    );
+
+    // Determinar la acción que la caseta debería tomar.
+    let action: 'check-in' | 'check-out' | null = null;
+    if (isRecurring) {
+      // En recurrentes no podemos saber el estado del día actual sin consultar
+      // la subcolección entries. Devolvemos null y la caseta decide / pregunta.
+      action = null;
+    } else if (!data.usedAt) {
+      action = 'check-in';
+    } else if (data.usedAt && !data.exitAt) {
+      action = 'check-out';
+    }
 
     return {
       valid: true,
+      action,
+      requiresPin,
       visit: {
         id: snap.id,
         visitType: data.visitType || 'single',
         visitorName: data.visitorName,
+        visitorVehicle: data.visitorVehicle ?? null,
+
+        // Tiempos PROGRAMADOS (lo que registró el residente al crear la visita)
+        scheduledArrival: data.arrivalAtLabel,
+        scheduledDeparture: data.departureAtLabel,
+        scheduledArrivalAt: data.arrivalAt ?? null,
+        scheduledDepartureAt: data.departureAt ?? null,
+
+        // Aliases retrocompatibles — los nombres viejos apuntan a lo PROGRAMADO
         arrivalAt: data.arrivalAtLabel,
         departureAt: data.departureAtLabel,
+
+        // Tiempos REALES (los que registró la caseta al escanear)
+        checkInAt: data.usedAt ?? null,
+        checkOutAt: data.exitAt ?? null,
+        // Aliases retrocompatibles
+        usedAt: data.usedAt ?? null,
+        exitAt: data.exitAt ?? null,
+
+        // Booleans útiles para que el front decida qué botón mostrar
+        needsCheckIn: !data.usedAt && !isRecurring,
+        needsCheckOut: !!data.usedAt && !data.exitAt && !isRecurring,
+        isComplete: !!data.usedAt && !!data.exitAt && !isRecurring,
+
         recurrence: data.recurrence
           ? {
               daysOfWeek: data.recurrence.daysOfWeek,
@@ -1204,9 +1369,8 @@ export class ScheduledVisitsService implements OnModuleInit {
               endDate: data.recurrence.endDate?.toDate?.() ?? null,
             }
           : null,
+
         status: data.status,
-        usedAt: data.usedAt,
-        exitAt: data.exitAt,
         resident: data.resident,
         condominiumName: data.condominiumName,
       },
@@ -1228,6 +1392,7 @@ export class ScheduledVisitsService implements OnModuleInit {
     type: 'check-in' | 'check-out',
     clientId?: string,
     condominiumId?: string,
+    pin?: string,
   ): Promise<{ ok: boolean; reason?: string; entryId?: string }> {
     const snap = await this.findVisitByQrId(qrId, clientId, condominiumId);
     if (!snap || !snap.exists) {
@@ -1237,12 +1402,58 @@ export class ScheduledVisitsService implements OnModuleInit {
     if (data.accessToken !== token) {
       return { ok: false, reason: 'Token inválido.' };
     }
-    if (data.status === 'cancelled' || data.status === 'expired') {
-      return { ok: false, reason: `Visita ${data.status}.` };
+    if (data.status === 'cancelled') {
+      return { ok: false, reason: 'Visita cancelada.' };
+    }
+
+    // ── Validación de PIN de caseta (si está configurado) ──
+    // El PIN evita que el propio visitante autoregistre su entrada/salida
+    // escaneando su QR.
+    const pinConfigured = await this.isCasetaPinConfigured(
+      data.clientId,
+      data.condominiumId,
+    );
+    if (pinConfigured) {
+      if (!pin) {
+        return { ok: false, reason: 'PIN de caseta requerido.' };
+      }
+      const pinOk = await this.verifyCasetaPin(
+        data.clientId,
+        data.condominiumId,
+        pin,
+      );
+      if (!pinOk) {
+        return { ok: false, reason: 'PIN incorrecto.' };
+      }
+    }
+
+    const isRecurring = data.visitType === 'recurring' && data.recurrence;
+    const isSingleInProgress =
+      !isRecurring && !!data.usedAt && !data.exitAt;
+
+    // Si está expirada pero el caso es checkout pendiente (single in-progress),
+    // permitimos el check-out siempre que no hayan pasado más de 24h del check-in.
+    if (data.status === 'expired') {
+      if (isSingleInProgress && type === 'check-out') {
+        const usedAtMs =
+          data.usedAt && typeof data.usedAt.toMillis === 'function'
+            ? data.usedAt.toMillis()
+            : 0;
+        const MAX_AFTER_CHECKIN_MS = 24 * 60 * 60_000;
+        if (!usedAtMs || Date.now() > usedAtMs + MAX_AFTER_CHECKIN_MS) {
+          return {
+            ok: false,
+            reason:
+              'Pasaron más de 24 horas desde la entrada. Contacta al administrador.',
+          };
+        }
+        // OK: reabrimos la visita para registrar la salida real.
+      } else {
+        return { ok: false, reason: 'Visita expirada.' };
+      }
     }
 
     const now = admin.firestore.FieldValue.serverTimestamp();
-    const isRecurring = data.visitType === 'recurring' && data.recurrence;
 
     if (isRecurring) {
       // Validar ventana antes de registrar
@@ -1305,14 +1516,21 @@ export class ScheduledVisitsService implements OnModuleInit {
       return { ok: true, entryId: entryRef.id };
     }
 
-    // Single (comportamiento original)
+    // Single (comportamiento original mejorado)
     if (type === 'check-in') {
       if (data.usedAt) {
         return { ok: false, reason: 'La visita ya tenía registro de entrada.' };
       }
+      // Al hacer check-in, extendemos `expiresAt` a check-in + 24h para que la
+      // visita no se "expire" por el `departureAt` programado mientras el
+      // visitante todavía está adentro.
+      const newExpiresAt = admin.firestore.Timestamp.fromMillis(
+        Date.now() + 24 * 60 * 60_000,
+      );
       await snap.ref.update({
         usedAt: now,
         status: 'used',
+        expiresAt: newExpiresAt,
         updatedAt: now,
       });
       return { ok: true };
@@ -1320,12 +1538,138 @@ export class ScheduledVisitsService implements OnModuleInit {
       if (data.exitAt) {
         return { ok: false, reason: 'La visita ya tenía registro de salida.' };
       }
+      // Al hacer check-out la visita queda completa.
       await snap.ref.update({
         exitAt: now,
+        status: 'completed',
         updatedAt: now,
       });
       return { ok: true };
     }
+  }
+
+  // =========================================================================
+  // PIN de caseta (anti-autovalidación por el visitante)
+  // =========================================================================
+
+  /**
+   * Devuelve la referencia al doc de configuración de caseta del condominio.
+   */
+  private casetaSettingsRef(clientId: string, condominiumId: string) {
+    return this.firestore.doc(
+      `clients/${clientId}/condominiums/${condominiumId}/${CASETA_SETTINGS_PATH}/${CASETA_SETTINGS_DOC}`,
+    );
+  }
+
+  /**
+   * Persiste un PIN de 6 dígitos hasheado para el condominio.
+   * Lo llama el endpoint admin tras verificar el ID token de Firebase.
+   * @param updatedBy uid del admin que setea/actualiza el PIN.
+   */
+  async setCasetaPin(
+    clientId: string,
+    condominiumId: string,
+    pin: string,
+    updatedBy?: string,
+  ): Promise<void> {
+    if (!/^\d{6}$/.test(pin)) {
+      throw new Error('El PIN debe ser exactamente 6 dígitos numéricos.');
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(pin, salt, 64).toString('hex');
+    await this.casetaSettingsRef(clientId, condominiumId).set(
+      {
+        pinHash: hash,
+        pinSalt: salt,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: updatedBy ?? null,
+      },
+      { merge: true },
+    );
+    this.logger.log(
+      `PIN de caseta actualizado para clients/${clientId}/condominiums/${condominiumId}`,
+    );
+  }
+
+  /**
+   * Elimina el PIN del condominio (vuelve a "sin PIN").
+   */
+  async clearCasetaPin(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<void> {
+    await this.casetaSettingsRef(clientId, condominiumId).set(
+      {
+        pinHash: admin.firestore.FieldValue.delete(),
+        pinSalt: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+  }
+
+  /**
+   * Indica si hay un PIN configurado (sin revelar el hash).
+   */
+  async isCasetaPinConfigured(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<boolean> {
+    if (!clientId || !condominiumId) return false;
+    const snap = await this.casetaSettingsRef(clientId, condominiumId).get();
+    if (!snap.exists) return false;
+    const data = snap.data();
+    return !!(data?.pinHash && data?.pinSalt);
+  }
+
+  /**
+   * Devuelve el status de configuración del PIN para mostrar en el panel
+   * admin (sin exponer el hash).
+   */
+  async getCasetaPinStatus(
+    clientId: string,
+    condominiumId: string,
+  ): Promise<{
+    configured: boolean;
+    updatedAt: admin.firestore.Timestamp | null;
+    updatedBy: string | null;
+  }> {
+    const snap = await this.casetaSettingsRef(clientId, condominiumId).get();
+    if (!snap.exists) {
+      return { configured: false, updatedAt: null, updatedBy: null };
+    }
+    const data = snap.data() || {};
+    return {
+      configured: !!(data.pinHash && data.pinSalt),
+      updatedAt: data.updatedAt ?? null,
+      updatedBy: data.updatedBy ?? null,
+    };
+  }
+
+  /**
+   * Verifica si un PIN candidato coincide con el del condominio.
+   * Usa comparación timing-safe para evitar leaks por side-channel.
+   */
+  async verifyCasetaPin(
+    clientId: string,
+    condominiumId: string,
+    candidatePin: string,
+  ): Promise<boolean> {
+    if (!candidatePin) return false;
+    const snap = await this.casetaSettingsRef(clientId, condominiumId).get();
+    if (!snap.exists) return false;
+    const data = snap.data();
+    if (!data?.pinHash || !data?.pinSalt) return false;
+    let candidateHash: Buffer;
+    try {
+      candidateHash = crypto.scryptSync(candidatePin, data.pinSalt, 64);
+    } catch (e) {
+      this.logger.error(`Error hasheando PIN candidato: ${e.message}`);
+      return false;
+    }
+    const storedHash = Buffer.from(data.pinHash, 'hex');
+    if (candidateHash.length !== storedHash.length) return false;
+    return crypto.timingSafeEqual(candidateHash, storedHash);
   }
 
   /**

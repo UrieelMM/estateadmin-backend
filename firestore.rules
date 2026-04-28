@@ -64,7 +64,8 @@ service cloud.firestore {
         'paymentReconciliations',
         'expenseReconciliations',
         'notificationEvents',
-        'notificationQueue'
+        'notificationQueue',
+        'settings'
       ].hasAny([collectionName]);
     }
     function isSameClientUser(clientId, userId) {
@@ -339,6 +340,14 @@ service cloud.firestore {
           allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
         }
 
+        // ─── Settings de caseta para visitas programadas ───
+        // Contiene el HASH del PIN de la caseta. NUNCA debe ser legible
+        // ni escribible directamente desde el cliente. La gestión la hace
+        // el backend (Admin SDK) vía endpoint con auth verificada.
+        match /settings/scheduledVisitsCaseta {
+          allow read, write: if false;
+        }
+
         // ─── Visitas programadas vía chatbot de WhatsApp ───
         // Escritura: solo el backend (Admin SDK) crea las visitas — desde el
         // panel únicamente admins pueden actualizar (cancelar) o leer.
@@ -395,7 +404,8 @@ service cloud.firestore {
         
         // ─── Subcolecciones genéricas de segundo nivel ───
         match /{collection}/{docId} {
-          allow read:   if belongsToClientOrSuperAdmin(clientId);
+          allow read:   if !isProtectedCondominiumCollection(collection)
+                         && belongsToClientOrSuperAdmin(clientId);
           allow create, update: if !isProtectedCondominiumCollection(collection)
                                   && ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
           allow delete: if !isProtectedCondominiumCollection(collection)

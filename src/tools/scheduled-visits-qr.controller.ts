@@ -68,6 +68,7 @@ export class ScheduledVisitsQrController {
       body.type,
       body.clientId,
       body.condominiumId,
+      body.pin,
     );
   }
 }
