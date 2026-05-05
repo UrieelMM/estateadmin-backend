@@ -18,6 +18,10 @@ import {
   ScheduledVisitsService,
   ParsedDateTime,
 } from './scheduled-visits.service';
+import {
+  CommonAreasBookingService,
+  CommonArea,
+} from './common-areas-booking.service';
 
 // Asegúrate de inicializar Firebase Admin en tu módulo principal (e.g., app.module.ts)
 // import * as admin from 'firebase-admin';
@@ -74,6 +78,18 @@ enum ConversationState {
   // Compartidos final
   VISIT_AWAITING_VEHICLE = 'VISIT_AWAITING_VEHICLE',
   VISIT_CONFIRMING = 'VISIT_CONFIRMING',
+
+  // Estados para reservar área común (opción 5)
+  AREA_AWAITING_EMAIL = 'AREA_AWAITING_EMAIL',
+  AREA_AWAITING_DEPARTMENT = 'AREA_AWAITING_DEPARTMENT',
+  AREA_AWAITING_TOWER = 'AREA_AWAITING_TOWER',
+  AREA_MULTIPLE_CONDOMINIUMS = 'AREA_MULTIPLE_CONDOMINIUMS',
+  AREA_AWAITING_CONDOMINIUM_SELECTION = 'AREA_AWAITING_CONDOMINIUM_SELECTION',
+  AREA_AWAITING_AREA_SELECTION = 'AREA_AWAITING_AREA_SELECTION',
+  AREA_AWAITING_DATE = 'AREA_AWAITING_DATE',
+  AREA_AWAITING_START_TIME = 'AREA_AWAITING_START_TIME',
+  AREA_AWAITING_END_TIME = 'AREA_AWAITING_END_TIME',
+  AREA_CONFIRMING = 'AREA_CONFIRMING',
 
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR',
@@ -144,6 +160,18 @@ interface ConversationContext {
   userId?: string;
   // Control de reintentos por campo
   retryCount?: number;
+  // Para flujo de reserva de áreas comunes
+  commonAreaDraft?: {
+    availableAreas?: CommonArea[];
+    selectedAreaId?: string;
+    selectedAreaName?: string;
+    openTime?: string;
+    closeTime?: string;
+    rate?: number;
+    eventDay?: string;    // YYYY-MM-DD
+    startTime?: string;   // HH:MM
+    endTime?: string;     // HH:MM
+  };
 }
 
 // Colecciones de Firestore
@@ -159,6 +187,7 @@ export class WhatsappChatBotService implements OnModuleInit {
     private readonly publicDocumentsService: PublicDocumentsService,
     private readonly accountStatementService: AccountStatementService,
     private readonly scheduledVisitsService: ScheduledVisitsService,
+    private readonly commonAreasBookingService: CommonAreasBookingService,
   ) {}
 
   onModuleInit() {
@@ -775,6 +804,44 @@ export class WhatsappChatBotService implements OnModuleInit {
         await this.handleVisitConfirmation(context, text);
         break;
 
+      // Estados para reserva de área común (opción 5)
+      case ConversationState.AREA_AWAITING_EMAIL:
+        await this.handleAreaEmailInput(context, text);
+        break;
+
+      case ConversationState.AREA_AWAITING_DEPARTMENT:
+        await this.handleAreaDepartmentInput(context, text);
+        break;
+
+      case ConversationState.AREA_AWAITING_TOWER:
+        await this.handleAreaTowerInput(context, text);
+        break;
+
+      case ConversationState.AREA_MULTIPLE_CONDOMINIUMS:
+      case ConversationState.AREA_AWAITING_CONDOMINIUM_SELECTION:
+        await this.handleAreaCondominiumSelection(context, text);
+        break;
+
+      case ConversationState.AREA_AWAITING_AREA_SELECTION:
+        await this.handleAreaSelectionInput(context, text);
+        break;
+
+      case ConversationState.AREA_AWAITING_DATE:
+        await this.handleAreaDateInput(context, text);
+        break;
+
+      case ConversationState.AREA_AWAITING_START_TIME:
+        await this.handleAreaStartTimeInput(context, text);
+        break;
+
+      case ConversationState.AREA_AWAITING_END_TIME:
+        await this.handleAreaEndTimeInput(context, text);
+        break;
+
+      case ConversationState.AREA_CONFIRMING:
+        await this.handleAreaConfirmation(context, text);
+        break;
+
       case ConversationState.COMPLETED:
         context.state = ConversationState.MENU_SELECTION;
         await this.sendAndLogMessage(
@@ -822,8 +889,9 @@ export class WhatsappChatBotService implements OnModuleInit {
 2️⃣ Consultar documentos del condominio
 3️⃣ Ver mi estado de cuenta
 4️⃣ Registrar una visita y obtener QR
+5️⃣ Reservar un área común
 
-Responde con *1*, *2*, *3* o *4*.
+Responde con *1*, *2*, *3*, *4* o *5*.
 _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   }
 
@@ -888,6 +956,20 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         );
         break;
 
+      case 5:
+        context.state = ConversationState.AREA_AWAITING_EMAIL;
+        context.retryCount = 0;
+        context.commonAreaDraft = {};
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '🏊 *Reservar área común*\n\nVoy a ayudarte a reservar una de las áreas de tu condominio. Primero necesito verificar tu identidad.\n\n¿Cuál es tu correo electrónico registrado en la plataforma?',
+          },
+          context,
+        );
+        break;
+
       default:
         await this.sendAndLogMessage(
           {
@@ -913,6 +995,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     context.availableDocuments = undefined;
     context.documentKeys = undefined;
     context.visitDraft = undefined;
+    context.commonAreaDraft = undefined;
     context.userId = undefined;
     context.retryCount = 0;
   }
@@ -4854,6 +4937,841 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         context,
       );
     }
+  }
+
+  // ===========================================================================
+  // Flujo: Reservar área común (opción 5)
+  // ===========================================================================
+
+  /** Paso 1 – Recibe el correo del residente y lo verifica (mismo patrón que opción 4) */
+  private async handleAreaEmailInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (!this.isValidEmail(text)) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '😅 Parece que hay un problema con el correo. Volvamos al menú.\n\n' +
+              this.getMenuMessage(),
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `📧 Ese correo no parece válido. Debe tener el formato *nombre@dominio.com*\n\n_(Intento ${context.retryCount} de 3 — escribe *cancelar* para salir)_`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.email = this.cleanInputKeepArroba(text);
+    context.retryCount = 0;
+    context.state = ConversationState.AREA_AWAITING_DEPARTMENT;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          '✉️ Perfecto. Ahora dime tu *número de departamento o casa* tal como aparece en la plataforma (ej: 101, A-3, 463).',
+      },
+      context,
+    );
+  }
+
+  /** Paso 2 – Recibe el número de departamento y busca al usuario (idéntico al flujo de visitas) */
+  private async handleAreaDepartmentInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    context.departmentNumber = text;
+
+    try {
+      const possibleCondos = await this.findUserCondominiums(
+        context.phoneNumber,
+        context.email,
+        context.departmentNumber,
+      );
+
+      if (!possibleCondos || possibleCondos.length === 0) {
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message:
+                '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número coincidan exactamente con los registrados.\n\n' +
+                this.getMenuMessage(),
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.AREA_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔍 No encontré ninguna cuenta con esos datos. ¿Puedes intentarlo de nuevo? Ingresa tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+
+      // Auto-desambiguación por teléfono (mismo patrón que pagos/documentos/visitas)
+      const disambiguated = this.autoDisambiguateByPhone(possibleCondos);
+      if (disambiguated.length === 0) {
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
+            },
+            context,
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.AREA_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔒 Por seguridad, los datos deben coincidir con el teléfono registrado. Vuelve a intentarlo con tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+      const matches = disambiguated;
+
+      const ambiguousTowers = this.detectTowerAmbiguity(matches);
+      if (ambiguousTowers.length > 0) {
+        context.possibleCondominiums = matches;
+        context.possibleTowers = ambiguousTowers;
+        context.retryCount = 0;
+        context.state = ConversationState.AREA_AWAITING_TOWER;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: this.formatTowerOptionsMessage(ambiguousTowers),
+          },
+          context,
+        );
+        return;
+      }
+
+      context.retryCount = 0;
+      if (matches.length === 1) {
+        context.userId = matches[0].userId;
+        context.selectedCondominium = matches[0];
+        if (matches[0].tower) context.tower = matches[0].tower;
+        await this.continueAreaAfterAuth(context);
+      } else {
+        context.userId = undefined;
+        context.possibleCondominiums = matches;
+        context.state = ConversationState.AREA_AWAITING_CONDOMINIUM_SELECTION;
+        await this.showCondominiumOptions(context, matches);
+      }
+    } catch (error) {
+      this.logger.error(
+        `❌ [handleAreaDept] Error buscando condominios en ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema buscando tu información. Por favor, intenta de nuevo más tarde escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  /** Paso 2b – Selección de torre cuando hay ambigüedad (idéntico al flujo de visitas) */
+  private async handleAreaTowerInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    if (
+      !context.possibleTowers ||
+      context.possibleTowers.length === 0 ||
+      !context.possibleCondominiums
+    ) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    const resolved = this.resolveTowerFromInput(text, context.possibleTowers);
+    if (!resolved) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `😅 No logré identificar la torre. Volvamos al menú.\n\n${this.getMenuMessage()}`,
+          },
+          context,
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🤔 No reconocí esa torre. Responde con el *número* o el *nombre exacto*:\n\n${context.possibleTowers
+            .map((t, i) => `${i + 1}. ${t}`)
+            .join('\n')}\n\n_(Intento ${context.retryCount} de 3)_`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.tower = resolved;
+    const filtered = context.possibleCondominiums.filter(
+      (m) =>
+        m.tower &&
+        this.cleanInput(String(m.tower)) === this.cleanInput(resolved),
+    );
+
+    if (filtered.length === 0) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema filtrando por torre. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const phoneConflict = filtered.every(
+      (m) => m.phoneInDB === true && m.phoneMatches !== true,
+    );
+    if (phoneConflict) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar.\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.retryCount = 0;
+    context.possibleTowers = undefined;
+    if (filtered.length === 1) {
+      context.userId = filtered[0].userId;
+      context.selectedCondominium = filtered[0];
+      context.possibleCondominiums = undefined;
+      if (filtered[0].tower) context.tower = filtered[0].tower;
+      await this.continueAreaAfterAuth(context);
+    } else {
+      context.userId = undefined;
+      context.possibleCondominiums = filtered;
+      context.state = ConversationState.AREA_AWAITING_CONDOMINIUM_SELECTION;
+      await this.showCondominiumOptions(context, filtered);
+    }
+  }
+
+  /** Paso 2c – Selección de condominio cuando hay múltiples (idéntico al flujo de visitas) */
+  private async handleAreaCondominiumSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const index = parseInt(text, 10);
+    if (
+      isNaN(index) ||
+      !context.possibleCondominiums ||
+      index < 1 ||
+      index > context.possibleCondominiums.length
+    ) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🚫 Opción no válida. Escribe el número correspondiente al condominio de la lista.',
+        },
+        context,
+      );
+      return;
+    }
+    const selected = context.possibleCondominiums[index - 1];
+    context.selectedCondominium = selected;
+    if (selected.userId) context.userId = selected.userId;
+    if (selected.tower) context.tower = selected.tower;
+    context.retryCount = 0;
+    await this.continueAreaAfterAuth(context);
+  }
+
+  /**
+   * Paso 3 – Verificar adeudos y mostrar lista de áreas disponibles.
+   * Se llama después de autenticar al usuario.
+   */
+  private async continueAreaAfterAuth(context: ConversationContext) {
+    const { phoneNumber, selectedCondominium, userId } = context;
+
+    if (!selectedCondominium || !userId) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const { clientId, condominiumId } = selectedCondominium;
+
+    // ── 1. Verificar adeudos ──────────────────────────────────────────────
+    const unpaidCharges =
+      await this.commonAreasBookingService.checkUnpaidCharges(
+        clientId,
+        condominiumId,
+        userId,
+      );
+
+    if (unpaidCharges.length > 0) {
+      // Bloquear: el residente tiene adeudos
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🚫 *No es posible realizar la reservación*\n\n' +
+            'Tienes adeudos pendientes en tu cuenta. Para reservar un área común es necesario estar al corriente en tus pagos.\n\n' +
+            'Por favor ponte en contacto con tu administrador para regularizar tu situación.\n\n' +
+            `¿Puedo ayudarte en algo más?\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    // ── 2. Obtener áreas disponibles ──────────────────────────────────────
+    const areas = await this.commonAreasBookingService.getActiveCommonAreas(
+      clientId,
+      condominiumId,
+    );
+
+    if (areas.length === 0) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😔 No hay áreas comunes disponibles para reservar en este momento. Si crees que es un error, contacta a tu administrador.\n\n' +
+            this.getMenuMessage(),
+        },
+        context,
+      );
+      return;
+    }
+
+    // Guardar áreas en el draft para no volver a consultarlas
+    context.commonAreaDraft = { availableAreas: areas };
+    context.state = ConversationState.AREA_AWAITING_AREA_SELECTION;
+
+    const areaList = areas
+      .map((a, i) => {
+        const horario = `(${a.openTime} – ${a.closeTime})`;
+        const costo =
+          a.rate > 0
+            ? ` · ${this.commonAreasBookingService.formatCurrency(a.rate)}/hr`
+            : ' · Sin costo';
+        return `${i + 1}. *${a.name}* ${horario}${costo}`;
+      })
+      .join('\n');
+
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          `✅ Identidad verificada. No tienes adeudos pendientes.\n\n` +
+          `🏊 *Áreas comunes disponibles:*\n\n${areaList}\n\n` +
+          `Responde con el *número* del área que deseas reservar.`,
+      },
+      context,
+    );
+  }
+
+  /** Paso 4 – Selección del área común */
+  private async handleAreaSelectionInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const areas = context.commonAreaDraft?.availableAreas || [];
+    const index = parseInt(text.trim(), 10);
+
+    if (isNaN(index) || index < 1 || index > areas.length) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🚫 Opción no válida. Responde con un número del 1 al ${areas.length}.`,
+        },
+        context,
+      );
+      return;
+    }
+
+    const selected = areas[index - 1];
+
+    // Verificar que el área siga activa (por si cambió entre consulta y selección)
+    if (selected.status !== 'active') {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            `🔧 Lo sentimos, el área *${selected.name}* está actualmente en mantenimiento y no puede reservarse.\n` +
+            (selected.maintenanceNotes
+              ? `Nota: ${selected.maintenanceNotes}\n\n`
+              : '\n') +
+            `Por favor selecciona otra área o escribe *cancelar* para volver al menú.`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.commonAreaDraft = {
+      ...context.commonAreaDraft,
+      selectedAreaId: selected.uid || selected.id,
+      selectedAreaName: selected.name,
+      openTime: selected.openTime,
+      closeTime: selected.closeTime,
+      rate: selected.rate,
+    };
+    context.state = ConversationState.AREA_AWAITING_DATE;
+
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          `📅 Seleccionaste: *${selected.name}*\n` +
+          `🕐 Horario disponible: ${selected.openTime} – ${selected.closeTime}\n\n` +
+          `¿Para qué *fecha* quieres reservar?\n` +
+          `Escríbela en formato *DD/MM/YYYY*, por ejemplo: *${this.getTodayFormatted()}*`,
+      },
+      context,
+    );
+  }
+
+  /** Paso 5 – Fecha del evento */
+  private async handleAreaDateInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    const parsedDate = this.commonAreasBookingService.parseDate(text);
+    if (!parsedDate) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '⚠️ No pude interpretar esa fecha. Escríbela en formato *DD/MM/YYYY*, por ejemplo: *20/06/2025*',
+        },
+        context,
+      );
+      return;
+    }
+
+    if (!this.commonAreasBookingService.isDateValid(parsedDate)) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '⚠️ La fecha no puede ser anterior a hoy. Por favor ingresa una fecha futura.',
+        },
+        context,
+      );
+      return;
+    }
+
+    context.commonAreaDraft = { ...context.commonAreaDraft, eventDay: parsedDate };
+    context.state = ConversationState.AREA_AWAITING_START_TIME;
+
+    const humanDate = this.commonAreasBookingService.formatDate(parsedDate);
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          `📅 Fecha seleccionada: *${humanDate}*\n\n` +
+          `🕐 ¿A qué *hora inicia* tu reservación?\n` +
+          `Escríbela en formato de 24h (*HH:MM*) o con am/pm (*8:00am*, *2pm*).`,
+      },
+      context,
+    );
+  }
+
+  /** Paso 6 – Hora de inicio */
+  private async handleAreaStartTimeInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    const parsedTime = this.commonAreasBookingService.parseTime(text);
+    if (!parsedTime) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '⚠️ No pude interpretar la hora. Escríbela así: *08:00*, *14:30*, *9am* o *3pm*.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const openTime = context.commonAreaDraft?.openTime || '00:00';
+    const closeTime = context.commonAreaDraft?.closeTime || '23:59';
+
+    // Validar que la hora de inicio esté dentro del horario del área
+    const toMin = (t: string) => {
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + m;
+    };
+    if (toMin(parsedTime) < toMin(openTime) || toMin(parsedTime) >= toMin(closeTime)) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            `⚠️ La hora de inicio debe estar dentro del horario del área: *${openTime} – ${closeTime}*.\n` +
+            `Por favor ingresa una hora válida.`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.commonAreaDraft = { ...context.commonAreaDraft, startTime: parsedTime };
+    context.state = ConversationState.AREA_AWAITING_END_TIME;
+
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          `⏰ Hora de inicio: *${parsedTime}*\n\n` +
+          `🕕 ¿A qué *hora termina* tu reservación?\n` +
+          `Recuerda que el área cierra a las *${closeTime}*.`,
+      },
+      context,
+    );
+  }
+
+  /** Paso 7 – Hora de fin y resumen */
+  private async handleAreaEndTimeInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    const parsedTime = this.commonAreasBookingService.parseTime(text);
+    if (!parsedTime) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '⚠️ No pude interpretar la hora. Escríbela así: *08:00*, *14:30*, *9am* o *3pm*.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const draft = context.commonAreaDraft!;
+    const openTime = draft.openTime || '00:00';
+    const closeTime = draft.closeTime || '23:59';
+    const startTime = draft.startTime!;
+
+    // Validar rango completo
+    if (
+      !this.commonAreasBookingService.validateTimeRange(
+        startTime,
+        parsedTime,
+        openTime,
+        closeTime,
+      )
+    ) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            `⚠️ El horario *${startTime} – ${parsedTime}* no es válido.\n` +
+            `La hora de fin debe ser posterior a la de inicio y dentro del horario del área *(${openTime} – ${closeTime})*.\n\n` +
+            `Por favor ingresa una hora de fin válida.`,
+        },
+        context,
+      );
+      return;
+    }
+
+    // Verificar conflictos de horario con reservaciones existentes
+    const { clientId, condominiumId } = context.selectedCondominium!;
+    const hasConflict =
+      await this.commonAreasBookingService.checkConflictingReservations(
+        clientId,
+        condominiumId,
+        draft.selectedAreaId!,
+        draft.eventDay!,
+        startTime,
+        parsedTime,
+      );
+
+    if (hasConflict) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            `🚫 El horario *${startTime} – ${parsedTime}* ya está reservado para *${draft.selectedAreaName}* en esa fecha.\n\n` +
+            `Por favor elige un horario diferente. ¿A qué hora quieres que *termine* tu reservación?`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.commonAreaDraft = { ...draft, endTime: parsedTime };
+    context.state = ConversationState.AREA_CONFIRMING;
+
+    // Calcular costo
+    const { cost, hours } = this.commonAreasBookingService.calculateCost(
+      draft.rate ?? 0,
+      startTime,
+      parsedTime,
+    );
+
+    const humanDate = this.commonAreasBookingService.formatDate(draft.eventDay!);
+    const costLine =
+      cost > 0
+        ? `💰 Costo estimado: *${this.commonAreasBookingService.formatCurrency(cost)}* (${hours} hr${hours !== 1 ? 's' : ''})`
+        : `💰 Sin costo de reservación`;
+
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          `📋 *Resumen de tu reservación:*\n\n` +
+          `🏊 Área: *${draft.selectedAreaName}*\n` +
+          `📅 Fecha: *${humanDate}*\n` +
+          `🕐 Horario: *${startTime} – ${parsedTime}*\n` +
+          `${costLine}\n\n` +
+          `¿Confirmas la reservación?\n` +
+          `Responde *sí* para confirmar o *no* para cancelar.`,
+      },
+      context,
+    );
+  }
+
+  /** Paso 8 – Confirmación y creación de la reservación */
+  private async handleAreaConfirmation(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const t = text.trim().toLowerCase();
+    const yes = ['si', 'sí', 'yes', 'confirmar', 'ok', 'dale', 'correcto', 's'];
+    const no = ['no', 'cancelar', 'cancel', 'nel', 'incorrecto'];
+
+    if (no.includes(t)) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `❎ Reservación cancelada. ¿Hay algo más en lo que pueda ayudarte?\n\n${this.getMenuMessage()}`,
+        },
+        context,
+      );
+      return;
+    }
+
+    if (!yes.includes(t)) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 Responde *sí* para confirmar la reservación o *no* para cancelar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    // Confirmado → crear la reservación
+    await this.finalizeAreaReservation(context);
+  }
+
+  /** Paso 9 – Crear la reservación en Firestore y enviar confirmación */
+  private async finalizeAreaReservation(context: ConversationContext) {
+    const { phoneNumber, selectedCondominium, userId, email, departmentNumber, tower } =
+      context;
+    const draft = context.commonAreaDraft;
+
+    if (
+      !draft?.selectedAreaId ||
+      !draft?.eventDay ||
+      !draft?.startTime ||
+      !draft?.endTime ||
+      !selectedCondominium ||
+      !userId ||
+      !email ||
+      !departmentNumber
+    ) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: '❌ Error interno al crear la reservación. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    try {
+      const { clientId, condominiumId } = selectedCondominium;
+
+      // Obtener datos del residente para la reservación
+      let residentName = email;
+      let residentLastName = '';
+      try {
+        const userDoc = await this.firestore
+          .doc(`clients/${clientId}/condominiums/${condominiumId}/users/${userId}`)
+          .get();
+        if (userDoc.exists) {
+          const u = userDoc.data()!;
+          residentName = u.name || email;
+          residentLastName = u.lastName || '';
+        }
+      } catch (_) {}
+
+      const fullName = residentLastName
+        ? `${residentName} ${residentLastName}`
+        : residentName;
+
+      const commonAreaObj: CommonArea = {
+        id: draft.selectedAreaId!,
+        uid: draft.selectedAreaId!,
+        name: draft.selectedAreaName!,
+        rate: draft.rate ?? 0,
+        isReservable: true,
+        openTime: draft.openTime || '00:00',
+        closeTime: draft.closeTime || '23:59',
+        status: 'active',
+      };
+
+      const result = await this.commonAreasBookingService.createReservation({
+        clientId,
+        condominiumId,
+        userId,
+        residentName: fullName,
+        residentNumber: departmentNumber,
+        residentPhone: normalizeMexNumber(phoneNumber),
+        residentEmail: email,
+        commonArea: commonAreaObj,
+        eventDay: draft.eventDay!,
+        startTime: draft.startTime!,
+        endTime: draft.endTime!,
+      });
+
+      const humanDate = this.commonAreasBookingService.formatDate(draft.eventDay!);
+      const costLine =
+        result.totalCost > 0
+          ? `💰 Costo: *${this.commonAreasBookingService.formatCurrency(result.totalCost)}* (${result.hours} hr${result.hours !== 1 ? 's' : ''})`
+          : `💰 Sin costo de reservación`;
+
+      context.state = ConversationState.COMPLETED;
+
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            `✅ *¡Reservación confirmada!*\n\n` +
+            `📋 *Folio:* ${result.folio}\n\n` +
+            `🏊 *Área:* ${draft.selectedAreaName}\n` +
+            `📅 *Fecha:* ${humanDate}\n` +
+            `🕐 *Horario:* ${draft.startTime} – ${draft.endTime}\n` +
+            `${costLine}\n\n` +
+            `Guarda tu folio *${result.folio}* como comprobante. Puedes presentarlo ante tu administración en caso necesario.\n\n` +
+            `¿Hay algo más en lo que pueda ayudarte?`,
+        },
+        context,
+      );
+
+      await this.logToAudit(context, 'out', {
+        type: 'area_reservation_created',
+        folio: result.folio,
+        reservationId: result.reservationId,
+        commonArea: draft.selectedAreaName,
+        eventDay: draft.eventDay,
+        startTime: draft.startTime,
+        endTime: draft.endTime,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Error al crear reservación de área para ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema al registrar tu reservación. Por favor, intenta nuevamente escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  /** Helper: retorna la fecha de hoy en formato DD/MM/YYYY */
+  private getTodayFormatted(): string {
+    const d = new Date();
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
   }
 
   /**
