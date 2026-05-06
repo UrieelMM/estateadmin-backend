@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -176,5 +177,119 @@ export class ScheduledVisitsCasetaController {
       body.condominiumId,
     );
     return { ok: true };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Endpoints públicos para el dashboard de caseta (solo lectura, auth = PIN)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * POST /scheduled-visits-caseta/dashboard/validate-pin
+   * Valida el PIN de caseta sin requerir Firebase Auth.
+   * Body: { clientId, condominiumId, pin }
+   * Responde: { valid: boolean }
+   *
+   * Rate-limit estricto: 10 intentos / 60 s para dificultar fuerza bruta.
+   */
+  @Post('dashboard/validate-pin')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async validatePinPublic(
+    @Body() body: { clientId?: string; condominiumId?: string; pin?: string },
+  ) {
+    const { clientId, condominiumId, pin } = body ?? {};
+    if (!clientId || !condominiumId || !pin) {
+      throw new BadRequestException('clientId, condominiumId y pin son requeridos.');
+    }
+    if (!/^\d{6}$/.test(pin)) {
+      return { valid: false };
+    }
+    const valid = await this.scheduledVisitsService.validateCasetaPinPublic(
+      clientId,
+      condominiumId,
+      pin,
+    );
+    return { valid };
+  }
+
+  /**
+   * POST /scheduled-visits-caseta/dashboard/register
+   * Registra entrada o salida manualmente desde el dashboard de caseta.
+   * Úsalo cuando el visitante no tiene su QR pero se puede identificar.
+   *
+   * Body: { clientId, condominiumId, pin, visitId, type: 'check-in'|'check-out' }
+   * Auth: PIN (sin Firebase Auth).
+   * Rate-limit: 20 / 60 s.
+   */
+  @Post('dashboard/register')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async registerManual(
+    @Body()
+    body: {
+      clientId?: string;
+      condominiumId?: string;
+      pin?: string;
+      visitId?: string;
+      type?: string;
+    },
+  ) {
+    const { clientId, condominiumId, pin, visitId, type } = body ?? {};
+    if (!clientId || !condominiumId || !pin || !visitId || !type) {
+      throw new BadRequestException(
+        'clientId, condominiumId, pin, visitId y type son requeridos.',
+      );
+    }
+    if (!/^\d{6}$/.test(pin)) {
+      throw new BadRequestException('PIN inválido.');
+    }
+    if (type !== 'check-in' && type !== 'check-out') {
+      throw new BadRequestException('type debe ser check-in o check-out.');
+    }
+    const result = await this.scheduledVisitsService.registerVisitEntryByCaseta(
+      visitId,
+      clientId,
+      condominiumId,
+      pin,
+      type as 'check-in' | 'check-out',
+    );
+    if (!result.ok) {
+      throw new BadRequestException(result.reason ?? 'Error al registrar.');
+    }
+    return { ok: true, entryId: result.entryId };
+  }
+
+  /**
+   * GET /scheduled-visits-caseta/dashboard/visits
+   * Retorna la lista de visitas agendadas del condominio.
+   * Query params: clientId, condominiumId, pin, limit? (1–500, default 200)
+   *
+   * Requiere PIN válido — sin Firebase Auth.
+   * Solo lectura: la caseta no puede modificar visitas desde aquí.
+   */
+  @Get('dashboard/visits')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  async getCasetaVisits(
+    @Query('clientId') clientId: string,
+    @Query('condominiumId') condominiumId: string,
+    @Query('pin') pin: string,
+    @Query('limit') limitParam?: string,
+  ) {
+    if (!clientId || !condominiumId || !pin) {
+      throw new BadRequestException('clientId, condominiumId y pin son requeridos.');
+    }
+    if (!/^\d{6}$/.test(pin)) {
+      throw new BadRequestException('PIN inválido.');
+    }
+    const limitCount = limitParam ? Math.min(parseInt(limitParam, 10) || 200, 500) : 200;
+    try {
+      const visits = await this.scheduledVisitsService.getCasetaVisits(
+        clientId,
+        condominiumId,
+        pin,
+        limitCount,
+      );
+      return { ok: true, visits };
+    } catch (err: any) {
+      throw new BadRequestException(err?.message || 'Error al obtener visitas.');
+    }
   }
 }

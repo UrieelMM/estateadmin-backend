@@ -1699,4 +1699,196 @@ export class ScheduledVisitsService implements OnModuleInit {
     this.logger.log(`Expiradas automáticamente ${snap.size} visitas vencidas.`);
     return snap.size;
   }
+
+  // =========================================================================
+  // Dashboard de caseta (lectura pública autenticada con PIN)
+  // =========================================================================
+
+  /**
+   * Registra una entrada o salida desde el dashboard de caseta, usando el
+   * visitId (= qrId) directamente y validando con el PIN (sin accessToken).
+   *
+   * Solo se usa cuando el visitante no tiene su QR disponible pero el guardia
+   * lo identifica visualmente y quiere registrar el acceso desde el dashboard.
+   *
+   * Toda la lógica de negocio (single vs recurring, ventanas de tiempo, etc.)
+   * es idéntica a registerVisitEntry — solo se omite la validación de token
+   * y el PIN pasa de opcional a obligatorio.
+   */
+  async registerVisitEntryByCaseta(
+    visitId: string,
+    clientId: string,
+    condominiumId: string,
+    pin: string,
+    type: 'check-in' | 'check-out',
+  ): Promise<{ ok: boolean; reason?: string; entryId?: string }> {
+    // ── 1. Validar PIN (obligatorio) ──
+    if (!pin) return { ok: false, reason: 'PIN de caseta requerido.' };
+    const pinOk = await this.verifyCasetaPin(clientId, condominiumId, pin);
+    if (!pinOk) return { ok: false, reason: 'PIN incorrecto.' };
+
+    // ── 2. Leer el documento de visita directamente por su ID ──
+    const ref = this.firestore.doc(
+      `clients/${clientId}/condominiums/${condominiumId}/${VISITS_SUBCOLLECTION}/${visitId}`,
+    );
+    const snap = await ref.get();
+    if (!snap.exists) return { ok: false, reason: 'Visita no encontrada.' };
+
+    const data = snap.data() as any;
+
+    // Verificar que la visita pertenece al condominio solicitado (doble check)
+    if (data.clientId !== clientId || data.condominiumId !== condominiumId) {
+      return { ok: false, reason: 'Visita no pertenece a este condominio.' };
+    }
+
+    if (data.status === 'cancelled') {
+      return { ok: false, reason: 'Visita cancelada.' };
+    }
+
+    const isRecurring = data.visitType === 'recurring' && data.recurrence;
+    const isSingleInProgress = !isRecurring && !!data.usedAt && !data.exitAt;
+
+    // Permitir check-out aunque esté expirada si el check-in ya ocurrió y
+    // no han pasado más de 24 h.
+    if (data.status === 'expired') {
+      if (isSingleInProgress && type === 'check-out') {
+        const usedAtMs =
+          data.usedAt && typeof data.usedAt.toMillis === 'function'
+            ? data.usedAt.toMillis()
+            : 0;
+        if (!usedAtMs || Date.now() > usedAtMs + 24 * 60 * 60_000) {
+          return {
+            ok: false,
+            reason:
+              'Pasaron más de 24 horas desde la entrada. Contacta al administrador.',
+          };
+        }
+      } else {
+        return { ok: false, reason: 'Visita expirada.' };
+      }
+    }
+
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    // ── 3. Visitas recurrentes ──
+    if (isRecurring) {
+      const r = data.recurrence;
+      const recurrence: VisitRecurrence = {
+        daysOfWeek: r.daysOfWeek,
+        dailyArrivalTime: r.dailyArrivalTime,
+        dailyDepartureTime: r.dailyDepartureTime,
+        startDate: r.startDate.toDate(),
+        endDate: r.endDate.toDate(),
+      };
+      if (!this.isWithinRecurrenceWindow(recurrence, new Date())) {
+        return {
+          ok: false,
+          reason: 'Fuera de la ventana válida para esta visita recurrente.',
+        };
+      }
+
+      // Evitar duplicados del mismo día
+      const today0 = new Date();
+      today0.setHours(0, 0, 0, 0);
+      const tomorrow0 = new Date(today0);
+      tomorrow0.setDate(tomorrow0.getDate() + 1);
+      const existing = await snap.ref
+        .collection('entries')
+        .where('type', '==', type)
+        .where('createdAt', '>=', admin.firestore.Timestamp.fromDate(today0))
+        .where('createdAt', '<', admin.firestore.Timestamp.fromDate(tomorrow0))
+        .limit(1)
+        .get();
+      if (!existing.empty) {
+        return {
+          ok: false,
+          reason: `Ya hay un ${type} registrado hoy para esta visita.`,
+        };
+      }
+
+      const entryRef = snap.ref.collection('entries').doc();
+      await entryRef.set({ id: entryRef.id, type, createdAt: now });
+
+      const nextOcc = this.nextOccurrence(recurrence, new Date(Date.now() + 60_000));
+      const updates: Record<string, any> = { updatedAt: now };
+      if (type === 'check-in') updates.lastUsedAt = now;
+      else updates.lastExitAt = now;
+      if (nextOcc) {
+        updates.arrivalAt = admin.firestore.Timestamp.fromDate(nextOcc.arrival);
+        updates.departureAt = admin.firestore.Timestamp.fromDate(nextOcc.departure);
+      }
+      await snap.ref.update(updates);
+      return { ok: true, entryId: entryRef.id };
+    }
+
+    // ── 4. Visitas únicas ──
+    if (type === 'check-in') {
+      if (data.usedAt) {
+        return { ok: false, reason: 'La visita ya tenía registro de entrada.' };
+      }
+      const newExpiresAt = admin.firestore.Timestamp.fromMillis(
+        Date.now() + 24 * 60 * 60_000,
+      );
+      await snap.ref.update({
+        usedAt: now,
+        status: 'used',
+        expiresAt: newExpiresAt,
+        updatedAt: now,
+      });
+      return { ok: true };
+    } else {
+      if (data.exitAt) {
+        return { ok: false, reason: 'La visita ya tenía registro de salida.' };
+      }
+      await snap.ref.update({
+        exitAt: now,
+        status: 'completed',
+        updatedAt: now,
+      });
+      return { ok: true };
+    }
+  }
+
+  /**
+   * Valida el PIN de caseta sin necesidad de Firebase Auth.
+   * Usado por la pantalla de dashboard de caseta para autenticarse.
+   */
+  async validateCasetaPinPublic(
+    clientId: string,
+    condominiumId: string,
+    pin: string,
+  ): Promise<boolean> {
+    if (!clientId || !condominiumId || !pin) return false;
+    return this.verifyCasetaPin(clientId, condominiumId, pin);
+  }
+
+  /**
+   * Retorna las visitas agendadas de un condominio previa validación de PIN.
+   * Solo lectura — la caseta nunca debe escribir desde este endpoint.
+   *
+   * @param limit  Máximo de documentos a traer (default 200, máx 500).
+   */
+  async getCasetaVisits(
+    clientId: string,
+    condominiumId: string,
+    pin: string,
+    limitCount = 200,
+  ): Promise<any[]> {
+    const pinOk = await this.verifyCasetaPin(clientId, condominiumId, pin);
+    if (!pinOk) {
+      throw new Error('PIN incorrecto o no configurado.');
+    }
+
+    const ref = this.firestore.collection(
+      `clients/${clientId}/condominiums/${condominiumId}/${VISITS_SUBCOLLECTION}`,
+    );
+
+    const clampedLimit = Math.min(Math.max(limitCount, 1), 500);
+    const snap = await ref
+      .orderBy('arrivalAt', 'desc')
+      .limit(clampedLimit)
+      .get();
+
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  }
 }

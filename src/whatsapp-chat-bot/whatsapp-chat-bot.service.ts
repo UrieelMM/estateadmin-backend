@@ -91,6 +91,9 @@ enum ConversationState {
   AREA_AWAITING_END_TIME = 'AREA_AWAITING_END_TIME',
   AREA_CONFIRMING = 'AREA_CONFIRMING',
 
+  // Estado para confirmar identidad cacheada
+  CACHED_IDENTITY_CONFIRMING = 'CACHED_IDENTITY_CONFIRMING',
+
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR',
 }
@@ -160,6 +163,18 @@ interface ConversationContext {
   userId?: string;
   // Control de reintentos por campo
   retryCount?: number;
+  // Identidad cacheada (evita pedir correo+depto en cada sesión)
+  cachedIdentity?: {
+    email: string;
+    departmentNumber: string;
+    userId: string;
+    clientId: string;
+    condominiumId: string;
+    condominiumName?: string;
+    tower?: string;
+    residentName?: string;
+    expiresAt: admin.firestore.Timestamp;
+  };
   // Para flujo de reserva de áreas comunes
   commonAreaDraft?: {
     availableAreas?: CommonArea[];
@@ -437,6 +452,9 @@ export class WhatsappChatBotService implements OnModuleInit {
         'Tipo de mensaje no textual';
       if (messageObj.type === 'text') {
         incomingMessageContent = messageObj.text?.body || '';
+      } else if (messageObj.type === 'interactive') {
+        // El log de auditoría para mensajes interactivos se hace en el handler
+        incomingMessageContent = null as any; // señal para no logear aquí
       } else if (messageObj.type === 'image') {
         incomingMessageContent = {
           type: 'image',
@@ -451,7 +469,9 @@ export class WhatsappChatBotService implements OnModuleInit {
         };
       }
       // Registrar auditoría del mensaje entrante (intentar usar el contexto actual si existe)
-      await this.logToAudit(context, 'in', incomingMessageContent);
+      if (incomingMessageContent !== null) {
+        await this.logToAudit(context, 'in', incomingMessageContent);
+      }
       // --- Fin Auditoría ---
 
       // Manejar tipos de mensaje
@@ -459,6 +479,23 @@ export class WhatsappChatBotService implements OnModuleInit {
         const textBody = messageObj.text?.body || '';
         const normalizedText = this.cleanInput(textBody);
         await this.handleConversation(context, normalizedText);
+      } else if (messageObj.type === 'interactive') {
+        // Botones de respuesta rápida o selección de lista
+        const interactive = messageObj.interactive;
+        let interactiveId: string | undefined;
+        if (interactive?.type === 'button_reply') {
+          interactiveId = interactive.button_reply?.id;
+        } else if (interactive?.type === 'list_reply') {
+          interactiveId = interactive.list_reply?.id;
+        }
+        if (interactiveId) {
+          this.logger.log(`Respuesta interactiva de ${from}: "${interactiveId}"`);
+          // Log como mensaje entrante
+          await this.logToAudit(context, 'in', interactiveId);
+          await this.handleConversation(context, interactiveId);
+        } else {
+          this.logger.warn(`Mensaje interactivo sin ID de ${from}`);
+        }
       } else if (messageObj.type === 'image') {
         this.logger.log(`Recibimos un archivo tipo imagen 📷 de ${from}`);
         const mediaId = messageObj.image.id;
@@ -505,13 +542,7 @@ export class WhatsappChatBotService implements OnModuleInit {
             );
           }
         } else {
-          await this.sendAndLogMessage(
-            {
-              phoneNumber: from,
-              message: `Recibí tu imagen, pero no estaba esperando un archivo en este momento. 😊\n\n${this.getMenuMessage()}`,
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, 'Recibí tu imagen, pero no estaba esperando un archivo en este momento. 😊');
         }
       } else if (messageObj.type === 'document') {
         this.logger.log(`Recibimos un archivo tipo documento 📄 de ${from}`);
@@ -559,23 +590,11 @@ export class WhatsappChatBotService implements OnModuleInit {
             );
           }
         } else {
-          await this.sendAndLogMessage(
-            {
-              phoneNumber: from,
-              message: `Recibí tu documento, pero no estaba esperando un archivo en este momento. 😊\n\n${this.getMenuMessage()}`,
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, 'Recibí tu documento, pero no estaba esperando un archivo en este momento. 😊');
         }
       } else {
         // Otros tipos (audio, video, etc.) -> no soportado
-        await this.sendAndLogMessage(
-          {
-            phoneNumber: from,
-            message: `Por ahora solo puedo procesar *mensajes de texto*, *fotos* e *imágenes de comprobantes* y *archivos PDF*.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, 'Por ahora solo puedo procesar *mensajes de texto*, *fotos* e *imágenes de comprobantes* y *archivos PDF*.');
       }
 
       // Guardar el estado final de la conversación después de procesar
@@ -623,13 +642,7 @@ export class WhatsappChatBotService implements OnModuleInit {
       this.logger.log(`Usuario ${phoneNumber} canceló el flujo actual.`);
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `↩️ De acuerdo, regresamos al menú principal.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '↩️ De acuerdo, regresamos al menú principal.');
       return;
     }
 
@@ -642,14 +655,27 @@ export class WhatsappChatBotService implements OnModuleInit {
     switch (context.state) {
       case ConversationState.INITIAL:
         if (this.isGreeting(text)) {
-          context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: `👋 ¡Hola! Bienvenido al asistente de tu condominio.\n\n${this.getMenuMessage()}`,
-            },
-            context,
+          const cached = context.cachedIdentity;
+          this.logger.log(
+            `[INITIAL] cachedIdentity presente: ${!!cached}` +
+            (cached ? ` | email=${cached.email} | expires=${JSON.stringify(cached.expiresAt)}` : ''),
           );
+          if (cached && this.isCacheValid(cached.expiresAt)) {
+            // Tenemos identidad cacheada válida → confirmar antes de mostrar menú
+            context.state = ConversationState.CACHED_IDENTITY_CONFIRMING;
+            await this.sendInteractiveButtons(
+              phoneNumber,
+              `👋 ¡Hola! Bienvenido de vuelta.\n\n¿Sigues siendo *${cached.residentName || cached.email}* en *${cached.condominiumName || cached.condominiumId}*?`,
+              [
+                { id: 'cache_yes', title: '✅ Sí, soy yo' },
+                { id: 'cache_no', title: '🔄 Cambiar cuenta' },
+              ],
+              context,
+            );
+          } else {
+            context.state = ConversationState.MENU_SELECTION;
+            await this.sendMenuMessage(context, '👋 ¡Hola! Bienvenido al asistente de tu condominio.');
+          }
         } else {
           await this.sendAndLogMessage(
             {
@@ -659,6 +685,10 @@ export class WhatsappChatBotService implements OnModuleInit {
             context,
           );
         }
+        break;
+
+      case ConversationState.CACHED_IDENTITY_CONFIRMING:
+        await this.handleCachedIdentityConfirmation(context, text);
         break;
 
       case ConversationState.MENU_SELECTION:
@@ -844,43 +874,335 @@ export class WhatsappChatBotService implements OnModuleInit {
 
       case ConversationState.COMPLETED:
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `¿Hay algo más en lo que pueda ayudarte?\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '¿Hay algo más en lo que pueda ayudarte?');
         break;
 
       case ConversationState.ERROR:
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `Ocurrió un problema con la solicitud anterior. ¡Intentemos de nuevo!\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, 'Ocurrió un problema con la solicitud anterior. ¡Intentemos de nuevo!');
         break;
 
       default:
         this.logger.warn(`Estado desconocido ${context.state} para ${phoneNumber}`);
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `Algo inesperado ocurrió. ¡Empecemos de nuevo!\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, 'Algo inesperado ocurrió. ¡Empecemos de nuevo!');
         break;
     }
   }
 
   // --- Nuevas funciones para el manejo del menú ---
+
+
+  // ─── Métodos para mensajes interactivos de WhatsApp ─────────────────────
+
+  /**
+   * Envía un mensaje con botones de respuesta rápida (max 3 botones).
+   */
+  private async sendInteractiveButtons(
+    phoneNumber: string,
+    bodyText: string,
+    buttons: Array<{ id: string; title: string }>,
+    context?: ConversationContext,
+  ): Promise<void> {
+    const apiUrl = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+    const recipientPhoneNumber = normalizeMexNumber(phoneNumber);
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: recipientPhoneNumber,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.map((b) => ({
+            type: 'reply',
+            reply: { id: b.id, title: b.title },
+          })),
+        },
+      },
+    };
+
+    try {
+      await axios.post(apiUrl, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        },
+      });
+      await this.logToAudit(context || null, 'out', bodyText, { phoneNumber });
+    } catch (error) {
+      this.logger.error(
+        `Error enviando botones interactivos a ${phoneNumber}: ${error.message}`,
+      );
+      if (error.response) {
+        this.logger.error('WhatsApp API error:', error.response.data);
+      }
+      // Fallback a texto plano
+      await this.sendAndLogMessage(
+        { phoneNumber, message: bodyText },
+        context,
+      );
+    }
+  }
+
+  /**
+   * Envía un mensaje de lista interactiva (max 10 filas por sección).
+   */
+  private async sendInteractiveList(
+    phoneNumber: string,
+    bodyText: string,
+    buttonLabel: string,
+    sections: Array<{
+      title?: string;
+      rows: Array<{ id: string; title: string; description?: string }>;
+    }>,
+    context?: ConversationContext,
+  ): Promise<void> {
+    const apiUrl = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION}/${process.env.PHONE_NUMBER_ID}/messages`;
+    const recipientPhoneNumber = normalizeMexNumber(phoneNumber);
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: recipientPhoneNumber,
+      type: 'interactive',
+      interactive: {
+        type: 'list',
+        body: { text: bodyText },
+        action: {
+          button: buttonLabel,
+          sections,
+        },
+      },
+    };
+
+    try {
+      await axios.post(apiUrl, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        },
+      });
+      await this.logToAudit(context || null, 'out', bodyText, { phoneNumber });
+    } catch (error) {
+      this.logger.error(
+        `Error enviando lista interactiva a ${phoneNumber}: ${error.message}`,
+      );
+      if (error.response) {
+        this.logger.error('WhatsApp API error:', error.response.data);
+      }
+      // Fallback a texto plano con el menú clásico
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: bodyText + '\n\n' + this.getMenuMessage(),
+        },
+        context,
+      );
+    }
+  }
+
+  /**
+   * Envía el menú principal como lista interactiva.
+   * @param preamble Texto opcional que precede al menú.
+   */
+  private async sendMenuMessage(
+    context: ConversationContext,
+    preamble?: string,
+  ): Promise<void> {
+    const body = [preamble, '¿En qué te puedo ayudar? 😊']
+      .filter(Boolean)
+      .join('\n\n');
+
+    await this.sendInteractiveList(
+      context.phoneNumber,
+      body,
+      'Ver opciones',
+      [
+        {
+          rows: [
+            {
+              id: '1',
+              title: '💳 Comprobante de pago',
+              description: 'Enviar tu comprobante de pago',
+            },
+            {
+              id: '2',
+              title: '📋 Documentos',
+              description: 'Consultar documentos del condominio',
+            },
+            {
+              id: '3',
+              title: '📊 Estado de cuenta',
+              description: 'Ver tu estado de cuenta actual',
+            },
+            {
+              id: '4',
+              title: '🛎️ Registrar visita',
+              description: 'Programar visita y obtener QR',
+            },
+            {
+              id: '5',
+              title: '🏊 Reservar área común',
+              description: 'Reservar área del condominio',
+            },
+          ],
+        },
+      ],
+      context,
+    );
+  }
+
+  // ─── Métodos de caché de identidad ──────────────────────────────────────
+
+  /**
+   * Verifica si un Timestamp de expiración sigue siendo válido.
+   */
+  private isCacheValid(expiresAt: admin.firestore.Timestamp): boolean {
+    try {
+      const now = Date.now();
+      // Firestore puede devolver Timestamps como objetos planos {_seconds, _nanoseconds}
+      // en algunos entornos. Soportar ambos formatos.
+      let expMs: number;
+      if (typeof expiresAt.toMillis === 'function') {
+        expMs = expiresAt.toMillis();
+      } else {
+        // Fallback para objeto plano de Firestore
+        const raw = expiresAt as any;
+        expMs = ((raw._seconds ?? raw.seconds ?? 0) * 1000);
+      }
+      const valid = expMs > now;
+      this.logger.log(
+        `[isCacheValid] expMs=${expMs}, now=${now}, valid=${valid}`,
+      );
+      return valid;
+    } catch (e) {
+      this.logger.warn(`[isCacheValid] Error: ${e.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Guarda la identidad del usuario en la caché del contexto con
+   * expiración fija de 90 días desde ahora.
+   * Intenta obtener el nombre del residente desde Firestore para
+   * personalizar el saludo de confirmación.
+   */
+  private async saveCachedIdentity(
+    context: ConversationContext,
+  ): Promise<void> {
+    if (
+      !context.selectedCondominium ||
+      !context.userId ||
+      !context.email ||
+      !context.departmentNumber
+    ) {
+      return; // No hay datos suficientes para cachear
+    }
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 90);
+
+    context.cachedIdentity = {
+      email: context.email,
+      departmentNumber: context.departmentNumber,
+      userId: context.userId,
+      clientId: context.selectedCondominium.clientId,
+      condominiumId: context.selectedCondominium.condominiumId,
+      condominiumName: context.selectedCondominium.condominiumName,
+      tower: context.selectedCondominium.tower,
+      residentName: undefined,
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+    };
+
+    // Intentar obtener el nombre del residente (no crítico)
+    try {
+      const userDoc = await this.firestore
+        .doc(
+          `clients/${context.selectedCondominium.clientId}/condominiums/${context.selectedCondominium.condominiumId}/users/${context.userId}`,
+        )
+        .get();
+      if (userDoc.exists) {
+        const u = userDoc.data()!;
+        context.cachedIdentity.residentName =
+          u.name
+            ? `${u.name}${u.lastName ? ' ' + u.lastName : ''}`
+            : u.email;
+      }
+    } catch (e) {
+      this.logger.warn(
+        `No se pudo obtener nombre del residente para caché: ${e.message}`,
+      );
+    }
+
+    this.logger.log(
+      `Identidad cacheada para ${context.phoneNumber} (expira: ${expiresAt.toISOString()})`,
+    );
+  }
+
+  /**
+   * Maneja la respuesta del usuario al confirmar su identidad cacheada.
+   */
+  private async handleCachedIdentityConfirmation(
+    context: ConversationContext,
+    text: string,
+  ): Promise<void> {
+    const { phoneNumber } = context;
+    const t = text.trim().toLowerCase();
+
+    if (t === 'cache_yes' || t === 'si' || t === 'sí' || t === 'yes') {
+      // Restaurar identidad desde caché
+      const cached = context.cachedIdentity!;
+      context.email = cached.email;
+      context.departmentNumber = cached.departmentNumber;
+      context.userId = cached.userId;
+      context.tower = cached.tower;
+      context.selectedCondominium = {
+        clientId: cached.clientId,
+        condominiumId: cached.condominiumId,
+        condominiumName: cached.condominiumName,
+        userId: cached.userId,
+        tower: cached.tower,
+      };
+      context.state = ConversationState.MENU_SELECTION;
+      this.logger.log(
+        `Identidad confirmada desde caché para ${phoneNumber}`,
+      );
+      await this.sendMenuMessage(context, '✅ ¡Perfecto!');
+    } else if (t === 'cache_no' || t === 'no' || t === 'cambiar') {
+      // Limpiar caché y pedir nueva autenticación
+      context.cachedIdentity = undefined;
+      context.selectedCondominium = undefined;
+      context.userId = undefined;
+      context.email = undefined;
+      context.departmentNumber = undefined;
+      context.tower = undefined;
+      context.state = ConversationState.MENU_SELECTION;
+      this.logger.log(
+        `Usuario ${phoneNumber} eligió cambiar cuenta. Caché borrada.`,
+      );
+      await this.sendMenuMessage(
+        context,
+        '🔄 De acuerdo. Cuando selecciones una opción te pediré verificar tu identidad de nuevo.',
+      );
+    } else {
+      // Respuesta no reconocida, reenviar botones
+      const cached = context.cachedIdentity!;
+      await this.sendInteractiveButtons(
+        phoneNumber,
+        `¿Confirmas que sigues siendo *${cached.residentName || cached.email}* en *${cached.condominiumName || cached.condominiumId}*?`,
+        [
+          { id: 'cache_yes', title: '✅ Sí, soy yo' },
+          { id: 'cache_no', title: '🔄 Cambiar cuenta' },
+        ],
+        context,
+      );
+    }
+  }
 
   private getMenuMessage(): string {
     return `¿En qué te puedo ayudar? 😊
@@ -902,8 +1224,17 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     const option = parseInt(text.trim(), 10);
     const { phoneNumber } = context;
 
+    // Si la identidad ya está precargada desde caché, omitir el flujo de auth
+    const hasPreloadedIdentity = !!(context.selectedCondominium && context.userId && context.email && context.departmentNumber);
+
     switch (option) {
       case 1:
+        if (hasPreloadedIdentity) {
+          context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
+          await this.sendAndLogMessage({ phoneNumber, message: '💳 *Registrar comprobante de pago*\n\nBuscando tus cargos pendientes... ⏳' }, context);
+          await this.showPendingCharges(context);
+          break;
+        }
         context.state = ConversationState.PAYMENT_AWAITING_EMAIL;
         context.retryCount = 0;
         await this.sendAndLogMessage(
@@ -917,6 +1248,12 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         break;
 
       case 2:
+        if (hasPreloadedIdentity) {
+          context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
+          await this.sendAndLogMessage({ phoneNumber, message: '📋 *Documentos del condominio*\n\nBuscando documentos disponibles... 📋' }, context);
+          await this.showAvailableDocuments(context);
+          break;
+        }
         context.state = ConversationState.DOCUMENTS_AWAITING_EMAIL;
         context.retryCount = 0;
         await this.sendAndLogMessage(
@@ -930,6 +1267,12 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         break;
 
       case 3:
+        if (hasPreloadedIdentity) {
+          context.state = ConversationState.ACCOUNT_GENERATING;
+          await this.sendAndLogMessage({ phoneNumber, message: '📊 *Estado de cuenta*\n\nGenerando tu estado de cuenta... 📊' }, context);
+          await this.handleAccountGenerating(context);
+          break;
+        }
         context.state = ConversationState.ACCOUNT_AWAITING_EMAIL;
         context.retryCount = 0;
         await this.sendAndLogMessage(
@@ -943,6 +1286,12 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         break;
 
       case 4:
+        if (hasPreloadedIdentity) {
+          context.state = ConversationState.VISIT_AWAITING_TYPE;
+          context.visitDraft = {};
+          await this.sendAndLogMessage({ phoneNumber, message: `🛎️ *Registrar visita programada*\n\n${this.getVisitTypePrompt()}` }, context);
+          break;
+        }
         context.state = ConversationState.VISIT_AWAITING_EMAIL;
         context.retryCount = 0;
         context.visitDraft = {};
@@ -957,6 +1306,11 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         break;
 
       case 5:
+        if (hasPreloadedIdentity) {
+          context.commonAreaDraft = {};
+          await this.continueAreaAfterAuth(context);
+          break;
+        }
         context.state = ConversationState.AREA_AWAITING_EMAIL;
         context.retryCount = 0;
         context.commonAreaDraft = {};
@@ -971,13 +1325,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         break;
 
       default:
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `Hmm, no entendí esa opción 🤔\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, 'Hmm, no entendí esa opción 🤔');
         break;
     }
   }
@@ -998,6 +1346,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     context.commonAreaDraft = undefined;
     context.userId = undefined;
     context.retryCount = 0;
+    // NOTE: cachedIdentity is intentionally preserved across resets
   }
 
   /** Verifica si el usuario quiere cancelar y regresar al menú */
@@ -1019,14 +1368,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message:
-              '😅 Parece que hay un problema con el correo. Volvamos al menú para intentarlo de nuevo.\n\n' + this.getMenuMessage(),
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 Parece que hay un problema con el correo. Volvamos al menú para intentarlo de nuevo.');
         return;
       }
       await this.sendAndLogMessage(
@@ -1072,14 +1414,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número de departamento coincidan exactamente con los que tienes registrados en la plataforma.\n\nSi el problema persiste, contacta a tu administrador.\n\n' + this.getMenuMessage(),
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número de departamento coincidan exactamente con los que tienes registrados en la plataforma.\n\nSi el problema persiste, contacta a tu administrador.');
           return;
         }
         context.email = undefined;
@@ -1112,13 +1447,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.');
           return;
         }
         context.email = undefined;
@@ -1158,6 +1487,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         context.selectedCondominium = matches[0];
         context.retryCount = 0;
         context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
+        await this.saveCachedIdentity(context);
         await this.sendAndLogMessage(
           {
             phoneNumber,
@@ -1217,13 +1547,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       );
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '😅 Se perdió el contexto. Empecemos de nuevo.');
       return;
     }
 
@@ -1233,13 +1557,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré identificar la torre después de varios intentos. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré identificar la torre después de varios intentos. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -1290,13 +1608,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       );
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.');
       return;
     }
 
@@ -1315,6 +1627,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       context.selectedCondominium = filtered[0];
       context.possibleCondominiums = undefined;
       context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
+      await this.saveCachedIdentity(context);
       await this.sendAndLogMessage(
         {
           phoneNumber,
@@ -1361,6 +1674,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     if (selected.userId) context.userId = selected.userId;
     if (selected.tower) context.tower = selected.tower;
     context.state = ConversationState.PAYMENT_AWAITING_CHARGE_SELECTION;
+    await this.saveCachedIdentity(context);
 
     await this.sendAndLogMessage(
       {
@@ -1469,7 +1783,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
         await this.sendAndLogMessage(
-          { phoneNumber, message: '😅 Parece que hay un problema con el correo. Volvamos al menú.\n\n' + this.getMenuMessage() },
+          { phoneNumber, message: '😅 Parece que hay un problema con el correo. Volvamos al menú.' },
           context,
         );
         return;
@@ -1513,13 +1827,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: '😅 No logramos encontrar tu cuenta. Verifica que el correo y número de departamento sean exactamente los que tienes en la plataforma.\n\n' + this.getMenuMessage(),
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '😅 No logramos encontrar tu cuenta. Verifica que el correo y número de departamento sean exactamente los que tienes en la plataforma.');
           return;
         }
         context.email = undefined;
@@ -1544,13 +1852,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.');
           return;
         }
         context.email = undefined;
@@ -1588,6 +1890,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         context.selectedCondominium = matches[0];
         context.retryCount = 0;
         context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
+        await this.saveCachedIdentity(context);
         await this.sendAndLogMessage(
           {
             phoneNumber,
@@ -1636,13 +1939,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     ) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '😅 Se perdió el contexto. Empecemos de nuevo.');
       return;
     }
 
@@ -1652,13 +1949,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré identificar la torre. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré identificar la torre. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -1701,13 +1992,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       );
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.');
       return;
     }
 
@@ -1726,6 +2011,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       context.selectedCondominium = filtered[0];
       context.possibleCondominiums = undefined;
       context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
+      await this.saveCachedIdentity(context);
       await this.sendAndLogMessage(
         {
           phoneNumber,
@@ -1771,6 +2057,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     if (selected.userId) context.userId = selected.userId;
     if (selected.tower) context.tower = selected.tower;
     context.state = ConversationState.DOCUMENTS_AWAITING_DOCUMENT_SELECTION;
+    await this.saveCachedIdentity(context);
 
     await this.sendAndLogMessage(
       {
@@ -1992,7 +2279,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
         await this.sendAndLogMessage(
-          { phoneNumber, message: '😅 Parece que hay un problema con el correo. Volvamos al menú.\n\n' + this.getMenuMessage() },
+          { phoneNumber, message: '😅 Parece que hay un problema con el correo. Volvamos al menú.' },
           context,
         );
         return;
@@ -2036,13 +2323,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: '😅 No logramos encontrar tu cuenta. Verifica que el correo y número de departamento sean exactamente los que tienes en la plataforma.\n\n' + this.getMenuMessage(),
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '😅 No logramos encontrar tu cuenta. Verifica que el correo y número de departamento sean exactamente los que tienes en la plataforma.');
           return;
         }
         context.email = undefined;
@@ -2067,13 +2348,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.');
           return;
         }
         context.email = undefined;
@@ -2111,6 +2386,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         context.selectedCondominium = matches[0];
         context.retryCount = 0;
         context.state = ConversationState.ACCOUNT_GENERATING;
+        await this.saveCachedIdentity(context);
         await this.sendAndLogMessage(
           {
             phoneNumber,
@@ -2167,13 +2443,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     ) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '😅 Se perdió el contexto. Empecemos de nuevo.');
       return;
     }
 
@@ -2183,13 +2453,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré identificar la torre. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré identificar la torre. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -2232,13 +2496,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       );
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.');
       return;
     }
 
@@ -2257,6 +2515,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       context.selectedCondominium = filtered[0];
       context.possibleCondominiums = undefined;
       context.state = ConversationState.ACCOUNT_GENERATING;
+      await this.saveCachedIdentity(context);
       await this.sendAndLogMessage(
         {
           phoneNumber,
@@ -2302,6 +2561,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     if (selected.userId) context.userId = selected.userId;
     if (selected.tower) context.tower = selected.tower;
     context.state = ConversationState.ACCOUNT_GENERATING;
+    await this.saveCachedIdentity(context);
 
     await this.sendAndLogMessage(
       {
@@ -3712,15 +3972,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message:
-              '😅 Parece que hay un problema con el correo. Volvamos al menú.\n\n' +
-              this.getMenuMessage(),
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 Parece que hay un problema con el correo. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -3764,15 +4016,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número coincidan exactamente con los registrados.\n\n' +
-                this.getMenuMessage(),
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número coincidan exactamente con los registrados.');
           return;
         }
         context.email = undefined;
@@ -3795,13 +4039,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.');
           return;
         }
         context.email = undefined;
@@ -3839,6 +4077,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         context.selectedCondominium = matches[0];
         context.retryCount = 0;
         context.state = ConversationState.VISIT_AWAITING_TYPE;
+        await this.saveCachedIdentity(context);
         await this.sendAndLogMessage(
           {
             phoneNumber,
@@ -3882,13 +4121,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     ) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '😅 Se perdió el contexto. Empecemos de nuevo.');
       return;
     }
 
@@ -3898,13 +4131,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré identificar la torre. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré identificar la torre. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -3945,13 +4172,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     if (phoneConflict) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar.');
       return;
     }
 
@@ -3962,6 +4183,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       context.selectedCondominium = filtered[0];
       context.possibleCondominiums = undefined;
       context.state = ConversationState.VISIT_AWAITING_TYPE;
+      await this.saveCachedIdentity(context);
       await this.sendAndLogMessage(
         {
           phoneNumber,
@@ -4005,6 +4227,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     if (selected.userId) context.userId = selected.userId;
     if (selected.tower) context.tower = selected.tower;
     context.state = ConversationState.VISIT_AWAITING_TYPE;
+    await this.saveCachedIdentity(context);
     await this.sendAndLogMessage(
       {
         phoneNumber,
@@ -4047,13 +4270,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No te entendí. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No te entendí. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4094,13 +4311,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré obtener un nombre válido. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré obtener un nombre válido. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4155,13 +4366,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré entender la fecha y hora. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré entender la fecha y hora. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4181,13 +4386,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No pudimos validar la fecha de llegada. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No pudimos validar la fecha de llegada. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4240,13 +4439,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré entender la hora de salida. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré entender la hora de salida. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4269,13 +4462,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No pudimos validar la hora de salida. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No pudimos validar la hora de salida. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4312,13 +4499,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré entender los días. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré entender los días. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4355,13 +4536,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré entender la hora. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré entender la hora. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4398,13 +4573,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré entender la hora. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré entender la hora. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4469,13 +4638,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré entender la fecha. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré entender la fecha. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4541,13 +4704,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré entender la fecha final. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré entender la fecha final. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -4691,13 +4848,16 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     }
 
     lines.push(vehicleLine);
-    lines.push('');
-    lines.push(
-      'Responde *sí* para confirmar y generar el QR, o *no* para cancelar.',
-    );
 
-    await this.sendAndLogMessage(
-      { phoneNumber, message: lines.join('\n') },
+    const summaryText = lines.join('\n');
+
+    await this.sendInteractiveButtons(
+      phoneNumber,
+      summaryText,
+      [
+        { id: 'visit_confirm_yes', title: '✅ Confirmar' },
+        { id: 'visit_confirm_no', title: '❌ Cancelar' },
+      ],
       context,
     );
   }
@@ -4708,29 +4868,25 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   ) {
     const { phoneNumber } = context;
     const t = text.trim().toLowerCase();
-    const yes = ['si', 'sí', 'yes', 'confirmar', 'ok', 'dale', 'correcto'];
-    const no = ['no', 'cancelar', 'cancel', 'nel', 'incorrecto'];
+    // Aceptar tanto texto como IDs de botones interactivos
+    const yes = ['si', 'sí', 'yes', 'confirmar', 'ok', 'dale', 'correcto', 'visit_confirm_yes'];
+    const no = ['no', 'cancelar', 'cancel', 'nel', 'incorrecto', 'visit_confirm_no'];
 
     if (no.includes(t)) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `❎ Visita cancelada. ¿Hay algo más en lo que pueda ayudarte?\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '❎ Visita cancelada. ¿Hay algo más en lo que pueda ayudarte?');
       return;
     }
 
     if (!yes.includes(t)) {
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message:
-            '🤔 Responde *sí* para confirmar y generar el QR, o *no* para cancelar.',
-        },
+      await this.sendInteractiveButtons(
+        phoneNumber,
+        '🤔 ¿Confirmas los datos de la visita?',
+        [
+          { id: 'visit_confirm_yes', title: '✅ Confirmar' },
+          { id: 'visit_confirm_no', title: '❌ Cancelar' },
+        ],
         context,
       );
       return;
@@ -4955,15 +5111,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message:
-              '😅 Parece que hay un problema con el correo. Volvamos al menú.\n\n' +
-              this.getMenuMessage(),
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 Parece que hay un problema con el correo. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -5009,15 +5157,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message:
-                '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número coincidan exactamente con los registrados.\n\n' +
-                this.getMenuMessage(),
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '😅 No logramos encontrar tu cuenta después de varios intentos. Verifica que el correo y número coincidan exactamente con los registrados.');
           return;
         }
         context.email = undefined;
@@ -5040,13 +5180,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         if (context.retryCount >= 3) {
           this.resetContext(context);
           context.state = ConversationState.MENU_SELECTION;
-          await this.sendAndLogMessage(
-            {
-              phoneNumber,
-              message: `🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.\n\n${this.getMenuMessage()}`,
-            },
-            context,
-          );
+          await this.sendMenuMessage(context, '🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.');
           return;
         }
         context.email = undefined;
@@ -5121,13 +5255,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     ) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `😅 Se perdió el contexto. Empecemos de nuevo.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '😅 Se perdió el contexto. Empecemos de nuevo.');
       return;
     }
 
@@ -5137,13 +5265,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       if (context.retryCount >= 3) {
         this.resetContext(context);
         context.state = ConversationState.MENU_SELECTION;
-        await this.sendAndLogMessage(
-          {
-            phoneNumber,
-            message: `😅 No logré identificar la torre. Volvamos al menú.\n\n${this.getMenuMessage()}`,
-          },
-          context,
-        );
+        await this.sendMenuMessage(context, '😅 No logré identificar la torre. Volvamos al menú.');
         return;
       }
       await this.sendAndLogMessage(
@@ -5184,13 +5306,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     if (phoneConflict) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar.\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar.');
       return;
     }
 
@@ -5260,6 +5376,11 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       return;
     }
 
+    // Guardar identidad en caché (solo si no viene ya de la caché)
+    if (!context.cachedIdentity || !this.isCacheValid(context.cachedIdentity.expiresAt)) {
+      await this.saveCachedIdentity(context);
+    }
+
     const { clientId, condominiumId } = selectedCondominium;
 
     // ── 1. Verificar adeudos ──────────────────────────────────────────────
@@ -5274,17 +5395,11 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       // Bloquear: el residente tiene adeudos
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message:
-            '🚫 *No es posible realizar la reservación*\n\n' +
-            'Tienes adeudos pendientes en tu cuenta. Para reservar un área común es necesario estar al corriente en tus pagos.\n\n' +
-            'Por favor ponte en contacto con tu administrador para regularizar tu situación.\n\n' +
-            `¿Puedo ayudarte en algo más?\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context,
+        '🚫 *No es posible realizar la reservación*\n\n' +
+        'Tienes adeudos pendientes en tu cuenta. Para reservar un área común es necesario estar al corriente en tus pagos.\n\n' +
+        'Por favor ponte en contacto con tu administrador para regularizar tu situación.\n\n' +
+        '¿Puedo ayudarte en algo más?');
       return;
     }
 
@@ -5297,15 +5412,7 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     if (areas.length === 0) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message:
-            '😔 No hay áreas comunes disponibles para reservar en este momento. Si crees que es un error, contacta a tu administrador.\n\n' +
-            this.getMenuMessage(),
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '😔 No hay áreas comunes disponibles para reservar en este momento. Si crees que es un error, contacta a tu administrador.');
       return;
     }
 
@@ -5590,18 +5697,20 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         ? `💰 Costo estimado: *${this.commonAreasBookingService.formatCurrency(cost)}* (${hours} hr${hours !== 1 ? 's' : ''})`
         : `💰 Sin costo de reservación`;
 
-    await this.sendAndLogMessage(
-      {
-        phoneNumber,
-        message:
-          `📋 *Resumen de tu reservación:*\n\n` +
-          `🏊 Área: *${draft.selectedAreaName}*\n` +
-          `📅 Fecha: *${humanDate}*\n` +
-          `🕐 Horario: *${startTime} – ${parsedTime}*\n` +
-          `${costLine}\n\n` +
-          `¿Confirmas la reservación?\n` +
-          `Responde *sí* para confirmar o *no* para cancelar.`,
-      },
+    const summaryText =
+      `📋 *Resumen de tu reservación:*\n\n` +
+      `🏊 Área: *${draft.selectedAreaName}*\n` +
+      `📅 Fecha: *${humanDate}*\n` +
+      `🕐 Horario: *${startTime} – ${parsedTime}*\n` +
+      `${costLine}`;
+
+    await this.sendInteractiveButtons(
+      phoneNumber,
+      summaryText,
+      [
+        { id: 'area_confirm_yes', title: '✅ Confirmar' },
+        { id: 'area_confirm_no', title: '❌ Cancelar' },
+      ],
       context,
     );
   }
@@ -5613,29 +5722,25 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   ) {
     const { phoneNumber } = context;
     const t = text.trim().toLowerCase();
-    const yes = ['si', 'sí', 'yes', 'confirmar', 'ok', 'dale', 'correcto', 's'];
-    const no = ['no', 'cancelar', 'cancel', 'nel', 'incorrecto'];
+    // Aceptar tanto texto como IDs de botones interactivos
+    const yes = ['si', 'sí', 'yes', 'confirmar', 'ok', 'dale', 'correcto', 's', 'area_confirm_yes'];
+    const no = ['no', 'cancelar', 'cancel', 'nel', 'incorrecto', 'area_confirm_no'];
 
     if (no.includes(t)) {
       this.resetContext(context);
       context.state = ConversationState.MENU_SELECTION;
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message: `❎ Reservación cancelada. ¿Hay algo más en lo que pueda ayudarte?\n\n${this.getMenuMessage()}`,
-        },
-        context,
-      );
+      await this.sendMenuMessage(context, '❎ Reservación cancelada. ¿Hay algo más en lo que pueda ayudarte?');
       return;
     }
 
     if (!yes.includes(t)) {
-      await this.sendAndLogMessage(
-        {
-          phoneNumber,
-          message:
-            '🤔 Responde *sí* para confirmar la reservación o *no* para cancelar.',
-        },
+      await this.sendInteractiveButtons(
+        phoneNumber,
+        '🤔 ¿Confirmas los datos de la reservación?',
+        [
+          { id: 'area_confirm_yes', title: '✅ Confirmar' },
+          { id: 'area_confirm_no', title: '❌ Cancelar' },
+        ],
         context,
       );
       return;
