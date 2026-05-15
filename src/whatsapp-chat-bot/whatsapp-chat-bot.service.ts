@@ -1231,6 +1231,34 @@ export class WhatsappChatBotService implements OnModuleInit {
       context.departmentNumber = undefined;
       context.tower = undefined;
       context.state = ConversationState.MENU_SELECTION;
+
+      // IMPORTANTE: Firestore está configurado con `ignoreUndefinedProperties: true`
+      // (ver firebasesdk.module.ts). Eso significa que el `set({merge:true})` que
+      // hace `saveConversationContext` OMITE los campos puestos a `undefined`,
+      // dejando intactos los valores previos en Firestore. Para que en el
+      // siguiente mensaje `hasPreloadedIdentity` realmente sea `false` y se
+      // dispare la verificación, hay que BORRAR esos campos explícitamente.
+      try {
+        await this.firestore
+          .collection(STATE_COLLECTION)
+          .doc(phoneNumber)
+          .set(
+            {
+              cachedIdentity: admin.firestore.FieldValue.delete(),
+              selectedCondominium: admin.firestore.FieldValue.delete(),
+              userId: admin.firestore.FieldValue.delete(),
+              email: admin.firestore.FieldValue.delete(),
+              departmentNumber: admin.firestore.FieldValue.delete(),
+              tower: admin.firestore.FieldValue.delete(),
+            },
+            { merge: true },
+          );
+      } catch (err) {
+        this.logger.warn(
+          `No se pudieron borrar campos de identidad en Firestore para ${phoneNumber}: ${err.message}`,
+        );
+      }
+
       this.logger.log(
         `Usuario ${phoneNumber} eligió cambiar cuenta. Caché borrada.`,
       );

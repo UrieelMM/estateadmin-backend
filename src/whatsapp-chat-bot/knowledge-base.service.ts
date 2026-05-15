@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
-import pdfParse from 'pdf-parse';
+// `pdf-parse` es CommonJS y exporta directamente la función (`module.exports = Pdf`).
+// El `tsconfig` tiene `allowSyntheticDefaultImports: true` pero NO tiene `esModuleInterop`,
+// así que `import pdfParse from 'pdf-parse'` compila a `pdf_parse_1.default` (undefined)
+// y revienta en runtime con "(0 , pdf_parse_1.default) is not a function".
+// Usamos `import = require` para emitir un require directo a la función.
+import pdfParse = require('pdf-parse');
 import { GeminiService } from '../gemini/gemini.service';
 import {
   PublicDocumentsService,
@@ -50,6 +55,29 @@ export interface ReindexResult {
 }
 
 const KB_COLLECTION = 'knowledgeBase';
+
+/**
+ * Etiqueta amigable para mostrar la fuente de un documento al residente
+ * (en las citas del chatbot, en las advertencias del reindex y en la vista
+ * "Probar el asistente" del dashboard).
+ *
+ * Para `aiKnowledgeBase` el residente nunca debe ver el nombre técnico ni
+ * "Conocimiento adicional para la IA": esa fuente es contenido que el
+ * administrador subió específicamente para alimentar al asistente, así que
+ * se presenta como "Información proporcionada por Administración".
+ *
+ * Para el resto de llaves se conserva el nombre del documento tal como lo
+ * cargó el admin (o la llave como último recurso).
+ */
+function friendlyDocSourceName(
+  docKey: string,
+  documentName?: string,
+): string {
+  if (docKey === 'aiKnowledgeBase') {
+    return 'Información proporcionada por Administración';
+  }
+  return documentName || docKey;
+}
 
 @Injectable()
 export class KnowledgeBaseService {
@@ -288,7 +316,9 @@ export class KnowledgeBaseService {
         const payload: Partial<KnowledgeChunk> = {
           source: 'document',
           sourceId: document.id || docKey,
-          sourceName: document.name,
+          // Para `aiKnowledgeBase` mostramos siempre "Información proporcionada
+          // por Administración" en lugar del nombre técnico/UI.
+          sourceName: friendlyDocSourceName(docKey, document.name),
           sourceKey: docKey,
           chunkIndex: i,
           text: chunkText,
@@ -409,8 +439,11 @@ export class KnowledgeBaseService {
               result.documentChunksCreated += created;
             }
           } catch (e) {
+            // Mostrar etiqueta amigable en el listado de advertencias del
+            // dashboard (especialmente para `aiKnowledgeBase`).
+            const label = friendlyDocSourceName(key, document.name);
             result.errors.push(
-              `Documento ${key}: ${e.message?.substring(0, 200)}`,
+              `Documento ${label}: ${e.message?.substring(0, 200)}`,
             );
           }
         }
