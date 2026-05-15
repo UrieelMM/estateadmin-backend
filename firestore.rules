@@ -267,14 +267,22 @@ service cloud.firestore {
         
         // ─── Mantenimiento Programado ───
         match /scheduledMaintenance/{taskId} {
-          // Lectura: solo usuarios de mantenimiento del cliente
-          allow read: if (isMaintenanceUser() && belongsToClient(clientId));
-          // Creación: solo usuarios de mantenimiento del cliente
-          allow create: if (isMaintenanceUser() && belongsToClient(clientId));
-          // Actualización: solo usuarios de mantenimiento del cliente
-          allow update: if (isMaintenanceUser() && belongsToClient(clientId));
-          // Eliminación: solo usuarios de mantenimiento del cliente
-          allow delete: if (isMaintenanceUser() && belongsToClient(clientId));
+          // Lectura: usuarios de mantenimiento, admin, assistant y super-admin
+          allow read: if (isMaintenanceUser() && belongsToClient(clientId))
+                      || (isAdminOrAssistant() && belongsToClient(clientId))
+                      || isSuperAdmin();
+          // Creación: usuario de mantenimiento o admin/assistant desde el dashboard
+          allow create: if (isMaintenanceUser() && belongsToClient(clientId))
+                        || (isAdminOrAssistant() && belongsToClient(clientId))
+                        || isSuperAdmin();
+          // Actualización: usuario de mantenimiento o admin/assistant desde el dashboard
+          allow update: if (isMaintenanceUser() && belongsToClient(clientId))
+                        || (isAdminOrAssistant() && belongsToClient(clientId))
+                        || isSuperAdmin();
+          // Eliminación: usuario de mantenimiento, admin o super-admin
+          allow delete: if (isMaintenanceUser() && belongsToClient(clientId))
+                        || (isAdmin() && belongsToClient(clientId))
+                        || isSuperAdmin();
         }
         
         // ─── Tokens de Notificaciones Push ───

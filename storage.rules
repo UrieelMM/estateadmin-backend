@@ -103,14 +103,22 @@ service firebase.storage {
     }
 
     /* ─── Inventarios ─── */
+    /* Maintenance users can read images of inventory items and (in items
+       marked managedByMaintenanceApp=true) attach new images. The
+       managedByMaintenanceApp check lives in Firestore rules; Storage
+       enforces role + size + image content-type. */
     match /clients/{clientId}/condominiums/{condominiumId}/inventory_items/{itemId}/{fileName} {
-      allow read:    if belongsToClient(clientId) || isSuperAdmin();
+      allow read:    if belongsToClient(clientId)
+                       || (isMaintenanceUser() && belongsToClient(clientId))
+                       || isSuperAdmin();
       allow create, update: if (
         (isAdminOrAssistant() && belongsToClient(clientId) && isValidFileSize() && isValidContentType())
+        || (isMaintenanceUser() && belongsToClient(clientId) && isValidFileSize() && request.resource.contentType.matches('image/.*'))
         || isSuperAdmin()
       );
       allow delete:  if (
         (isAdmin() && belongsToClient(clientId))
+        || (isMaintenanceUser() && belongsToClient(clientId))
         || isSuperAdmin()
       );
     }

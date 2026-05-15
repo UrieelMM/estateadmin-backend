@@ -22,6 +22,8 @@ import {
   CommonAreasBookingService,
   CommonArea,
 } from './common-areas-booking.service';
+import { KnowledgeBaseService } from './knowledge-base.service';
+import { GeminiService } from '../gemini/gemini.service';
 
 // Asegúrate de inicializar Firebase Admin en tu módulo principal (e.g., app.module.ts)
 // import * as admin from 'firebase-admin';
@@ -93,6 +95,14 @@ enum ConversationState {
 
   // Estado para confirmar identidad cacheada
   CACHED_IDENTITY_CONFIRMING = 'CACHED_IDENTITY_CONFIRMING',
+
+  // Estados para asistente con RAG sobre reglamento y publicaciones (opción 6)
+  INQUIRY_AWAITING_EMAIL = 'INQUIRY_AWAITING_EMAIL',
+  INQUIRY_AWAITING_DEPARTMENT = 'INQUIRY_AWAITING_DEPARTMENT',
+  INQUIRY_AWAITING_TOWER = 'INQUIRY_AWAITING_TOWER',
+  INQUIRY_AWAITING_CONDOMINIUM_SELECTION = 'INQUIRY_AWAITING_CONDOMINIUM_SELECTION',
+  INQUIRY_AWAITING_QUESTION = 'INQUIRY_AWAITING_QUESTION',
+  INQUIRY_PROCESSING = 'INQUIRY_PROCESSING',
 
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR',
@@ -203,6 +213,8 @@ export class WhatsappChatBotService implements OnModuleInit {
     private readonly accountStatementService: AccountStatementService,
     private readonly scheduledVisitsService: ScheduledVisitsService,
     private readonly commonAreasBookingService: CommonAreasBookingService,
+    private readonly knowledgeBaseService: KnowledgeBaseService,
+    private readonly geminiService: GeminiService,
   ) {}
 
   onModuleInit() {
@@ -872,6 +884,38 @@ export class WhatsappChatBotService implements OnModuleInit {
         await this.handleAreaConfirmation(context, text);
         break;
 
+      // Estados para asistente RAG (opción 6)
+      case ConversationState.INQUIRY_AWAITING_EMAIL:
+        await this.handleInquiryEmailInput(context, text);
+        break;
+
+      case ConversationState.INQUIRY_AWAITING_DEPARTMENT:
+        await this.handleInquiryDepartmentInput(context, text);
+        break;
+
+      case ConversationState.INQUIRY_AWAITING_TOWER:
+        await this.handleInquiryTowerInput(context, text);
+        break;
+
+      case ConversationState.INQUIRY_AWAITING_CONDOMINIUM_SELECTION:
+        await this.handleInquiryCondominiumSelection(context, text);
+        break;
+
+      case ConversationState.INQUIRY_AWAITING_QUESTION:
+        await this.handleInquiryQuestion(context, text);
+        break;
+
+      case ConversationState.INQUIRY_PROCESSING:
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '⏳ Ya estoy procesando tu pregunta anterior. Dame unos segundos, por favor.',
+          },
+          context,
+        );
+        break;
+
       case ConversationState.COMPLETED:
         context.state = ConversationState.MENU_SELECTION;
         await this.sendMenuMessage(context, '¿Hay algo más en lo que pueda ayudarte?');
@@ -1050,6 +1094,11 @@ export class WhatsappChatBotService implements OnModuleInit {
               title: '🏊 Reservar área común',
               description: 'Reservar área del condominio',
             },
+            {
+              id: '6',
+              title: '🤖 Preguntar al asistente',
+              description: 'Dudas del reglamento y avisos',
+            },
           ],
         },
       ],
@@ -1212,8 +1261,9 @@ export class WhatsappChatBotService implements OnModuleInit {
 3️⃣ Ver mi estado de cuenta
 4️⃣ Registrar una visita y obtener QR
 5️⃣ Reservar un área común
+6️⃣ Preguntar al asistente (reglamento y avisos)
 
-Responde con *1*, *2*, *3*, *4* o *5*.
+Responde con *1*, *2*, *3*, *4*, *5* o *6*.
 _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   }
 
@@ -1319,6 +1369,31 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
             phoneNumber,
             message:
               '🏊 *Reservar área común*\n\nVoy a ayudarte a reservar una de las áreas de tu condominio. Primero necesito verificar tu identidad.\n\n¿Cuál es tu correo electrónico registrado en la plataforma?',
+          },
+          context,
+        );
+        break;
+
+      case 6:
+        if (hasPreloadedIdentity) {
+          context.state = ConversationState.INQUIRY_AWAITING_QUESTION;
+          await this.sendAndLogMessage(
+            {
+              phoneNumber,
+              message:
+                '🤖 *Asistente del condominio*\n\nPuedes preguntarme sobre:\n• El reglamento interno\n• Manual de convivencia\n• Políticas de áreas comunes\n• Publicaciones y avisos recientes\n\n📝 Escribe tu pregunta y haré mi mejor esfuerzo por responderte.\n\n_(Escribe *menu* para volver al menú principal)_',
+            },
+            context,
+          );
+          break;
+        }
+        context.state = ConversationState.INQUIRY_AWAITING_EMAIL;
+        context.retryCount = 0;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '🤖 *Asistente del condominio*\n\nTe ayudaré a resolver dudas sobre el reglamento, políticas y avisos del condominio. Primero necesito verificar tu identidad.\n\n¿Cuál es tu correo electrónico registrado en la plataforma?',
           },
           context,
         );
@@ -5895,6 +5970,436 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       this.logger.error(
         `Error al expirar visitas vencidas: ${error.message}`,
         error.stack,
+      );
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // FLUJO DEL ASISTENTE RAG (OPCIÓN 6)
+  // ════════════════════════════════════════════════════════════════════════
+
+  private async handleInquiryEmailInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (!this.isValidEmail(text)) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendMenuMessage(
+          context,
+          '😅 Parece que hay un problema con el correo. Volvamos al menú.',
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `📧 Ese correo no parece válido. Debe tener el formato *nombre@dominio.com*\n\n_(Intento ${context.retryCount} de 3 — escribe *cancelar* para salir)_`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.email = this.cleanInputKeepArroba(text);
+    context.retryCount = 0;
+    context.state = ConversationState.INQUIRY_AWAITING_DEPARTMENT;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          '✉️ Perfecto. Ahora dime tu *número de departamento o casa* (ej: 101, A-3, 463).',
+      },
+      context,
+    );
+  }
+
+  private async handleInquiryDepartmentInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    context.departmentNumber = text;
+
+    try {
+      const possibleCondos = await this.findUserCondominiums(
+        context.phoneNumber,
+        context.email,
+        context.departmentNumber,
+      );
+
+      if (!possibleCondos || possibleCondos.length === 0) {
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendMenuMessage(
+            context,
+            '😅 No logramos encontrar tu cuenta. Verifica que el correo y número de departamento sean exactamente los que tienes en la plataforma.',
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.INQUIRY_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔍 No encontré ninguna cuenta con esos datos. Puede ser un pequeño error de escritura.\n\n¿Puedes intentarlo de nuevo? Ingresa tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+
+      const disambiguated = this.autoDisambiguateByPhone(possibleCondos);
+      if (disambiguated.length === 0) {
+        context.retryCount = (context.retryCount ?? 0) + 1;
+        if (context.retryCount >= 3) {
+          this.resetContext(context);
+          context.state = ConversationState.MENU_SELECTION;
+          await this.sendMenuMessage(
+            context,
+            '🚫 Los datos no coinciden con el teléfono registrado. Si crees que es un error, contacta a tu administrador.',
+          );
+          return;
+        }
+        context.email = undefined;
+        context.departmentNumber = undefined;
+        context.state = ConversationState.INQUIRY_AWAITING_EMAIL;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `🔒 Por seguridad, los datos deben coincidir con el teléfono registrado. Vuelve a intentarlo con tu *correo electrónico* registrado.\n\n_(Intento ${context.retryCount} de 3)_`,
+          },
+          context,
+        );
+        return;
+      }
+      const matches = disambiguated;
+
+      const ambiguousTowers = this.detectTowerAmbiguity(matches);
+      if (ambiguousTowers.length > 0) {
+        context.possibleCondominiums = matches;
+        context.possibleTowers = ambiguousTowers;
+        context.retryCount = 0;
+        context.state = ConversationState.INQUIRY_AWAITING_TOWER;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: this.formatTowerOptionsMessage(ambiguousTowers),
+          },
+          context,
+        );
+        return;
+      }
+
+      if (matches.length === 1) {
+        context.userId = matches[0].userId;
+        context.selectedCondominium = matches[0];
+        context.retryCount = 0;
+        context.state = ConversationState.INQUIRY_AWAITING_QUESTION;
+        await this.saveCachedIdentity(context);
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message: `✅ ¡Te encontré! Estás en *${matches[0].condominiumName || matches[0].condominiumId}*.\n\n🤖 *Asistente del condominio*\n\nPuedes preguntarme sobre el reglamento, manual de convivencia, políticas de áreas comunes o publicaciones recientes.\n\n📝 Escribe tu pregunta.\n\n_(Escribe *menu* para volver al menú principal)_`,
+          },
+          context,
+        );
+      } else {
+        context.userId = undefined;
+        context.possibleCondominiums = matches;
+        context.state =
+          ConversationState.INQUIRY_AWAITING_CONDOMINIUM_SELECTION;
+        await this.showCondominiumOptions(context, matches);
+      }
+    } catch (error) {
+      this.logger.error(
+        `[handleInquiryDept] Error: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Ocurrió un problema al buscar tu información. Intenta nuevamente escribiendo "Hola".',
+        },
+        context,
+      );
+    }
+  }
+
+  private async handleInquiryTowerInput(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+
+    if (
+      !context.possibleTowers ||
+      context.possibleTowers.length === 0 ||
+      !context.possibleCondominiums
+    ) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendMenuMessage(
+        context,
+        '😅 Se perdió el contexto. Empecemos de nuevo.',
+      );
+      return;
+    }
+
+    const resolved = this.resolveTowerFromInput(text, context.possibleTowers);
+    if (!resolved) {
+      context.retryCount = (context.retryCount ?? 0) + 1;
+      if (context.retryCount >= 3) {
+        this.resetContext(context);
+        context.state = ConversationState.MENU_SELECTION;
+        await this.sendMenuMessage(
+          context,
+          '😅 No logré identificar la torre. Volvamos al menú.',
+        );
+        return;
+      }
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `🤔 No reconocí esa torre. Responde con el *número* o el *nombre exacto*:\n\n${context.possibleTowers
+            .map((t, i) => `${i + 1}. ${t}`)
+            .join('\n')}\n\n_(Intento ${context.retryCount} de 3)_`,
+        },
+        context,
+      );
+      return;
+    }
+
+    context.tower = resolved;
+    const filtered = context.possibleCondominiums.filter(
+      (m) =>
+        m.tower && this.cleanInput(String(m.tower)) === this.cleanInput(resolved),
+    );
+
+    if (filtered.length === 0) {
+      context.state = ConversationState.ERROR;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema filtrando por torre. Escribe "Hola" para reiniciar.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const phoneConflict = filtered.every(
+      (m) => m.phoneInDB === true && m.phoneMatches !== true,
+    );
+    if (phoneConflict) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendMenuMessage(
+        context,
+        '🚫 Esa torre no está asociada a tu teléfono. Por seguridad no puedo continuar. Si crees que es un error, contacta a tu administrador.',
+      );
+      return;
+    }
+
+    context.retryCount = 0;
+    context.possibleTowers = undefined;
+    if (filtered.length === 1) {
+      context.userId = filtered[0].userId;
+      context.selectedCondominium = filtered[0];
+      context.possibleCondominiums = undefined;
+      context.state = ConversationState.INQUIRY_AWAITING_QUESTION;
+      await this.saveCachedIdentity(context);
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message: `✅ ¡Te encontré! Estás en *${filtered[0].condominiumName || filtered[0].condominiumId}*, torre *${resolved}*.\n\n🤖 *Asistente del condominio*\n\n📝 Escribe tu pregunta sobre el reglamento, políticas o avisos.\n\n_(Escribe *menu* para volver al menú principal)_`,
+        },
+        context,
+      );
+    } else {
+      context.userId = undefined;
+      context.possibleCondominiums = filtered;
+      context.state = ConversationState.INQUIRY_AWAITING_CONDOMINIUM_SELECTION;
+      await this.showCondominiumOptions(context, filtered);
+    }
+  }
+
+  private async handleInquiryCondominiumSelection(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber } = context;
+    const index = parseInt(text, 10);
+
+    if (
+      isNaN(index) ||
+      !context.possibleCondominiums ||
+      index < 1 ||
+      index > context.possibleCondominiums.length
+    ) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🚫 Opción no válida. Escribe el número correspondiente al condominio de la lista.',
+        },
+        context,
+      );
+      return;
+    }
+
+    const selected = context.possibleCondominiums[index - 1];
+    context.selectedCondominium = selected;
+    if (selected.userId) context.userId = selected.userId;
+    if (selected.tower) context.tower = selected.tower;
+    context.state = ConversationState.INQUIRY_AWAITING_QUESTION;
+    await this.saveCachedIdentity(context);
+
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message: `✔️ Seleccionado: ${selected.condominiumName || selected.condominiumId}.\n\n🤖 *Asistente del condominio*\n\n📝 Escribe tu pregunta sobre el reglamento, políticas o avisos.\n\n_(Escribe *menu* para volver al menú principal)_`,
+      },
+      context,
+    );
+  }
+
+  /**
+   * Procesa la pregunta del residente con RAG sobre el knowledge base
+   * (reglamento, manual, políticas y publicaciones) del condominio.
+   * Permanece en el estado para preguntas seguidas.
+   */
+  private async handleInquiryQuestion(
+    context: ConversationContext,
+    text: string,
+  ) {
+    const { phoneNumber, selectedCondominium } = context;
+    const question = (text || '').trim();
+
+    if (!selectedCondominium) {
+      this.resetContext(context);
+      context.state = ConversationState.MENU_SELECTION;
+      await this.sendMenuMessage(
+        context,
+        '😅 Se perdió el contexto. Empecemos de nuevo.',
+      );
+      return;
+    }
+
+    if (question.length < 4) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '🤔 Tu pregunta parece muy corta. Por favor escribe una pregunta más completa.',
+        },
+        context,
+      );
+      return;
+    }
+
+    if (question.length > 500) {
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '✂️ Tu pregunta es muy larga. Trata de resumirla en menos de 500 caracteres.',
+        },
+        context,
+      );
+      return;
+    }
+
+    // Acuse de recibo mientras procesamos
+    context.state = ConversationState.INQUIRY_PROCESSING;
+    await this.sendAndLogMessage(
+      {
+        phoneNumber,
+        message:
+          '🔎 Buscando en los documentos de tu condominio... dame unos segundos.',
+      },
+      context,
+    );
+
+    const { clientId, condominiumId, condominiumName } = selectedCondominium;
+    const startedAt = Date.now();
+
+    try {
+      const chunks = await this.knowledgeBaseService.searchKnowledgeBase(
+        clientId,
+        condominiumId,
+        question,
+        5,
+      );
+
+      // Filtramos por umbral de distancia COSINE (0 = idéntico, 2 = opuesto)
+      // 0.55 es un umbral razonable para considerar contenido relevante.
+      const relevant = chunks.filter((c) => c.distance < 0.55);
+
+      if (relevant.length === 0) {
+        context.state = ConversationState.INQUIRY_AWAITING_QUESTION;
+        await this.sendAndLogMessage(
+          {
+            phoneNumber,
+            message:
+              '🤷 No encontré información sobre eso en los documentos de tu condominio. Te sugiero contactar a tu administrador.\n\n¿Quieres preguntar otra cosa? _(o escribe *menu* para regresar)_',
+          },
+          context,
+        );
+        await this.logToAudit(context, 'out', '[INQUIRY] sin resultados', {
+          question,
+          chunksFound: chunks.length,
+          relevantChunks: 0,
+          latencyMs: Date.now() - startedAt,
+        });
+        return;
+      }
+
+      const answer = await this.geminiService.answerWithContext(
+        question,
+        relevant.map((r) => ({ text: r.text, source: r.sourceName })),
+        condominiumName,
+      );
+
+      const finalMessage = `${answer}\n\n¿Tienes otra pregunta? _(o escribe *menu* para regresar)_`;
+
+      context.state = ConversationState.INQUIRY_AWAITING_QUESTION;
+      await this.sendAndLogMessage(
+        { phoneNumber, message: finalMessage },
+        context,
+      );
+
+      await this.logToAudit(context, 'out', '[INQUIRY] respondida', {
+        question,
+        chunksFound: chunks.length,
+        relevantChunks: relevant.length,
+        topDistance: relevant[0]?.distance,
+        sources: relevant.map((r) => r.sourceName),
+        latencyMs: Date.now() - startedAt,
+      });
+    } catch (error) {
+      this.logger.error(
+        `[handleInquiryQuestion] Error: ${error.message}`,
+        error.stack,
+      );
+      context.state = ConversationState.INQUIRY_AWAITING_QUESTION;
+      await this.sendAndLogMessage(
+        {
+          phoneNumber,
+          message:
+            '😥 Hubo un problema procesando tu pregunta. Intenta de nuevo en unos momentos, o escribe *menu* para regresar al menú principal.',
+        },
+        context,
       );
     }
   }

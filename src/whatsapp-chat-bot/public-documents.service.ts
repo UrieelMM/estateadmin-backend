@@ -17,7 +17,21 @@ export interface DocumentsConfig {
   reglamento?: PublicDocument;
   manualConvivencia?: PublicDocument;
   politicasAreaComun?: PublicDocument;
+  /**
+   * Documento opcional que SOLO se usa para alimentar el knowledge base de
+   * la IA del chatbot (RAG). NO se expone en la opción "Consultar documentos
+   * del condominio" del flujo de WhatsApp.
+   */
+  aiKnowledgeBase?: PublicDocument;
 }
+
+/**
+ * Claves de documentos que NO deben mostrarse a los residentes en el
+ * chatbot, pero sí se usan para entrenar la IA.
+ */
+export const AI_ONLY_DOCUMENT_KEYS: ReadonlyArray<keyof DocumentsConfig> = [
+  'aiKnowledgeBase',
+];
 
 @Injectable()
 export class PublicDocumentsService {

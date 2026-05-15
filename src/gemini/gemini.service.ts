@@ -26,6 +26,16 @@ export class GeminiService implements OnModuleInit {
   private genAI: GoogleGenerativeAI;
   private readonly logger = new Logger(GeminiService.name);
   private readonly modelName = 'gemini-3-flash-preview';
+  // Dimensión fija para mantener compatibilidad con el índice vectorial de Firestore
+  private readonly embeddingDimensions = 768;
+  // Modelos a probar en orden. El primero que responda exitosamente se usa.
+  // Se cachea en `resolvedEmbeddingModel` para evitar reintentos posteriores.
+  private readonly embeddingModelCandidates = [
+    'gemini-embedding-001',
+    'text-embedding-004',
+    'embedding-001',
+  ];
+  private resolvedEmbeddingModel: string | null = null;
 
   constructor(private configService: ConfigService) {}
 
@@ -238,6 +248,181 @@ export class GeminiService implements OnModuleInit {
       throw new Error(
         `Failed to generate content stream via Gemini: ${error.message}`,
       );
+    }
+  }
+
+  /**
+   * Intenta generar un embedding con un modelo específico. Para
+   * `gemini-embedding-001` pasamos `outputDimensionality: 768` para mantener
+   * compatibilidad con el índice vectorial de Firestore.
+   */
+  private async tryEmbedWithModel(
+    modelName: string,
+    text: string,
+  ): Promise<number[]> {
+    const model = this.genAI.getGenerativeModel({ model: modelName });
+
+    // gemini-embedding-001 acepta outputDimensionality; los modelos legacy
+    // (text-embedding-004, embedding-001) ya son 768 por default.
+    const request: any =
+      modelName === 'gemini-embedding-001'
+        ? {
+            content: { role: 'user', parts: [{ text }] },
+            outputDimensionality: this.embeddingDimensions,
+          }
+        : text;
+
+    const result: any = await (model as any).embedContent(request);
+    const values: number[] | undefined = result?.embedding?.values;
+
+    if (!values || !Array.isArray(values) || values.length === 0) {
+      throw new Error('El modelo no devolvió un embedding válido');
+    }
+
+    if (values.length !== this.embeddingDimensions) {
+      throw new Error(
+        `Dimensión inesperada: ${values.length} (se esperaban ${this.embeddingDimensions})`,
+      );
+    }
+
+    return values;
+  }
+
+  /**
+   * Genera un embedding vectorial (768 dimensiones) para un texto dado.
+   * Probará varios modelos compatibles en orden hasta que uno responda
+   * correctamente, y luego cacheará el ganador para llamadas posteriores.
+   */
+  async embedText(text: string): Promise<number[]> {
+    if (!text || text.trim().length === 0) {
+      throw new Error('No se proporcionó texto para generar el embedding');
+    }
+
+    // Truncar a un tamaño razonable para evitar exceder límites del modelo
+    const safeText = text.length > 8000 ? text.substring(0, 8000) : text;
+
+    // Si ya resolvimos un modelo válido previamente, usarlo directamente
+    if (this.resolvedEmbeddingModel) {
+      try {
+        return await this.tryEmbedWithModel(
+          this.resolvedEmbeddingModel,
+          safeText,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Modelo cacheado ${this.resolvedEmbeddingModel} falló (${err.message}). Reintentando con la lista completa.`,
+        );
+        this.resolvedEmbeddingModel = null;
+      }
+    }
+
+    // Probar candidatos en orden
+    const errors: string[] = [];
+    for (const candidate of this.embeddingModelCandidates) {
+      try {
+        const values = await this.tryEmbedWithModel(candidate, safeText);
+        this.resolvedEmbeddingModel = candidate;
+        this.logger.log(`Embedding generado con modelo: ${candidate}`);
+        return values;
+      } catch (err) {
+        errors.push(`${candidate}: ${err.message?.substring(0, 200)}`);
+        this.logger.warn(
+          `Modelo ${candidate} no disponible (${err.message?.substring(0, 120)}). Probando siguiente.`,
+        );
+      }
+    }
+
+    const combined = errors.join(' | ');
+    this.logger.error(`Ningún modelo de embedding funcionó: ${combined}`);
+    throw new Error(
+      `Failed to embed text via Gemini: ningún modelo respondió. Detalles: ${combined}`,
+    );
+  }
+
+  /**
+   * Genera embeddings en lote (uno por uno con cierta tolerancia a fallos).
+   * No paraleliza para no superar rate limits del free tier.
+   */
+  async embedTexts(texts: string[]): Promise<number[][]> {
+    const results: number[][] = [];
+    for (const text of texts) {
+      try {
+        const vec = await this.embedText(text);
+        results.push(vec);
+      } catch (e) {
+        this.logger.warn(
+          `Falló embedding de un chunk (continuando): ${e.message}`,
+        );
+        // Push de un vector vacío como marcador; el caller decide qué hacer
+        results.push([]);
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Genera una respuesta para el chatbot RAG basándose ESTRICTAMENTE en los
+   * chunks de contexto provistos. Si no hay contexto suficiente, debe
+   * indicarlo explícitamente en la respuesta.
+   */
+  async answerWithContext(
+    question: string,
+    contextChunks: Array<{ text: string; source: string }>,
+    condominiumName?: string,
+  ): Promise<string> {
+    try {
+      const model = this.genAI.getGenerativeModel({ model: this.modelName });
+
+      const contextBlock = contextChunks
+        .map(
+          (c, i) =>
+            `[Fragmento ${i + 1} — Fuente: ${c.source}]\n${c.text}`,
+        )
+        .join('\n\n---\n\n');
+
+      const condominiumLine = condominiumName
+        ? `Estás asistiendo a un residente del condominio "${condominiumName}".`
+        : 'Estás asistiendo a un residente del condominio.';
+
+      const prompt = `Eres un asistente virtual de administración de condominios. ${condominiumLine}
+
+REGLAS ESTRICTAS:
+1. Responde EXCLUSIVAMENTE con base en el CONTEXTO provisto abajo.
+2. Si la respuesta NO está en el contexto, responde literalmente: "No encontré información sobre eso en los documentos de tu condominio. Te sugiero contactar al administrador."
+3. NUNCA inventes reglas, montos, fechas, nombres o políticas que no estén explícitamente en el contexto.
+4. NO emitas opiniones legales ni recomendaciones personales.
+5. Responde en español, completa pero concisa (no más de 12-15 líneas). Cubre todos los puntos relevantes que aparecen en el contexto sin cortar la idea.
+6. Tono amable y claro para WhatsApp.
+7. NO uses Markdown complejo (sin tablas). Puedes usar *negritas* simples de WhatsApp y listas con guiones.
+8. Al final, agrega una línea con la fuente más relevante usando el formato: "📎 _Fuente: <nombre de la fuente>_"
+
+CONTEXTO:
+${contextBlock}
+
+PREGUNTA DEL RESIDENTE:
+${question}
+
+RESPUESTA:`;
+
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 2048,
+        },
+      });
+
+      if (!result.response) {
+        throw new Error('Gemini no devolvió respuesta');
+      }
+
+      return result.response.text().trim();
+    } catch (error) {
+      this.logger.error(
+        `Error en answerWithContext: ${error.message}`,
+        error.stack,
+      );
+      throw new Error(`Failed to answer with context: ${error.message}`);
     }
   }
 
