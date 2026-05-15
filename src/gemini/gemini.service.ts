@@ -395,6 +395,7 @@ REGLAS ESTRICTAS:
 6. Tono amable y claro para WhatsApp.
 7. NO uses Markdown complejo (sin tablas). Puedes usar *negritas* simples de WhatsApp y listas con guiones.
 8. Al final, agrega una línea con la fuente más relevante usando el formato: "📎 _Fuente: <nombre de la fuente>_"
+9. NO inicies la respuesta con saludos ("Hola", "¡Hola!", "Buenas", "Buenos días", "Qué tal", etc.) ni con presentaciones del asistente. El residente ya está dentro de la conversación, así que entra DIRECTAMENTE en la respuesta a su pregunta.
 
 CONTEXTO:
 ${contextBlock}
@@ -424,6 +425,106 @@ RESPUESTA:`;
       );
       throw new Error(`Failed to answer with context: ${error.message}`);
     }
+  }
+
+  /**
+   * Helper genérico para obtener un JSON estructurado de Gemini.
+   *
+   * Reglas de uso:
+   * - Temperatura muy baja (0.1) y maxOutputTokens conservador: lo usamos como
+   *   fallback determinístico, no creativo.
+   * - SIEMPRE devuelve `null` si algo sale mal (red, parsing, schema). Quien
+   *   llama debe estar listo para tratar `null` como "no entendí".
+   * - El prompt debe pedir explícitamente JSON puro (sin markdown). Aun así
+   *   este helper tolera bloques ```json ... ``` o JSON dentro de prosa.
+   */
+  async extractStructured<T = any>(
+    prompt: string,
+    options: { maxOutputTokens?: number; temperature?: number } = {},
+  ): Promise<T | null> {
+    try {
+      const model = this.genAI.getGenerativeModel({ model: this.modelName });
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: options.temperature ?? 0.1,
+          maxOutputTokens: options.maxOutputTokens ?? 512,
+        },
+      });
+      const raw = result?.response?.text?.() ?? '';
+      if (!raw) return null;
+
+      const extracted = this.extractJsonBlob(raw);
+      if (!extracted) return null;
+      try {
+        return JSON.parse(extracted) as T;
+      } catch {
+        this.logger.warn(
+          `extractStructured: JSON.parse falló. Raw: ${raw.substring(0, 200)}`,
+        );
+        return null;
+      }
+    } catch (err) {
+      this.logger.warn(
+        `extractStructured: Gemini falló (${err.message?.substring(0, 200)})`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Extrae el primer bloque que parezca JSON de un texto que puede venir como:
+   *  - JSON puro
+   *  - ```json ... ``` (markdown)
+   *  - Prosa con un objeto/array embebido
+   */
+  private extractJsonBlob(text: string): string | null {
+    if (!text) return null;
+    const trimmed = text.trim();
+
+    // Caso 1: JSON puro
+    try {
+      JSON.parse(trimmed);
+      return trimmed;
+    } catch {
+      // continuar
+    }
+
+    // Caso 2: bloque markdown ```json ... ```
+    const md = trimmed.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+    if (md && md[1]) {
+      const inner = md[1].trim();
+      try {
+        JSON.parse(inner);
+        return inner;
+      } catch {
+        // continuar
+      }
+    }
+
+    // Caso 3: primer objeto o array balanceado
+    const objMatch = trimmed.match(/\{[\s\S]*\}/);
+    if (objMatch) {
+      const candidate = objMatch[0];
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        // continuar
+      }
+    }
+    const arrMatch = trimmed.match(/\[[\s\S]*\]/);
+    if (arrMatch) {
+      const candidate = arrMatch[0];
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        // continuar
+      }
+    }
+
+    return null;
   }
 
   // Método especializado para extraer datos de comprobantes de pago

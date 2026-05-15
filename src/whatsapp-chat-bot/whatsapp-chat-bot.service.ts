@@ -1299,11 +1299,46 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     context: ConversationContext,
     text: string,
   ) {
-    const option = parseInt(text.trim(), 10);
+    const trimmedText = (text || '').trim();
+    let option = parseInt(trimmedText, 10);
     const { phoneNumber } = context;
 
     // Si la identidad ya está precargada desde caché, omitir el flujo de auth
     const hasPreloadedIdentity = !!(context.selectedCondominium && context.userId && context.email && context.departmentNumber);
+
+    // ─── Router de intención (IA) ────────────────────────────────────────
+    // Si el usuario NO escribió un dígito 1-6, intentamos clasificar el texto
+    // con la IA. Solo actuamos si la IA devuelve una opción con `confidence
+    // === "high"`. En cualquier otro caso caemos al `default` del switch
+    // (que muestra el menú estándar).
+    let intentPrefill:
+      | {
+          visitorName?: string;
+          visitDateText?: string;
+          daysOfWeekText?: string;
+          questionText?: string;
+          areaNameHint?: string;
+        }
+      | undefined;
+
+    const isPlainDigit = Number.isInteger(option) && option >= 1 && option <= 6;
+    if (!isPlainDigit) {
+      const isTrivial =
+        trimmedText.length < 4 ||
+        this.isGreeting(trimmedText.toLowerCase()) ||
+        this.isCancelCommand(trimmedText.toLowerCase());
+      if (!isTrivial) {
+        const routed = await this.aiClassifyMenuIntent(trimmedText);
+        if (routed && routed.option && routed.confidence === 'high') {
+          option = routed.option;
+          intentPrefill = routed.prefill;
+          this.logger.log(
+            `[Router IA] "${trimmedText.substring(0, 80)}" → opción ${option}` +
+              (intentPrefill ? ` | prefill=${JSON.stringify(intentPrefill).substring(0, 200)}` : ''),
+          );
+        }
+      }
+    }
 
     switch (option) {
       case 1:
@@ -1405,6 +1440,16 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       case 6:
         if (hasPreloadedIdentity) {
           context.state = ConversationState.INQUIRY_AWAITING_QUESTION;
+          // Si el router de intención ya capturó la pregunta del usuario,
+          // la disparamos directamente en lugar de pedirla otra vez.
+          const directQ = intentPrefill?.questionText?.trim();
+          if (directQ && directQ.length >= 4 && directQ.length <= 500) {
+            this.logger.log(
+              `[Router IA] Opción 6 con prefill → respondiendo directamente: "${directQ.substring(0, 80)}"`,
+            );
+            await this.handleInquiryQuestion(context, directQ);
+            break;
+          }
           await this.sendAndLogMessage(
             {
               phoneNumber,
@@ -4463,7 +4508,11 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     text: string,
   ) {
     const { phoneNumber } = context;
-    const parsed = this.scheduledVisitsService.parseSpanishDateTime(text);
+    // 1) Regex (rápido y gratis). 2) Si falla → IA. 3) Si IA falla → error.
+    let parsed = this.scheduledVisitsService.parseSpanishDateTime(text);
+    if (!parsed) {
+      parsed = await this.aiParseSpanishDateTime(text);
+    }
     if (!parsed) {
       context.retryCount = (context.retryCount ?? 0) + 1;
       if (context.retryCount >= 3) {
@@ -4532,11 +4581,14 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     }
     const arrival = new Date(arrivalISO);
 
-    const parsed =
+    let parsed =
       this.scheduledVisitsService.parseDepartureRelativeToArrival(
         text,
         arrival,
       );
+    if (!parsed) {
+      parsed = await this.aiParseDepartureRelativeToArrival(text, arrival);
+    }
     if (!parsed) {
       context.retryCount = (context.retryCount ?? 0) + 1;
       if (context.retryCount >= 3) {
@@ -4596,7 +4648,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     text: string,
   ) {
     const { phoneNumber } = context;
-    const days = this.scheduledVisitsService.parseDaysOfWeek(text);
+    let days = this.scheduledVisitsService.parseDaysOfWeek(text);
+    if (!days || days.length === 0) {
+      days = await this.aiParseDaysOfWeek(text);
+    }
     if (!days || days.length === 0) {
       context.retryCount = (context.retryCount ?? 0) + 1;
       if (context.retryCount >= 3) {
@@ -4633,7 +4688,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     text: string,
   ) {
     const { phoneNumber } = context;
-    const time = this.scheduledVisitsService.parseTimeOfDay(text);
+    let time = this.scheduledVisitsService.parseTimeOfDay(text);
+    if (!time) {
+      time = await this.aiParseTimeOfDay(text);
+    }
     if (!time) {
       context.retryCount = (context.retryCount ?? 0) + 1;
       if (context.retryCount >= 3) {
@@ -4670,7 +4728,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     text: string,
   ) {
     const { phoneNumber } = context;
-    const time = this.scheduledVisitsService.parseTimeOfDay(text);
+    let time = this.scheduledVisitsService.parseTimeOfDay(text);
+    if (!time) {
+      time = await this.aiParseTimeOfDay(text);
+    }
     if (!time) {
       context.retryCount = (context.retryCount ?? 0) + 1;
       if (context.retryCount >= 3) {
@@ -4735,7 +4796,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
     text: string,
   ) {
     const { phoneNumber } = context;
-    const startDate = this.scheduledVisitsService.parseStartDate(text);
+    let startDate = this.scheduledVisitsService.parseStartDate(text);
+    if (!startDate) {
+      startDate = await this.aiParseStartDate(text);
+    }
     if (!startDate) {
       context.retryCount = (context.retryCount ?? 0) + 1;
       if (context.retryCount >= 3) {
@@ -4801,7 +4865,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
       return;
     }
     const startDate = new Date(startISO);
-    const endDate = this.scheduledVisitsService.parseEndDate(text, startDate);
+    let endDate = this.scheduledVisitsService.parseEndDate(text, startDate);
+    if (!endDate) {
+      endDate = await this.aiParseEndDate(text, startDate);
+    }
     if (!endDate) {
       context.retryCount = (context.retryCount ?? 0) + 1;
       if (context.retryCount >= 3) {
@@ -5615,7 +5682,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   ) {
     const { phoneNumber } = context;
 
-    const parsedDate = this.commonAreasBookingService.parseDate(text);
+    let parsedDate = this.commonAreasBookingService.parseDate(text);
+    if (!parsedDate) {
+      parsedDate = await this.aiParseEventDay(text);
+    }
     if (!parsedDate) {
       await this.sendAndLogMessage(
         {
@@ -5663,7 +5733,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   ) {
     const { phoneNumber } = context;
 
-    const parsedTime = this.commonAreasBookingService.parseTime(text);
+    let parsedTime = this.commonAreasBookingService.parseTime(text);
+    if (!parsedTime) {
+      parsedTime = await this.aiParseTimeOfDay(text);
+    }
     if (!parsedTime) {
       await this.sendAndLogMessage(
         {
@@ -5719,7 +5792,10 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
   ) {
     const { phoneNumber } = context;
 
-    const parsedTime = this.commonAreasBookingService.parseTime(text);
+    let parsedTime = this.commonAreasBookingService.parseTime(text);
+    if (!parsedTime) {
+      parsedTime = await this.aiParseTimeOfDay(text);
+    }
     if (!parsedTime) {
       await this.sendAndLogMessage(
         {
@@ -6430,5 +6506,444 @@ _(En cualquier momento escribe *cancelar* para regresar aquí)_`;
         context,
       );
     }
+  }
+
+  // ===========================================================================
+  // Fallbacks de IA para parsers de fecha/hora/días y router de intención
+  // ---------------------------------------------------------------------------
+  // FILOSOFÍA: el regex de los parsers (ScheduledVisitsService, CommonAreas) es
+  // siempre el primer intento. Solo cuando devuelve null entramos aquí. La IA
+  // SIEMPRE retorna la MISMA forma que el parser regex correspondiente, y el
+  // resultado pasa por las MISMAS validaciones de negocio (validateArrival,
+  // validateDeparture, isDateValid, etc.) que ya existen — así una alucinación
+  // no puede colarse al guardado.
+  //
+  // Si la IA falla por timeout, parse error o cualquier excepción → null.
+  // Quien llama trata `null` como "no entendí" y muestra el mismo mensaje de
+  // error que ya mostraba antes. Ningún flujo se rompe si la IA está caída.
+  // ===========================================================================
+
+  /**
+   * Cadena con la fecha actual en formato ISO local + nombre del día,
+   * útil como contexto en los prompts (Gemini necesita saber "qué es hoy").
+   */
+  private getAINowContext(now: Date = new Date()): {
+    isoLocal: string;
+    dayName: string;
+  } {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const isoLocal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:00`;
+    const dayNames = [
+      'domingo',
+      'lunes',
+      'martes',
+      'miércoles',
+      'jueves',
+      'viernes',
+      'sábado',
+    ];
+    return { isoLocal, dayName: dayNames[now.getDay()] };
+  }
+
+  /** Construye un `Date` a partir de "YYYY-MM-DDTHH:MM:SS" como tiempo local. */
+  private parseLocalIso(iso: string): Date | null {
+    if (!iso || typeof iso !== 'string') return null;
+    const m =
+      /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
+        iso.trim(),
+      );
+    if (!m) return null;
+    const [, y, mo, d, h, mi, s] = m;
+    const date = new Date(
+      +y,
+      +mo - 1,
+      +d,
+      +h,
+      +mi,
+      s ? +s : 0,
+      0,
+    );
+    return isNaN(date.getTime()) ? null : date;
+  }
+
+  /**
+   * Fallback IA para `parseSpanishDateTime`. Devuelve la misma forma
+   * `ParsedDateTime | null`. NO valida reglas de negocio: eso le toca al
+   * llamador (validateArrival, etc.).
+   */
+  private async aiParseSpanishDateTime(
+    text: string,
+    now: Date = new Date(),
+  ): Promise<ParsedDateTime | null> {
+    const { isoLocal, dayName } = this.getAINowContext(now);
+    const prompt = `Eres un asistente que extrae fecha y hora de un texto en español de un residente de México.
+
+Fecha y hora actual (zona horaria America/Mexico_City): ${isoLocal}
+Día de la semana actual: ${dayName}
+
+Texto del usuario: """${text}"""
+
+Devuelve EXCLUSIVAMENTE un objeto JSON con esta forma:
+{
+  "datetime": "YYYY-MM-DDTHH:MM:SS" o null,
+  "allDay": boolean,
+  "humanLabel": string corto en español describiendo la interpretación (por ejemplo "mañana 16 de mayo a las 4:00 pm")
+}
+
+Reglas:
+- Si el usuario no especifica hora y no dice "todo el día", devuelve datetime=null.
+- Si el usuario dice "todo el día <día>", devuelve datetime con hora 00:00 y allDay=true.
+- Si la fecha mencionada ya pasó hoy, asume la próxima ocurrencia futura.
+- Asume zona horaria America/Mexico_City. Devuelve la fecha como hora local SIN sufijo de TZ.
+- Si el texto no incluye una fecha/hora interpretable, devuelve { "datetime": null, "allDay": false, "humanLabel": "" }.
+
+Responde SOLO con el JSON, sin markdown, sin texto adicional.`;
+
+    const result = await this.geminiService.extractStructured<{
+      datetime: string | null;
+      allDay?: boolean;
+      humanLabel?: string;
+    }>(prompt, { maxOutputTokens: 256, temperature: 0.1 });
+
+    if (!result || !result.datetime) return null;
+    const date = this.parseLocalIso(result.datetime);
+    if (!date) return null;
+    const humanLabel =
+      (result.humanLabel && result.humanLabel.trim()) ||
+      this.scheduledVisitsService.formatHumanDateTime(date);
+    this.logger.log(
+      `[AI parser] aiParseSpanishDateTime("${text}") → ${date.toISOString()} (${humanLabel})`,
+    );
+    return {
+      date,
+      timeOnly: false,
+      allDay: !!result.allDay,
+      humanLabel,
+    };
+  }
+
+  /**
+   * Fallback IA para `parseDepartureRelativeToArrival`. Solo cubre el caso de
+   * "hora de salida" relativa a la fecha de llegada — por ejemplo "6pm",
+   * "a las 11 de la noche", "8 de la mañana del día siguiente".
+   */
+  private async aiParseDepartureRelativeToArrival(
+    text: string,
+    arrival: Date,
+  ): Promise<ParsedDateTime | null> {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const arrivalIso = `${arrival.getFullYear()}-${pad(
+      arrival.getMonth() + 1,
+    )}-${pad(arrival.getDate())}T${pad(arrival.getHours())}:${pad(
+      arrival.getMinutes(),
+    )}:00`;
+
+    const prompt = `Eres un asistente que interpreta la hora a la que una visita debe terminar.
+
+La visita LLEGA a: ${arrivalIso} (zona horaria America/Mexico_City).
+Texto del usuario para la hora de SALIDA: """${text}"""
+
+La salida debe ser posterior a la llegada y por lo general el mismo día (a veces al día siguiente si la visita se extiende a la madrugada).
+
+Devuelve EXCLUSIVAMENTE un objeto JSON:
+{
+  "datetime": "YYYY-MM-DDTHH:MM:SS" o null,
+  "humanLabel": "descripción corta en español"
+}
+
+Reglas:
+- Si el usuario solo dice una hora ("6pm", "11 de la noche"), asume el mismo día que la llegada; si la hora calculada queda ANTES de la llegada, súmale un día.
+- Duración mínima 5 minutos, máxima 24 horas a partir de la llegada.
+- Si no logras inferir hora válida, devuelve { "datetime": null }.
+
+Responde SOLO con el JSON.`;
+
+    const result = await this.geminiService.extractStructured<{
+      datetime: string | null;
+      humanLabel?: string;
+    }>(prompt, { maxOutputTokens: 256, temperature: 0.1 });
+
+    if (!result || !result.datetime) return null;
+    const date = this.parseLocalIso(result.datetime);
+    if (!date) return null;
+    const humanLabel =
+      (result.humanLabel && result.humanLabel.trim()) ||
+      this.scheduledVisitsService.formatHumanDateTime(date);
+    this.logger.log(
+      `[AI parser] aiParseDepartureRelativeToArrival("${text}", arrival=${arrival.toISOString()}) → ${date.toISOString()}`,
+    );
+    return { date, timeOnly: false, humanLabel };
+  }
+
+  /**
+   * Fallback IA para `parseDaysOfWeek`. Devuelve arreglo de días (0=domingo).
+   */
+  private async aiParseDaysOfWeek(text: string): Promise<number[] | null> {
+    const prompt = `Extrae los días de la semana mencionados en el siguiente texto en español (incluyendo typos como "lubes" → lunes, "mierkoles" → miércoles).
+
+Texto: """${text}"""
+
+Devuelve EXCLUSIVAMENTE un objeto JSON:
+{ "daysOfWeek": [<números 0-6>] }
+
+Convención: 0=domingo, 1=lunes, 2=martes, 3=miércoles, 4=jueves, 5=viernes, 6=sábado.
+
+Reglas:
+- "todos los días" → [0,1,2,3,4,5,6]
+- "entre semana" o "días hábiles" → [1,2,3,4,5]
+- "fines de semana" → [0,6]
+- "lunes a viernes" → [1,2,3,4,5]
+- Si no logras identificar al menos un día válido, devuelve { "daysOfWeek": [] }.
+
+Responde SOLO con el JSON.`;
+
+    const result = await this.geminiService.extractStructured<{
+      daysOfWeek: number[];
+    }>(prompt, { maxOutputTokens: 128, temperature: 0.1 });
+
+    if (!result || !Array.isArray(result.daysOfWeek)) return null;
+    const cleaned = Array.from(
+      new Set(
+        result.daysOfWeek
+          .map((d) => Number(d))
+          .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6),
+      ),
+    ).sort();
+    if (cleaned.length === 0) return null;
+    this.logger.log(
+      `[AI parser] aiParseDaysOfWeek("${text}") → [${cleaned.join(',')}]`,
+    );
+    return cleaned;
+  }
+
+  /**
+   * Fallback IA para `parseTimeOfDay`. Devuelve "HH:MM" en 24h.
+   */
+  private async aiParseTimeOfDay(text: string): Promise<string | null> {
+    const prompt = `Extrae la hora del día del siguiente texto en español de México y devuélvela en formato 24h "HH:MM".
+
+Texto: """${text}"""
+
+Devuelve EXCLUSIVAMENTE un objeto JSON: { "time": "HH:MM" o null }
+
+Ejemplos:
+- "8 de la mañana" → "08:00"
+- "6 y media de la tarde" → "18:30"
+- "al mediodía" → "12:00"
+- "medianoche" → "00:00"
+- "11 de la noche" → "23:00"
+
+Si no logras inferir una hora válida, devuelve { "time": null }.
+Responde SOLO con el JSON.`;
+
+    const result = await this.geminiService.extractStructured<{
+      time: string | null;
+    }>(prompt, { maxOutputTokens: 64, temperature: 0.1 });
+
+    if (!result || !result.time) return null;
+    const m = /^(\d{1,2}):(\d{2})$/.exec(result.time.trim());
+    if (!m) return null;
+    const h = +m[1];
+    const mi = +m[2];
+    if (h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+    const normalized = `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+    this.logger.log(
+      `[AI parser] aiParseTimeOfDay("${text}") → ${normalized}`,
+    );
+    return normalized;
+  }
+
+  /**
+   * Fallback IA para `parseStartDate` (inicio de serie recurrente).
+   * Devuelve Date al inicio del día (00:00) en hora local.
+   */
+  private async aiParseStartDate(
+    text: string,
+    now: Date = new Date(),
+  ): Promise<Date | null> {
+    const { isoLocal, dayName } = this.getAINowContext(now);
+    const prompt = `Extrae la fecha de INICIO de una visita recurrente del texto en español.
+
+Fecha actual: ${isoLocal}
+Día actual: ${dayName}
+Texto: """${text}"""
+
+Devuelve EXCLUSIVAMENTE un objeto JSON: { "date": "YYYY-MM-DD" o null }
+
+Reglas:
+- "hoy" → la fecha de hoy.
+- "mañana" → mañana.
+- "el lunes" → el próximo lunes (si hoy es lunes, también vale "hoy").
+- "el 1 de junio" → próxima ocurrencia futura.
+- Si el texto NO contiene una fecha interpretable, { "date": null }.
+
+Responde SOLO con el JSON.`;
+
+    const result = await this.geminiService.extractStructured<{
+      date: string | null;
+    }>(prompt, { maxOutputTokens: 64, temperature: 0.1 });
+
+    if (!result || !result.date) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(result.date.trim());
+    if (!m) return null;
+    const date = new Date(+m[1], +m[2] - 1, +m[3], 0, 0, 0, 0);
+    if (isNaN(date.getTime())) return null;
+    this.logger.log(
+      `[AI parser] aiParseStartDate("${text}") → ${date.toDateString()}`,
+    );
+    return date;
+  }
+
+  /**
+   * Fallback IA para `parseEndDate` (fin de serie recurrente).
+   * Devuelve Date al final del día (23:59:59.999).
+   */
+  private async aiParseEndDate(
+    text: string,
+    startDate: Date,
+  ): Promise<Date | null> {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const startIso = `${startDate.getFullYear()}-${pad(
+      startDate.getMonth() + 1,
+    )}-${pad(startDate.getDate())}`;
+    const prompt = `Extrae la fecha de FIN de una serie de visitas recurrentes en español.
+
+Fecha de inicio de la serie: ${startIso}
+Texto del usuario: """${text}"""
+
+Devuelve EXCLUSIVAMENTE un objeto JSON: { "date": "YYYY-MM-DD" o null }
+
+Reglas:
+- "indefinido", "siempre", "por mucho tiempo", "sin fecha" → fecha 6 meses después del inicio.
+- "1 mes", "3 semanas", "30 días", "2 meses" → calcula relativo al inicio.
+- Fechas absolutas "31/12/2026", "el 15 de junio" → resolver.
+- Máximo permitido: 6 meses desde la fecha de inicio. Si el usuario pide más, devuélvelo igual y el sistema lo validará; no inventes una fecha más corta.
+- Si no logras interpretar nada, { "date": null }.
+
+Responde SOLO con el JSON.`;
+
+    const result = await this.geminiService.extractStructured<{
+      date: string | null;
+    }>(prompt, { maxOutputTokens: 64, temperature: 0.1 });
+
+    if (!result || !result.date) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(result.date.trim());
+    if (!m) return null;
+    const date = new Date(+m[1], +m[2] - 1, +m[3], 23, 59, 59, 999);
+    if (isNaN(date.getTime())) return null;
+    this.logger.log(
+      `[AI parser] aiParseEndDate("${text}", start=${startIso}) → ${date.toDateString()}`,
+    );
+    return date;
+  }
+
+  /**
+   * Fallback IA para `CommonAreasBookingService.parseDate`. Devuelve cadena
+   * "YYYY-MM-DD" o null. Se usa para fechas de reservas de áreas comunes.
+   */
+  private async aiParseEventDay(
+    text: string,
+    now: Date = new Date(),
+  ): Promise<string | null> {
+    const { isoLocal, dayName } = this.getAINowContext(now);
+    const prompt = `Extrae la FECHA de un evento o reserva en español. Devuelve solo la fecha (sin hora).
+
+Fecha actual: ${isoLocal}
+Día actual: ${dayName}
+Texto del usuario: """${text}"""
+
+Devuelve EXCLUSIVAMENTE un objeto JSON: { "date": "YYYY-MM-DD" o null }
+
+Reglas:
+- "hoy", "mañana", "este sábado", "el próximo viernes", "el 15 de junio" → resolver.
+- Si la fecha mencionada ya pasó, asume la próxima ocurrencia futura.
+- Si no logras interpretar, { "date": null }.
+
+Responde SOLO con el JSON.`;
+
+    const result = await this.geminiService.extractStructured<{
+      date: string | null;
+    }>(prompt, { maxOutputTokens: 64, temperature: 0.1 });
+
+    if (!result || !result.date) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(result.date.trim());
+    if (!m) return null;
+    this.logger.log(
+      `[AI parser] aiParseEventDay("${text}") → ${result.date}`,
+    );
+    return result.date;
+  }
+
+  /**
+   * Router de intención del menú principal. Solo se invoca cuando el input
+   * NO es un dígito 1-6 ni una palabra clave conocida. Si la IA detecta una
+   * intención con alta confianza, devuelve la opción y campos pre-llenados;
+   * de lo contrario, devuelve { option: null } y el flujo cae al menú normal.
+   */
+  private async aiClassifyMenuIntent(text: string): Promise<{
+    option: 1 | 2 | 3 | 4 | 5 | 6 | null;
+    confidence: 'high' | 'low';
+    prefill?: {
+      visitorName?: string;
+      visitDateText?: string;
+      daysOfWeekText?: string;
+      questionText?: string;
+      areaNameHint?: string;
+    };
+  } | null> {
+    const prompt = `Eres un router de intención de un chatbot de WhatsApp para un condominio en México.
+
+Las 6 opciones del menú son:
+1. Registrar comprobante de pago (subir foto/PDF de un depósito o transferencia).
+2. Consultar documentos del condominio (reglamento, manual de convivencia, políticas).
+3. Ver estado de cuenta (saldo pendiente, cargos del mes).
+4. Registrar una visita programada y obtener un QR de acceso (única o recurrente, con fecha y hora).
+5. Reservar un área común (salón, alberca, palapa, etc.) para un día/horario.
+6. Preguntar al asistente sobre reglamento, avisos o publicaciones del condominio.
+
+Texto del residente: """${text}"""
+
+Devuelve EXCLUSIVAMENTE un objeto JSON:
+{
+  "option": 1 | 2 | 3 | 4 | 5 | 6 | null,
+  "confidence": "high" | "low",
+  "prefill": {
+    "visitorName": string opcional,
+    "visitDateText": string opcional (texto crudo de fecha/hora para opción 4 o 5),
+    "daysOfWeekText": string opcional (días para visita recurrente),
+    "questionText": string opcional (la pregunta para la opción 6),
+    "areaNameHint": string opcional (área mencionada para opción 5)
+  }
+}
+
+Reglas estrictas:
+- Si el texto es un saludo ("hola", "buenas"), una palabra de cancelación ("menu", "cancelar"), un solo dígito, o algo que no expresa intención clara → { "option": null, "confidence": "low" }.
+- Solo usa "confidence": "high" cuando la intención sea muy clara (por ejemplo: "quiero registrar mi pago", "necesito un QR para una visita el viernes a las 7pm", "se puede tener perro grande en el condominio").
+- En "questionText" para la opción 6, copia textualmente lo que el residente preguntaría.
+- En "prefill" omite las claves cuyo valor no apliquen — NO inventes datos.
+
+Responde SOLO con el JSON.`;
+
+    const result = await this.geminiService.extractStructured<{
+      option: number | null;
+      confidence?: string;
+      prefill?: any;
+    }>(prompt, { maxOutputTokens: 384, temperature: 0.1 });
+
+    if (!result) return null;
+    const opt = Number(result.option);
+    const validOpt =
+      Number.isInteger(opt) && opt >= 1 && opt <= 6
+        ? (opt as 1 | 2 | 3 | 4 | 5 | 6)
+        : null;
+    const confidence = result.confidence === 'high' ? 'high' : 'low';
+    this.logger.log(
+      `[AI router] aiClassifyMenuIntent("${text}") → option=${validOpt} confidence=${confidence}`,
+    );
+    return {
+      option: validOpt,
+      confidence,
+      prefill: result.prefill || {},
+    };
   }
 }
