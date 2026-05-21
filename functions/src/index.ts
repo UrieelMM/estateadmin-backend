@@ -1225,6 +1225,26 @@ export const processGroupPaymentEmail = onRequest(
   },
 );
 
+
+////////////////////////////////////////// PUSH NOTIFICATIONS //////////////////////////////////////////
+// Módulo genérico de push (Expo). Triggers concretos por dominio:
+//  - Tickets de mantenimiento:
+//      * `onTicketMaintenanceCreatedPush` — notifica al `assignedTo` al crear el ticket.
+//      * `onTicketMaintenanceUpdatedPush` — notifica al nuevo `assignedTo` si cambia la asignación.
+//      * `onTicketMaintenanceStatusChangedPush` — notifica al `assignedTo` cuando admin cambia el status.
+//      * `onTicketMaintenanceEvidenceAddedPush` — notifica al `assignedTo` cuando admin agrega evidencia.
+//  - Mantenimiento programado:
+//      * `remindScheduledMaintenanceDaily` — cron 9am CDMX que avisa N días antes (notificationDaysBefore).
+// Para añadir más tipos de push, crear un trigger en
+// `functions/src/push-notifications/triggers/` y exportarlo desde aquí.
+export {
+  onTicketMaintenanceCreatedPush,
+  onTicketMaintenanceUpdatedPush,
+  onTicketMaintenanceStatusChangedPush,
+  onTicketMaintenanceEvidenceAddedPush,
+  remindScheduledMaintenanceDaily,
+} from './push-notifications';
+
 // Exportar la función desde el nuevo archivo
 export { rateLimitedGetQRData } from './qr/qr.controller';
 
