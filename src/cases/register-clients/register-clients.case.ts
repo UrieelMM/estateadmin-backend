@@ -43,9 +43,21 @@ export const RegisterClientCase = async (
     condominiumManager,
     currency = 'MXN',
     language = 'es-MX',
+    coupon,
     hasMaintenanceApp,
     maintenanceAppContractedAt,
   } = registerClientDto;
+
+  const normalizeCoupon = (value?: string | null): string | null => {
+    const normalized = String(value || '').trim().toUpperCase();
+    return normalized || null;
+  };
+  const normalizedCoupon = normalizeCoupon(coupon);
+  if (normalizedCoupon && normalizedCoupon.length < 8) {
+    throw new BadRequestException(
+      'El cupón debe tener al menos 8 caracteres.',
+    );
+  }
 
   const normalizePricingValue = (value: unknown): number | string | null => {
     if (value === null || value === undefined) {
@@ -181,6 +193,14 @@ export const RegisterClientCase = async (
       condominiumsUids: [condominiumUid],
       currency, // Utilizamos la variable extraída de la desestructuración
       language, // Utilizamos la variable extraída de la desestructuración
+      ...(normalizedCoupon
+        ? {
+            coupon: normalizedCoupon,
+            couponStatus: 'active',
+            couponCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            initialSetupPaymentBypassed: false,
+          }
+        : {}),
     };
     await clientProfileRef.set(clientData);
 

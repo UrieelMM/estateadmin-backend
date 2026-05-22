@@ -1,5 +1,10 @@
 // src/firebasesdk/firebase-auth.service.ts
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { EditUnidentifiedPaymentCase } from 'src/cases/maintenance-fees/edit-unidentified-payment.case';
 import { MaintenancePaymentCase } from 'src/cases/maintenance-fees/maintenance-fees.case';
@@ -103,6 +108,114 @@ export class FirebaseAuthService {
         },
       };
     }
+  }
+
+  async redeemInitialSetupCoupon(params: {
+    coupon: string;
+    uid: string;
+    email: string;
+    clientId: string;
+    condominiumId: string;
+    role: string;
+  }) {
+    const normalizedCoupon = String(params.coupon || '').trim().toUpperCase();
+    if (normalizedCoupon.length < 8) {
+      throw new BadRequestException(
+        'El cupón debe tener al menos 8 caracteres.',
+      );
+    }
+
+    if (!params.clientId || !params.condominiumId) {
+      throw new ForbiddenException(
+        'No se pudo resolver el cliente o condominio del usuario autenticado.',
+      );
+    }
+
+    if (params.role !== 'admin') {
+      throw new ForbiddenException(
+        'Solo el administrador principal puede redimir el cupón inicial.',
+      );
+    }
+
+    const clientRef = this.firestore.collection('clients').doc(params.clientId);
+    const clientDoc = await clientRef.get();
+
+    if (!clientDoc.exists) {
+      throw new BadRequestException('No se encontró el cliente.');
+    }
+
+    const clientData = clientDoc.data() || {};
+    const storedCoupon = String(clientData.coupon || '').trim().toUpperCase();
+
+    if (!storedCoupon) {
+      throw new BadRequestException(
+        'Este cliente no tiene un cupón de regalo asignado.',
+      );
+    }
+
+    if (storedCoupon !== normalizedCoupon) {
+      throw new BadRequestException('El cupón ingresado no es válido.');
+    }
+
+    const invoicesRef = this.firestore.collection(
+      `clients/${params.clientId}/condominiums/${params.condominiumId}/invoicesGenerated`,
+    );
+    const pendingSubscriptionInvoices = await invoicesRef
+      .where('paymentStatus', 'in', ['pending', 'overdue'])
+      .get();
+
+    const batch = this.firestore.batch();
+    batch.set(
+      clientRef,
+      {
+        coupon: storedCoupon,
+        couponStatus: 'redeemed',
+        couponRedeemedAt: admin.firestore.FieldValue.serverTimestamp(),
+        couponRedeemedBy: params.uid,
+        couponRedeemedByEmail: params.email || null,
+        initialSetupPaymentBypassed: true,
+        initialSetupPaymentPending: false,
+        initialSetupPaymentBypassReason: 'gift_coupon',
+        initialSetupPaymentBypassCoupon: storedCoupon,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    const subscriptionInvoiceDocs = pendingSubscriptionInvoices.docs.filter(
+      (invoiceDoc) => {
+        const invoiceData = invoiceDoc.data() || {};
+        const invoiceType = String(invoiceData.invoiceType || '').toLowerCase();
+        const concept = String(invoiceData.concept || '').toLowerCase();
+        return invoiceType === 'subscription' || concept.includes('suscrip');
+      },
+    );
+
+    subscriptionInvoiceDocs.forEach((invoiceDoc) => {
+      batch.set(
+        invoiceDoc.ref,
+        {
+          status: 'canceled',
+          paymentStatus: 'canceled',
+          waivedByCoupon: true,
+          waivedCoupon: storedCoupon,
+          waivedReason: 'gift_coupon',
+          waivedAt: admin.firestore.FieldValue.serverTimestamp(),
+          waivedBy: params.uid,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    });
+
+    await batch.commit();
+
+    return {
+      success: true,
+      message: 'Cupón validado correctamente.',
+      coupon: storedCoupon,
+      waivedInvoices: subscriptionInvoiceDocs.length,
+    };
   }
 
   async createUserWithEmail(registerUserDto: RegisterUserDto) {

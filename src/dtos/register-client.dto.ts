@@ -9,6 +9,7 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  MinLength,
   Min,
 } from 'class-validator';
 
@@ -188,6 +189,12 @@ export class RegisterClientDto {
   @IsOptional()
   @IsString()
   language: string = 'es';
+
+  // Cupón de regalo para permitir finalizar initial setup sin pago
+  @IsOptional()
+  @IsString()
+  @MinLength(8, { message: 'El cupón debe tener al menos 8 caracteres' })
+  coupon?: string;
 
   // Indica si el cliente tiene la app de mantenimiento
   @IsOptional()

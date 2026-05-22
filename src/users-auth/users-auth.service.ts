@@ -28,6 +28,17 @@ export class UsersAuthService {
     return await this.firebaseAuthService.createClient(registerClientDto);
   }
 
+  async redeemInitialSetupCoupon(params: {
+    coupon: string;
+    uid: string;
+    email: string;
+    clientId: string;
+    condominiumId: string;
+    role: string;
+  }) {
+    return this.firebaseAuthService.redeemInitialSetupCoupon(params);
+  }
+
   async registerUser(
     email: string,
     password: string,

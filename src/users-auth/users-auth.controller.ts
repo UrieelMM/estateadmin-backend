@@ -16,6 +16,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import * as admin from 'firebase-admin';
+import { IsNotEmpty, IsString, MinLength } from 'class-validator';
 import { UsersAuthService } from './users-auth.service';
 import {
   RegisterUserDto,
@@ -35,6 +36,13 @@ import { Throttle } from '@nestjs/throttler';
 import { RegisterSuperAdminDto } from 'src/dtos/register-super-admin.dto';
 import { Request } from 'express';
 import { UpsertActor } from 'src/dtos/upsert-condominium-users.dto';
+
+class RedeemInitialSetupCouponDto {
+  @IsNotEmpty()
+  @IsString()
+  @MinLength(8, { message: 'El cupón debe tener al menos 8 caracteres' })
+  coupon: string;
+}
 
 @Controller('users-auth')
 export class UsersAuthController {
@@ -86,8 +94,41 @@ export class UsersAuthController {
         hasMaintenanceApp: registerClientDto.hasMaintenanceApp, // App de mantenimiento
         maintenanceAppContractedAt:
           registerClientDto.maintenanceAppContractedAt,
+        coupon: registerClientDto.coupon,
       },
     );
+  }
+
+  @Post('redeem-initial-setup-coupon')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async redeemInitialSetupCoupon(
+    @Req() req: Request,
+    @Body() redeemCouponDto: RedeemInitialSetupCouponDto,
+  ) {
+    const token = this.extractBearerToken(req);
+    let decodedToken: admin.auth.DecodedIdToken;
+
+    try {
+      decodedToken = await admin.auth().verifyIdToken(token, true);
+    } catch {
+      throw new UnauthorizedException('Token inválido o expirado.');
+    }
+
+    return this.usersAuthService.redeemInitialSetupCoupon({
+      coupon: redeemCouponDto.coupon,
+      uid: decodedToken.uid,
+      email: decodedToken.email || '',
+      clientId: String(decodedToken.clientId || ''),
+      condominiumId: String(decodedToken.condominiumId || ''),
+      role: String(decodedToken.role || ''),
+    });
   }
 
   @Post('register-administrators')
