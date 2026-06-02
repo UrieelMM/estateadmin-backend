@@ -12,7 +12,10 @@ import { MaintenanceUnidentifiedPaymentCase } from 'src/cases/maintenance-fees/m
 import { ParcelReceptionCase } from 'src/cases/parcel/parcel-reception.case';
 import { CreatePublicationCase } from 'src/cases/publications/publications.case';
 import { RegisterClientCase } from 'src/cases/register-clients/register-clients.case';
-import { RegisterCondominiumCase } from 'src/cases/register-condominium-case/register-condominium.case';
+import {
+  RegisterCondominiumCase,
+  syncAdminAccessAcrossClient,
+} from 'src/cases/register-condominium-case/register-condominium.case';
 import { registerUser } from 'src/cases/users-admon-auth/register-user.case';
 import { RegisterCondominiumUsersCase } from 'src/cases/users-condominiums-auth/register-condominiums.case';
 import { UpsertCondominiumUsersCase } from 'src/cases/users-condominiums-auth/upsert-condominiums.case';
@@ -145,15 +148,70 @@ export class FirebaseAuthService {
     }
 
     const clientData = clientDoc.data() || {};
-    const storedCoupon = String(clientData.coupon || '').trim().toUpperCase();
+    const clientCouponRaw = String(clientData.coupon || '').trim().toUpperCase();
+    const clientCouponStatus = String(
+      clientData.couponStatus || '',
+    ).toLowerCase();
+    const isClientCouponRedeemable =
+      Boolean(clientCouponRaw) &&
+      clientCouponStatus !== 'redeemed' &&
+      clientCouponRaw === normalizedCoupon;
 
-    if (!storedCoupon) {
-      throw new BadRequestException(
-        'Este cliente no tiene un cupón de regalo asignado.',
-      );
-    }
+    // Si el cupón a nivel cliente no aplica, buscamos el cupón asignado al
+    // condominio que el administrador autenticado está utilizando. Esto permite
+    // soportar el flujo donde se asigna un cupón al agregar un nuevo condominio
+    // a un cliente ya existente.
+    const condominiumRef = this.firestore
+      .collection('clients')
+      .doc(params.clientId)
+      .collection('condominiums')
+      .doc(params.condominiumId);
+    const condominiumDoc = await condominiumRef.get();
+    const condominiumData = condominiumDoc.exists
+      ? condominiumDoc.data() || {}
+      : {};
+    const condominiumCouponRaw = String(
+      condominiumData.coupon || '',
+    )
+      .trim()
+      .toUpperCase();
+    const condominiumCouponStatus = String(
+      condominiumData.couponStatus || '',
+    ).toLowerCase();
+    const isCondominiumCouponRedeemable =
+      Boolean(condominiumCouponRaw) &&
+      condominiumCouponStatus !== 'redeemed' &&
+      condominiumCouponRaw === normalizedCoupon;
 
-    if (storedCoupon !== normalizedCoupon) {
+    let storedCoupon: string;
+    let couponScope: 'client' | 'condominium';
+
+    if (isClientCouponRedeemable) {
+      storedCoupon = clientCouponRaw;
+      couponScope = 'client';
+    } else if (isCondominiumCouponRedeemable) {
+      storedCoupon = condominiumCouponRaw;
+      couponScope = 'condominium';
+    } else {
+      const hasAnyCoupon = Boolean(clientCouponRaw) || Boolean(condominiumCouponRaw);
+      if (!hasAnyCoupon) {
+        throw new BadRequestException(
+          'Este cliente no tiene un cupón de regalo asignado.',
+        );
+      }
+      // El cupón existe pero ya fue redimido o el código no coincide.
+      const alreadyRedeemed =
+        (Boolean(clientCouponRaw) && clientCouponStatus === 'redeemed') ||
+        (Boolean(condominiumCouponRaw) &&
+          condominiumCouponStatus === 'redeemed');
+      if (alreadyRedeemed && clientCouponRaw !== normalizedCoupon && condominiumCouponRaw !== normalizedCoupon) {
+        throw new BadRequestException('El cupón ingresado no es válido.');
+      }
+      if (alreadyRedeemed) {
+        throw new BadRequestException(
+          'Este cupón ya fue redimido previamente.',
+        );
+      }
       throw new BadRequestException('El cupón ingresado no es válido.');
     }
 
@@ -165,22 +223,41 @@ export class FirebaseAuthService {
       .get();
 
     const batch = this.firestore.batch();
-    batch.set(
-      clientRef,
-      {
-        coupon: storedCoupon,
-        couponStatus: 'redeemed',
-        couponRedeemedAt: admin.firestore.FieldValue.serverTimestamp(),
-        couponRedeemedBy: params.uid,
-        couponRedeemedByEmail: params.email || null,
-        initialSetupPaymentBypassed: true,
-        initialSetupPaymentPending: false,
-        initialSetupPaymentBypassReason: 'gift_coupon',
-        initialSetupPaymentBypassCoupon: storedCoupon,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
+    if (couponScope === 'client') {
+      batch.set(
+        clientRef,
+        {
+          coupon: storedCoupon,
+          couponStatus: 'redeemed',
+          couponRedeemedAt: admin.firestore.FieldValue.serverTimestamp(),
+          couponRedeemedBy: params.uid,
+          couponRedeemedByEmail: params.email || null,
+          initialSetupPaymentBypassed: true,
+          initialSetupPaymentPending: false,
+          initialSetupPaymentBypassReason: 'gift_coupon',
+          initialSetupPaymentBypassCoupon: storedCoupon,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    } else {
+      batch.set(
+        condominiumRef,
+        {
+          coupon: storedCoupon,
+          couponStatus: 'redeemed',
+          couponRedeemedAt: admin.firestore.FieldValue.serverTimestamp(),
+          couponRedeemedBy: params.uid,
+          couponRedeemedByEmail: params.email || null,
+          initialSetupPaymentBypassed: true,
+          initialSetupPaymentPending: false,
+          initialSetupPaymentBypassReason: 'gift_coupon',
+          initialSetupPaymentBypassCoupon: storedCoupon,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
 
     const subscriptionInvoiceDocs = pendingSubscriptionInvoices.docs.filter(
       (invoiceDoc) => {
@@ -214,7 +291,164 @@ export class FirebaseAuthService {
       success: true,
       message: 'Cupón validado correctamente.',
       coupon: storedCoupon,
+      couponScope,
       waivedInvoices: subscriptionInvoiceDocs.length,
+    };
+  }
+
+  /**
+   * Asigna un cupón "de rescate" a un cliente o condominio existente.
+   *
+   * Caso de uso: clientes creados antes de la funcionalidad de cupones, o
+   * cuyo administrador no pagó la primera factura y quedó atorado en el
+   * paso de pago inicial. El super admin asigna un cupón con estado
+   * `active` que después puede redimir el propio administrador desde su
+   * dashboard usando el endpoint `redeem-initial-setup-coupon`.
+   *
+   * Si `condominiumId` se proporciona, el cupón se guarda en el documento
+   * del condominio (afecta solo a ese condominio). Si no, se guarda en el
+   * documento del cliente (cubre el primer condominio / setup inicial).
+   *
+   * Si ya existía un cupón redimido en el documento destino, se rechaza la
+   * operación para no perder la auditoría — en ese caso el super admin
+   * debe revisar manualmente antes de sobrescribir.
+   */
+  async assignRescueCoupon(params: {
+    clientId: string;
+    condominiumId?: string;
+    coupon: string;
+    actorUid: string;
+    actorEmail: string;
+  }) {
+    const normalizedCoupon = String(params.coupon || '').trim().toUpperCase();
+    if (normalizedCoupon.length < 8) {
+      throw new BadRequestException(
+        'El cupón debe tener al menos 8 caracteres.',
+      );
+    }
+
+    const clientId = String(params.clientId || '').trim();
+    if (!clientId) {
+      throw new BadRequestException('clientId es obligatorio.');
+    }
+
+    const clientRef = this.firestore.collection('clients').doc(clientId);
+    const clientDoc = await clientRef.get();
+    if (!clientDoc.exists) {
+      throw new BadRequestException('No se encontró el cliente indicado.');
+    }
+
+    const normalizedCondominiumId = String(
+      params.condominiumId || '',
+    ).trim();
+
+    let targetRef: admin.firestore.DocumentReference;
+    let scope: 'client' | 'condominium';
+    let existingData: admin.firestore.DocumentData;
+
+    if (normalizedCondominiumId) {
+      const condominiumRef = clientRef
+        .collection('condominiums')
+        .doc(normalizedCondominiumId);
+      const condominiumDoc = await condominiumRef.get();
+      if (!condominiumDoc.exists) {
+        throw new BadRequestException(
+          'No se encontró el condominio indicado para el cliente.',
+        );
+      }
+      targetRef = condominiumRef;
+      scope = 'condominium';
+      existingData = condominiumDoc.data() || {};
+    } else {
+      targetRef = clientRef;
+      scope = 'client';
+      existingData = clientDoc.data() || {};
+    }
+
+    const existingCouponStatus = String(
+      existingData.couponStatus || '',
+    ).toLowerCase();
+    if (existingCouponStatus === 'redeemed') {
+      throw new BadRequestException(
+        scope === 'client'
+          ? 'Este cliente ya tiene un cupón redimido. Revisa el caso antes de asignar uno nuevo.'
+          : 'Este condominio ya tiene un cupón redimido. Revisa el caso antes de asignar uno nuevo.',
+      );
+    }
+
+    const couponPayload: Record<string, any> = {
+      coupon: normalizedCoupon,
+      couponStatus: 'active',
+      couponType: 'rescue',
+      couponCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      couponCreatedBy: params.actorUid,
+      couponCreatedByEmail: params.actorEmail || null,
+      // Limpiamos cualquier estado previo de redención / bypass parcial,
+      // para que el cupón quede listo para redimirse.
+      couponRedeemedAt: admin.firestore.FieldValue.delete(),
+      couponRedeemedBy: admin.firestore.FieldValue.delete(),
+      couponRedeemedByEmail: admin.firestore.FieldValue.delete(),
+      initialSetupPaymentBypassed: false,
+      initialSetupPaymentBypassReason:
+        admin.firestore.FieldValue.delete(),
+      initialSetupPaymentBypassCoupon:
+        admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    // El cast a any es necesario porque FieldValue.delete() no es asignable
+    // al tipo de set en algunas versiones de @types/firebase-admin.
+    await targetRef.set(couponPayload as any, { merge: true });
+
+    this.logger.log(
+      `[assign-rescue-coupon] scope=${scope} clientId=${clientId} condominiumId=${normalizedCondominiumId || '-'} coupon=${normalizedCoupon} actor=${params.actorUid}`,
+    );
+
+    return {
+      success: true,
+      message:
+        scope === 'client'
+          ? 'Cupón de rescate asignado al cliente. El administrador puede redimirlo desde su dashboard.'
+          : 'Cupón de rescate asignado al condominio. El administrador puede redimirlo desde su dashboard.',
+      coupon: normalizedCoupon,
+      scope,
+    };
+  }
+
+  /**
+   * Regulariza el acceso de los administradores del cliente: garantiza que
+   * todos los usuarios con rol `admin` del cliente tengan en su array
+   * `condominiumUids` cada uno de los condominios del cliente, y replica su
+   * doc dentro de la subcolección users de cada condominio.
+   *
+   * Usado para clientes creados antes del fix de propagación automática en
+   * register-condominium.
+   */
+  async syncAdminCondominiums(params: { clientId: string }) {
+    const clientId = String(params.clientId || '').trim();
+    if (!clientId) {
+      throw new BadRequestException('clientId es obligatorio.');
+    }
+
+    const clientRef = this.firestore.collection('clients').doc(clientId);
+    const clientDoc = await clientRef.get();
+    if (!clientDoc.exists) {
+      throw new BadRequestException('No se encontró el cliente indicado.');
+    }
+
+    const result = await syncAdminAccessAcrossClient({ clientId });
+
+    this.logger.log(
+      `[sync-admin-condominiums] clientId=${clientId} condominiums=${result.condominiumsScanned} adminUsersUpdated=${result.adminUsersUpdated}`,
+    );
+
+    return {
+      success: true,
+      message:
+        result.adminUsersUpdated > 0
+          ? 'Permisos de administradores sincronizados con todos los condominios del cliente.'
+          : 'No se encontraron administradores que sincronizar.',
+      ...result,
     };
   }
 

@@ -8,6 +8,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  MinLength,
 } from 'class-validator';
 import { BillingFrequency, CondominiumStatus } from './register-client.dto';
 
@@ -86,4 +87,12 @@ export class RegisterCondominiumDto {
     message: 'El idioma debe tener formato válido (ej. es-MX, en-US)',
   })
   language?: string;
+
+  // Cupón de regalo opcional para condonar la primera factura de suscripción
+  // del nuevo condominio. El administrador del condominio debe redimirlo
+  // manualmente desde su dashboard mediante /users-auth/redeem-initial-setup-coupon.
+  @IsOptional()
+  @IsString()
+  @MinLength(8, { message: 'El cupón debe tener al menos 8 caracteres' })
+  coupon?: string;
 }

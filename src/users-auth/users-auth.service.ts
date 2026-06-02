@@ -39,6 +39,20 @@ export class UsersAuthService {
     return this.firebaseAuthService.redeemInitialSetupCoupon(params);
   }
 
+  async assignRescueCoupon(params: {
+    clientId: string;
+    condominiumId?: string;
+    coupon: string;
+    actorUid: string;
+    actorEmail: string;
+  }) {
+    return this.firebaseAuthService.assignRescueCoupon(params);
+  }
+
+  async syncAdminCondominiums(params: { clientId: string }) {
+    return this.firebaseAuthService.syncAdminCondominiums(params);
+  }
+
   async registerUser(
     email: string,
     password: string,

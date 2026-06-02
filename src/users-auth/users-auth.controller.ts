@@ -16,7 +16,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import * as admin from 'firebase-admin';
-import { IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 import { UsersAuthService } from './users-auth.service';
 import {
   RegisterUserDto,
@@ -42,6 +42,42 @@ class RedeemInitialSetupCouponDto {
   @IsString()
   @MinLength(8, { message: 'El cupón debe tener al menos 8 caracteres' })
   coupon: string;
+
+  // Opcional: condominio para el cual se quiere redimir el cupón. Útil cuando
+  // el cupón se asignó a un condominio recién agregado a un cliente existente,
+  // y el JWT del admin sigue apuntando al condominio original. Se valida que
+  // el condominio pertenezca al mismo cliente del token.
+  @IsOptional()
+  @IsString()
+  condominiumId?: string;
+}
+
+// DTO usado por el super admin para asignar un cupón "de rescate" a clientes
+// que se crearon ANTES de la implementación de cupones (o que quedaron
+// atorados en el paso de pago inicial). El cupón se guarda como `active`
+// en el cliente (o en un condominio específico) y debe ser redimido por el
+// administrador del condominio desde su dashboard.
+class AssignRescueCouponDto {
+  @IsNotEmpty()
+  @IsString()
+  clientId: string;
+
+  // Si se proporciona, el cupón se asigna al condominio indicado en vez del
+  // cliente. Útil cuando solo un condominio específico está atorado en pago.
+  @IsOptional()
+  @IsString()
+  condominiumId?: string;
+
+  @IsNotEmpty()
+  @IsString()
+  @MinLength(8, { message: 'El cupón debe tener al menos 8 caracteres' })
+  coupon: string;
+}
+
+class SyncAdminCondominiumsDto {
+  @IsNotEmpty()
+  @IsString()
+  clientId: string;
 }
 
 @Controller('users-auth')
@@ -121,13 +157,112 @@ export class UsersAuthController {
       throw new UnauthorizedException('Token inválido o expirado.');
     }
 
+    const requestedCondominiumId = String(
+      redeemCouponDto.condominiumId || '',
+    ).trim();
+    const tokenCondominiumId = String(decodedToken.condominiumId || '').trim();
+    const resolvedCondominiumId =
+      requestedCondominiumId || tokenCondominiumId;
+
     return this.usersAuthService.redeemInitialSetupCoupon({
       coupon: redeemCouponDto.coupon,
       uid: decodedToken.uid,
       email: decodedToken.email || '',
       clientId: String(decodedToken.clientId || ''),
-      condominiumId: String(decodedToken.condominiumId || ''),
+      condominiumId: resolvedCondominiumId,
       role: String(decodedToken.role || ''),
+    });
+  }
+
+  /**
+   * Permite al super admin asignar un cupón "de rescate" a un cliente
+   * (o a un condominio específico) que se creó antes de la implementación
+   * de cupones o que quedó atorado en el paso de pago inicial.
+   *
+   * El cupón queda en estado `active` y debe ser redimido por el
+   * administrador del condominio desde su dashboard, usando el endpoint
+   * `redeem-initial-setup-coupon`.
+   *
+   * Auth: Bearer token de Firebase Auth con rol `super-provider-admin`.
+   */
+  @Post('assign-rescue-coupon')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async assignRescueCoupon(
+    @Req() req: Request,
+    @Body() assignDto: AssignRescueCouponDto,
+  ) {
+    const token = this.extractBearerToken(req);
+    let decodedToken: admin.auth.DecodedIdToken;
+
+    try {
+      decodedToken = await admin.auth().verifyIdToken(token, true);
+    } catch {
+      throw new UnauthorizedException('Token inválido o expirado.');
+    }
+
+    const role = String(decodedToken.role || '').trim();
+    if (role !== 'super-provider-admin') {
+      throw new ForbiddenException(
+        'Solo el super admin puede asignar cupones de rescate.',
+      );
+    }
+
+    return this.usersAuthService.assignRescueCoupon({
+      clientId: assignDto.clientId,
+      condominiumId: assignDto.condominiumId,
+      coupon: assignDto.coupon,
+      actorUid: decodedToken.uid,
+      actorEmail: decodedToken.email || '',
+    });
+  }
+
+  /**
+   * Sincroniza el acceso de los administradores del cliente con todos sus
+   * condominios. Útil para regularizar clientes creados antes del fix de
+   * propagación automática (cuando se agregaba un condominio nuevo, el doc
+   * del admin no recibía el nuevo UID en `condominiumUids`, por lo que el
+   * ComboBox del navbar mostraba solo el primer condominio).
+   *
+   * Auth: Bearer token de Firebase Auth con rol `super-provider-admin`.
+   */
+  @Post('sync-admin-condominiums')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async syncAdminCondominiums(
+    @Req() req: Request,
+    @Body() dto: SyncAdminCondominiumsDto,
+  ) {
+    const token = this.extractBearerToken(req);
+    let decodedToken: admin.auth.DecodedIdToken;
+
+    try {
+      decodedToken = await admin.auth().verifyIdToken(token, true);
+    } catch {
+      throw new UnauthorizedException('Token inválido o expirado.');
+    }
+
+    const role = String(decodedToken.role || '').trim();
+    if (role !== 'super-provider-admin') {
+      throw new ForbiddenException(
+        'Solo el super admin puede sincronizar permisos de administradores.',
+      );
+    }
+
+    return this.usersAuthService.syncAdminCondominiums({
+      clientId: dto.clientId,
     });
   }
 
