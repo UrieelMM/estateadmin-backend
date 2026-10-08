@@ -613,7 +613,7 @@ export const processGroupPaymentEmail = onRequest(
       };
 
       // Datos de encabezado/legales
-      const companyLogoUrl = String(clientData.logoUrl || '').trim();
+      const companyLogoUrl = String(clientData.logoReports || clientData.logoUrl || '').trim();
       const paymentReceivedImageUrl =
         'https://firebasestorage.googleapis.com/v0/b/administracioncondominio-93419.appspot.com/o/estateAdminUploads%2Fassets%2FpagoSello.png?alt=media&token=88993c72-34fc-4d6e-8c15-93f4a58eea0a';
       const condominiumName = String(condominiumData.name || 'Sin nombre').trim();
@@ -623,15 +623,11 @@ export const processGroupPaymentEmail = onRequest(
       const signatureUrl = String(
         condominiumData.signatureUrl || clientData.signatureUrl || '',
       ).trim();
-      const administrationName = String(
-        clientData.companyName || clientData.name || 'Administración',
-      ).trim();
       const administrationEmail = String(clientData.email || '').trim();
       const condominiumManager = String(
         condominiumData.condominiumManager || '',
       ).trim();
-      const administrationContact =
-        condominiumManager || administrationEmail || 'Sin correo';
+      const administrationContact = administrationEmail;
       const residentName = residentFullName;
       const residentTower = String(
         userData?.tower || consolidatedPayment?.towerSnapshot || '',
@@ -648,6 +644,18 @@ export const processGroupPaymentEmail = onRequest(
             consolidatedPayment.payments[0]?.folio) ||
           'Sin folio',
       ).trim();
+      const paymentDateValue = consolidatedPayment.paymentDate ||
+        (Array.isArray(consolidatedPayment.payments)
+          ? consolidatedPayment.payments[0]?.paymentDate : undefined) ||
+        consolidatedPayment.dateRegistered;
+      const paymentDateObject = paymentDateValue?.toDate
+        ? paymentDateValue.toDate()
+        : new Date(paymentDateValue || '');
+      const paymentDateLabel = Number.isNaN(paymentDateObject.getTime())
+        ? 'No especificada'
+        : paymentDateObject.toLocaleDateString('es-MX', {
+            timeZone: 'America/Mexico_City', day: '2-digit', month: 'long', year: 'numeric',
+          });
 
       const embedRemoteImage = async (url: string, contextLabel: string) => {
         if (!url) {
@@ -678,21 +686,25 @@ export const processGroupPaymentEmail = onRequest(
       // Header
       page.drawRectangle({
         x: 0,
-        y: height - 90,
+        y: height - 110,
         width,
-        height: 90,
+        height: 110,
         color: rgb(1, 1, 1),
       });
       page.drawText('Recibo de pago', {
         x: 20,
-        y: height - 54,
+        y: height - 48,
         size: fontSizeTitle,
         font: fontBold,
         color: colorInstitucional,
       });
+      page.drawText(`Fecha de pago: ${paymentDateLabel}`, {
+        x: 20, y: height - 75, size: fontSizeSmall, font: fontRegular,
+        color: rgb(0.2, 0.2, 0.2),
+      });
       page.drawLine({
-        start: { x: 0, y: height - 90 },
-        end: { x: width, y: height - 90 },
+        start: { x: 0, y: height - 110 },
+        end: { x: width, y: height - 110 },
         thickness: 2,
         color: colorInstitucional,
       });
@@ -701,10 +713,10 @@ export const processGroupPaymentEmail = onRequest(
       if (companyLogoUrl) {
         const logoImage = await embedRemoteImage(companyLogoUrl, 'logo');
         if (logoImage) {
-          const logoBoxWidth = 260;
-          const logoBoxHeight = 80;
-          const logoBoxX = width - logoBoxWidth - 16;
-          const logoBoxY = height - 86;
+          const logoBoxWidth = 355;
+          const logoBoxHeight = 102;
+          const logoBoxX = width - logoBoxWidth - 8;
+          const logoBoxY = height - 106;
           const fitScale = Math.min(
             logoBoxWidth / logoImage.width,
             logoBoxHeight / logoImage.height,
@@ -724,7 +736,7 @@ export const processGroupPaymentEmail = onRequest(
       }
 
       // Datos legales del recibo
-      let infoY = height - 122;
+      let infoY = height - 138;
       const infoStep = 18;
       const drawInfoLine = (label: string, value: string) => {
         const normalizedValue = value || 'N/A';
@@ -751,7 +763,9 @@ export const processGroupPaymentEmail = onRequest(
       drawInfoLine('Dirección', condominiumAddress);
       drawInfoLine('Folio', folioValue);
       drawInfoLine('Condómino', residentName);
-      drawInfoLine('Torre', residentTower || 'N/A');
+      if (residentTower && !/^(n\/?a|sin torre)$/i.test(residentTower)) {
+        drawInfoLine('Torre', residentTower);
+      }
       drawInfoLine('Número', residentNumber || 'N/A');
       drawInfoLine('Medio de pago', paymentMethod);
 
@@ -809,14 +823,14 @@ export const processGroupPaymentEmail = onRequest(
         font: fontBold,
         color: rgb(1, 1, 1),
       });
-      page.drawText('Monto Pagado', {
+      page.drawText('Cargo', {
         x: tableX + col1Width + 6,
         y: tableYStart + cellPadding,
         size: fontSizeText,
         font: fontBold,
         color: rgb(1, 1, 1),
       });
-      page.drawText('Cargos', {
+      page.drawText('Monto de pago', {
         x: tableX + col1Width + col2Width + 6,
         y: tableYStart + cellPadding,
         size: fontSizeText,
@@ -860,14 +874,14 @@ export const processGroupPaymentEmail = onRequest(
           font: fontRegular,
           color: rgb(0, 0, 0),
         });
-        page.drawText(formatCurrency(paymentRow.paidCents), {
+        page.drawText(formatCurrency(paymentRow.chargeCents), {
           x: tableX + col1Width + 6,
           y: currentY + cellPadding,
           size: fontSizeSmall,
           font: fontRegular,
           color: rgb(0, 0, 0),
         });
-        page.drawText(formatCurrency(paymentRow.chargeCents), {
+        page.drawText(formatCurrency(paymentRow.paidCents), {
           x: tableX + col1Width + col2Width + 6,
           y: currentY + cellPadding,
           size: fontSizeSmall,
@@ -902,14 +916,14 @@ export const processGroupPaymentEmail = onRequest(
         font: fontBold,
         color: rgb(0, 0, 0),
       });
-      page.drawText(formatCurrency(totalMontoPagado), {
+      page.drawText(formatCurrency(totalCargos), {
         x: tableX + col1Width + 6,
         y: currentY + cellPadding,
         size: fontSizeText,
         font: fontBold,
         color: rgb(0, 0, 0),
       });
-      page.drawText(formatCurrency(totalCargos), {
+      page.drawText(formatCurrency(totalMontoPagado), {
         x: tableX + col1Width + col2Width + 6,
         y: currentY + cellPadding,
         size: fontSizeText,
@@ -988,10 +1002,9 @@ export const processGroupPaymentEmail = onRequest(
 
       // Datos de administración debajo de la firma
       const adminInfoY = footerBarHeight + 10;
-      const adminLine1 = administrationName || 'Administración';
+      const adminLine1 = condominiumManager || 'Administración';
       const adminLine2 = administrationContact;
       const adminLine1Width = fontRegular.widthOfTextAtSize(adminLine1, fontSizeSmall);
-      const adminLine2Width = fontRegular.widthOfTextAtSize(adminLine2, fontSizeSmall);
       page.drawText(adminLine1, {
         x: (width - adminLine1Width) / 2,
         y: adminInfoY + 10,
@@ -999,13 +1012,16 @@ export const processGroupPaymentEmail = onRequest(
         font: fontRegular,
         color: rgb(0, 0, 0),
       });
-      page.drawText(adminLine2, {
-        x: (width - adminLine2Width) / 2,
-        y: adminInfoY,
-        size: fontSizeSmall,
-        font: fontRegular,
-        color: rgb(0, 0, 0),
-      });
+      if (adminLine2) {
+        const adminLine2Width = fontRegular.widthOfTextAtSize(adminLine2, fontSizeSmall);
+        page.drawText(adminLine2, {
+          x: (width - adminLine2Width) / 2,
+          y: adminInfoY,
+          size: fontSizeSmall,
+          font: fontRegular,
+          color: rgb(0, 0, 0),
+        });
+      }
 
       // Footer: barra inferior en color institucional
       page.drawRectangle({

@@ -65,7 +65,8 @@ service cloud.firestore {
         'expenseReconciliations',
         'notificationEvents',
         'notificationQueue',
-        'settings'
+        'settings',
+        'customChargeConcepts'
       ].hasAny([collectionName]);
     }
     function isSameClientUser(clientId, userId) {
@@ -410,6 +411,17 @@ service cloud.firestore {
           allow update, delete: if false;
         }
         
+        // Catálogo propio del condominio: se edita sin borrar conceptos históricos.
+        match /customChargeConcepts/{conceptId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create, update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+            && request.resource.data.name is string
+            && request.resource.data.name.size() >= 2
+            && request.resource.data.name.size() <= 100
+            && request.resource.data.normalizedName is string;
+          allow delete: if false;
+        }
+
         // ─── Subcolecciones genéricas de segundo nivel ───
         match /{collection}/{docId} {
           allow read:   if !isProtectedCondominiumCollection(collection)
