@@ -129,7 +129,6 @@ export class PaymentReversalsService {
     const condominiumId = this.normalizeString(params.condominiumId);
     const role = this.normalizeString(params.actor.role);
     const actorClientId = this.normalizeString(params.actor.clientId);
-    const actorCondominiumId = this.normalizeString(params.actor.condominiumId);
 
     if (role !== 'admin') {
       this.throwApiError(
@@ -144,14 +143,6 @@ export class PaymentReversalsService {
         HttpStatus.FORBIDDEN,
         'FORBIDDEN_TENANT',
         'El clientId del token no coincide con el solicitado.',
-      );
-    }
-
-    if (actorCondominiumId && actorCondominiumId !== condominiumId) {
-      this.throwApiError(
-        HttpStatus.FORBIDDEN,
-        'FORBIDDEN_TENANT',
-        'El condominio solicitado no pertenece al contexto del admin.',
       );
     }
 
@@ -222,6 +213,8 @@ export class PaymentReversalsService {
       clientId,
       condominiumId,
       paymentId,
+      userId: this.normalizeString(dto.userId),
+      chargeId: this.normalizeString(dto.chargeId),
     });
 
     const impactSummary: ReversalImpactSummary = {
@@ -744,15 +737,26 @@ export class PaymentReversalsService {
     clientId: string;
     condominiumId: string;
     paymentId: string;
+    userId?: string;
+    chargeId?: string;
   }): Promise<ResolvedPaymentTarget> {
+    if (!params.userId && !params.chargeId) {
+      const unidentified = await this.tryResolveUnidentifiedPayment(params);
+      if (unidentified) {
+        return unidentified;
+      }
+    }
+
     const identified = await this.tryResolveIdentifiedPayment(params);
     if (identified) {
       return identified;
     }
 
-    const unidentified = await this.tryResolveUnidentifiedPayment(params);
-    if (unidentified) {
-      return unidentified;
+    if (params.userId || params.chargeId) {
+      const unidentified = await this.tryResolveUnidentifiedPayment(params);
+      if (unidentified) {
+        return unidentified;
+      }
     }
 
     this.throwApiError(
@@ -828,12 +832,91 @@ export class PaymentReversalsService {
     clientId: string;
     condominiumId: string;
     paymentId: string;
+    userId?: string;
+    chargeId?: string;
   }): Promise<ResolvedPaymentTarget | null> {
     const condominiumRef = this.getCondominiumRef(
       params.clientId,
       params.condominiumId,
     );
     const paymentsToSendRef = condominiumRef.collection('paymentsToSendEmail');
+
+    if (params.userId && params.chargeId) {
+      const paymentRef = condominiumRef
+        .collection('users')
+        .doc(params.userId)
+        .collection('charges')
+        .doc(params.chargeId)
+        .collection('payments')
+        .doc(params.paymentId);
+      const paymentSnap = await paymentRef.get();
+      if (paymentSnap.exists) {
+        const paymentData = paymentSnap.data() || {};
+        if (
+          this.normalizeString(paymentData.clientId) !== params.clientId ||
+          this.normalizeString(paymentData.condominiumId) !== params.condominiumId ||
+          (this.normalizeString(paymentData.paymentId) &&
+            this.normalizeString(paymentData.paymentId) !== params.paymentId) ||
+          (this.normalizeString(paymentData.userId || paymentData.userUID) &&
+            this.normalizeString(paymentData.userId || paymentData.userUID) !== params.userId) ||
+          (this.normalizeString(paymentData.chargeUID) &&
+            this.normalizeString(paymentData.chargeUID) !== params.chargeId)
+        ) {
+          this.throwApiError(
+            HttpStatus.FORBIDDEN,
+            'FORBIDDEN_TENANT',
+            'Las referencias del pago no coinciden con el condominio solicitado.',
+          );
+        }
+
+        const groupId = this.normalizeString(paymentData.paymentGroupId);
+        const consolidatedCandidate = await this.findConsolidatedCandidate({
+          paymentsToSendRef,
+          paymentId: groupId || params.paymentId,
+          componentPaymentId: params.paymentId,
+        });
+        if (consolidatedCandidate) {
+          const target = this.buildTargetFromConsolidated({
+            candidateDoc: consolidatedCandidate.doc,
+            source: consolidatedCandidate.source,
+            clientId: params.clientId,
+            condominiumId: params.condominiumId,
+            locatedPayment: {
+              paymentId: params.paymentId,
+              userId: params.userId,
+              chargeId: params.chargeId,
+            },
+          });
+          if (!target.components.some((component) =>
+            component.paymentDocPath === paymentRef.path
+          )) {
+            this.throwApiError(
+              HttpStatus.CONFLICT,
+              'PAYMENT_GROUP_MISMATCH',
+              'El pago no pertenece al grupo consolidado encontrado.',
+            );
+          }
+          await this.validateIdentifiedTarget(target, params.clientId, params.condominiumId);
+          return target;
+        }
+
+        if (groupId && groupId !== params.paymentId) {
+          this.throwApiError(
+            HttpStatus.CONFLICT,
+            'PAYMENT_GROUP_NOT_FOUND',
+            'No se encontró el grupo completo de este pago; no se puede revertir parcialmente.',
+          );
+        }
+
+        const target = this.buildTargetFromPayment({
+          paymentSnap,
+          userId: params.userId,
+          chargeId: params.chargeId,
+        });
+        await this.validateIdentifiedTarget(target, params.clientId, params.condominiumId);
+        return target;
+      }
+    }
 
     const consolidatedCandidate = await this.findConsolidatedCandidate({
       paymentsToSendRef,
@@ -944,6 +1027,17 @@ export class PaymentReversalsService {
         );
       }
 
+      if (
+        this.roundAmount(this.toNumber(paymentData.amountPaid)) !==
+        this.roundAmount(component.amountPaid)
+      ) {
+        this.throwApiError(
+          HttpStatus.CONFLICT,
+          'PAYMENT_CHANGED',
+          `El monto del pago ${component.paymentId} no coincide con el grupo consolidado.`,
+        );
+      }
+
       const chargeRef = this.getCondominiumRef(clientId, condominiumId)
         .collection('users')
         .doc(component.userId)
@@ -1023,6 +1117,19 @@ export class PaymentReversalsService {
           HttpStatus.CONFLICT,
           'PAYMENT_NOT_REVERSIBLE',
           `El pago ${component.paymentId} ya fue revertido.`,
+        );
+      }
+
+      if (
+        this.normalizeString(paymentData.clientId) !== params.operation.clientId ||
+        this.normalizeString(paymentData.condominiumId) !== params.operation.condominiumId ||
+        this.roundAmount(this.toNumber(paymentData.amountPaid)) !==
+          this.roundAmount(component.amountPaid)
+      ) {
+        this.throwApiError(
+          HttpStatus.CONFLICT,
+          'PAYMENT_CHANGED',
+          `El pago ${component.paymentId} cambió desde el preview.`,
         );
       }
 
@@ -1125,18 +1232,20 @@ export class PaymentReversalsService {
     if (consolidatedDocPath) {
       const consolidatedRef = this.firestore.doc(consolidatedDocPath);
       const consolidatedSnap = await params.transaction.get(consolidatedRef);
-      if (consolidatedSnap.exists) {
-        const consolidatedData = consolidatedSnap.data() || {};
-        if (!this.isAlreadyReversed(consolidatedData)) {
-          consolidatedArchivePlan = {
-            consolidatedRef,
-            consolidatedData,
-            archiveRef: params.condominiumRef
-              .collection('reversedPaymentsToSendEmail')
-              .doc(consolidatedRef.id),
-          };
-        }
+      if (!consolidatedSnap.exists || this.isAlreadyReversed(consolidatedSnap.data() || {})) {
+        this.throwApiError(
+          HttpStatus.CONFLICT,
+          'PAYMENT_CHANGED',
+          'El pago consolidado cambió desde el preview.',
+        );
       }
+      consolidatedArchivePlan = {
+        consolidatedRef,
+        consolidatedData: consolidatedSnap.data() || {},
+        archiveRef: params.condominiumRef
+          .collection('reversedPaymentsToSendEmail')
+          .doc(consolidatedRef.id),
+      };
     }
 
     for (const state of componentStates) {
@@ -1363,11 +1472,62 @@ export class PaymentReversalsService {
     };
   }
 
+  private buildTargetFromPayment(params: {
+    paymentSnap: FirebaseFirestore.DocumentSnapshot;
+    userId: string;
+    chargeId: string;
+  }): ResolvedPaymentTarget {
+    const data = params.paymentSnap.data() || {};
+    if (this.isAlreadyReversed(data)) {
+      this.throwApiError(
+        HttpStatus.CONFLICT,
+        'PAYMENT_NOT_REVERSIBLE',
+        'El pago ya fue revertido.',
+      );
+    }
+
+    const amountPaid = this.roundAmount(this.toNumber(data.amountPaid));
+    if (amountPaid <= 0) {
+      this.throwApiError(
+        HttpStatus.CONFLICT,
+        'PAYMENT_NOT_REVERSIBLE',
+        'El pago no tiene monto activo para reversa.',
+      );
+    }
+
+    return {
+      type: 'identified',
+      source: 'payment_document',
+      paymentId: params.paymentSnap.id,
+      folio: this.normalizeString(data.folio),
+      paymentGroupId: this.normalizeString(data.paymentGroupId),
+      numberCondominium: this.normalizeString(data.numberCondominium),
+      towerSnapshot: this.normalizeString(data.towerSnapshot),
+      amountPaid,
+      userId: params.userId,
+      financialAccountId: this.normalizeString(data.financialAccountId),
+      creditUsed: this.roundAmount(this.toNumber(data.creditUsed)),
+      creditBalance: this.roundAmount(this.toNumber(data.creditBalance)),
+      receiptUrl: this.normalizeString(data.receiptUrl),
+      components: [{
+        paymentId: params.paymentSnap.id,
+        userId: params.userId,
+        chargeId: params.chargeId,
+        paymentDocPath: params.paymentSnap.ref.path,
+        amountPaid,
+        concept: this.normalizeString(data.concept),
+        numberCondominium: this.normalizeString(data.numberCondominium),
+        towerSnapshot: this.normalizeString(data.towerSnapshot),
+      }],
+    };
+  }
+
   private buildTargetFromConsolidated(params: {
     candidateDoc: FirebaseFirestore.DocumentSnapshot;
     source: string;
     clientId: string;
     condominiumId: string;
+    locatedPayment?: { paymentId: string; userId: string; chargeId: string };
   }): ResolvedPaymentTarget {
     const data = params.candidateDoc.data() || {};
 
@@ -1389,13 +1549,16 @@ export class PaymentReversalsService {
         this.normalizeString(row.userUID) ||
         this.normalizeString(data.userId) ||
         this.normalizeString(data.userUID);
-      const chargeId =
-        this.normalizeString(row.chargeUID) ||
-        this.normalizeString(data.chargeUID);
       const componentPaymentId =
         this.normalizeString(row.paymentId) ||
         (index === 0
           ? this.normalizeString(data.paymentId) || params.candidateDoc.id
+          : '');
+      const chargeId =
+        this.normalizeString(row.chargeUID) ||
+        this.normalizeString(data.chargeUID) ||
+        (params.locatedPayment?.paymentId === componentPaymentId
+          ? params.locatedPayment.chargeId
           : '');
 
       const amountPaid = this.roundAmount(
@@ -1486,6 +1649,7 @@ export class PaymentReversalsService {
   private async findConsolidatedCandidate(params: {
     paymentsToSendRef: FirebaseFirestore.CollectionReference;
     paymentId: string;
+    componentPaymentId?: string;
   }): Promise<{ doc: FirebaseFirestore.DocumentSnapshot; source: string } | null> {
     const candidates = new Map<
       string,
@@ -1518,6 +1682,29 @@ export class PaymentReversalsService {
     }
 
     const list = Array.from(candidates.values());
+    if (params.componentPaymentId) {
+      const componentMatches = list.filter(({ doc }) => {
+        const data = doc.data() || {};
+        return (
+          doc.id === params.componentPaymentId ||
+          this.normalizeString(data.paymentId) === params.componentPaymentId ||
+          (Array.isArray(data.payments) && data.payments.some((row) =>
+            this.normalizeString(row?.paymentId) === params.componentPaymentId
+          ))
+        );
+      });
+      if (componentMatches.length === 1) {
+        return componentMatches[0];
+      }
+      if (componentMatches.length > 1) {
+        this.throwApiError(
+          HttpStatus.CONFLICT,
+          'AMBIGUOUS_PAYMENT',
+          'El pago aparece en múltiples grupos consolidados.',
+        );
+      }
+    }
+
     if (list.length === 1) {
       return list[0];
     }

@@ -58,6 +58,16 @@ export class PaymentReversalPreviewDto {
   @Transform(({ value }) => optionalTrimmed(value))
   @IsOptional()
   @IsString()
+  userId?: string;
+
+  @Transform(({ value }) => optionalTrimmed(value))
+  @IsOptional()
+  @IsString()
+  chargeId?: string;
+
+  @Transform(({ value }) => optionalTrimmed(value))
+  @IsOptional()
+  @IsString()
   @MaxLength(300)
   reason?: string;
 
