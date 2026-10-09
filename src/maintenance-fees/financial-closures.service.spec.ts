@@ -1,6 +1,7 @@
 import * as admin from 'firebase-admin';
 import { createHash } from 'crypto';
 import { FinancialClosuresService } from './financial-closures.service';
+import { mailerSend } from '../utils/mailerSend';
 
 const base = 'clients/client-1/condominiums/condo-1';
 
@@ -14,6 +15,8 @@ const fakeFirestore = (documents: Record<string, any>) => {
     id: path.split('/').pop(), path,
     collection: (name: string) => collection(`${path}/${name}`),
     get: async () => snapshot(path),
+    set: async (value: any) => { documents[path] = value; },
+    delete: async () => { delete documents[path]; },
   });
   const collection = (path: string): any => ({
     doc: (id?: string) => reference(`${path}/${id || `auto-${++nextId}`}`),
@@ -42,6 +45,59 @@ const serviceWith = (documents: Record<string, any>) => {
 };
 
 describe('FinancialClosuresService', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('emails a one-time reopening code to the configured administrator', async () => {
+    const documents: Record<string, any> = {
+      [base]: { reconciliationAdminEmail: 'ADMIN@EXAMPLE.COM' },
+      [`${base}/financialClosures/2026-02`]: { status: 'closed' },
+    };
+    const send = jest.spyOn(mailerSend.email, 'send').mockResolvedValue({} as any);
+
+    const result = await serviceWith(documents).requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', actorUid: 'admin-1' });
+
+    expect(result).toEqual({ sent: true, emailMasked: 'a***@example.com', expiresInSeconds: 600 });
+    expect(send).toHaveBeenCalledTimes(1);
+    const email = send.mock.calls[0][0];
+    expect(email.to[0].email).toBe('admin@example.com');
+    expect(email.text).toMatch(/\b\d{6}\b/);
+    expect(documents[`${base}/financialReopenChallenges/2026-02`]).toMatchObject({ actorUid: 'admin-1', attempts: 0 });
+    expect(documents[`${base}/financialReopenChallenges/2026-02`].code).toBeUndefined();
+  });
+
+  it('requires a configured email and removes the challenge if sending fails', async () => {
+    const documents: Record<string, any> = {
+      [base]: { reconciliationAdminEmail: 'invalid' },
+      [`${base}/financialClosures/2026-02`]: { status: 'closed' },
+    };
+    const send = jest.spyOn(mailerSend.email, 'send').mockRejectedValue(new Error('email rejected'));
+    const service = serviceWith(documents);
+    await expect(service.requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', actorUid: 'admin-1' }))
+      .rejects.toThrow('Configura un correo válido');
+    expect(send).not.toHaveBeenCalled();
+
+    documents[base].reconciliationAdminEmail = 'admin@example.com';
+    await expect(service.requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', actorUid: 'admin-1' }))
+      .rejects.toThrow('No se pudo enviar el código');
+    expect(documents[`${base}/financialReopenChallenges/2026-02`]).toBeUndefined();
+  });
+
+  it('does not remove a newer challenge when an earlier email send fails', async () => {
+    const challengePath = `${base}/financialReopenChallenges/2026-02`;
+    const documents: Record<string, any> = {
+      [base]: { reconciliationAdminEmail: 'admin@example.com' },
+      [`${base}/financialClosures/2026-02`]: { status: 'closed' },
+    };
+    jest.spyOn(mailerSend.email, 'send').mockImplementation(async () => {
+      documents[challengePath] = { requestId: 'newer-request' };
+      throw new Error('email rejected');
+    });
+
+    await expect(serviceWith(documents).requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', actorUid: 'admin-1' }))
+      .rejects.toThrow('No se pudo enviar el código');
+    expect(documents[challengePath]).toEqual({ requestId: 'newer-request' });
+  });
+
   it('lists dated income and expenses without counting applied unidentified payments twice', async () => {
     const documents: Record<string, any> = {
       [`${base}/users/user-1`]: { name: 'Ana', lastName: 'López', number: '101' },

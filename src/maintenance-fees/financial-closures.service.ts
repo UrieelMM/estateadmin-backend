@@ -1,7 +1,8 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import * as admin from 'firebase-admin';
-import axios from 'axios';
-import { createHash, randomInt, timingSafeEqual } from 'crypto';
+import { EmailParams, Recipient, Sender } from 'mailersend';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'crypto';
+import { mailerSend } from '../utils/mailerSend';
 
 export type ClosureDirection = 'all' | 'income' | 'expense';
 export type ClosureMovement = {
@@ -353,41 +354,40 @@ export class FinancialClosuresService {
     if (later.docs.some((doc) => doc.id > month && ['closed', 'closing'].includes(doc.data().status))) {
       throw new ConflictException('Reabre primero los meses posteriores para mantener la continuidad de saldos.');
     }
-    const phone = String(condominium.data()?.reconciliationWhatsappPhone || '').replace(/\D/g, '');
-    if (!/^\d{10,15}$/.test(phone)) throw new BadRequestException('Configura el WhatsApp del administrador responsable en Configuración.');
-    const apiVersion = process.env.WHATSAPP_API_VERSION;
-    const phoneNumberId = process.env.PHONE_NUMBER_ID;
-    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-    if (!apiVersion || !phoneNumberId || !accessToken) {
-      throw new ServiceUnavailableException('WhatsApp no está configurado en el servidor.');
+    const email = String(condominium.data()?.reconciliationAdminEmail || '').trim().toLowerCase();
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new BadRequestException('Configura un correo válido del administrador responsable en Configuración.');
     }
     const challengeRef = condo.collection('financialReopenChallenges').doc(month);
-    const previous = await challengeRef.get();
-    if (previous.exists && Date.now() - Number(previous.data()?.createdAt?.toMillis?.() || 0) < 60000) {
-      throw new ConflictException('Espera un minuto antes de solicitar otro código.');
-    }
+    const now = Date.now();
+    const requestId = randomBytes(16).toString('hex');
     const code = String(randomInt(0, 1000000)).padStart(6, '0');
-    const salt = createHash('sha256').update(`${Date.now()}-${randomInt(0, 1000000)}`).digest('hex');
-    await challengeRef.set({ hash: createHash('sha256').update(`${salt}:${code}`).digest('hex'), salt,
-      createdAt: admin.firestore.Timestamp.now(), expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 10 * 60000),
-      attempts: 0, actorUid: params.actorUid, phoneLast4: phone.slice(-4) });
+    const salt = randomBytes(16).toString('hex');
+    await this.db.runTransaction(async (tx) => {
+      const previous = await tx.get(challengeRef);
+      if (previous.exists && now - Number(previous.data()?.createdAt?.toMillis?.() || 0) < 60000) {
+        throw new ConflictException('Espera un minuto antes de solicitar otro código.');
+      }
+      tx.set(challengeRef, { hash: createHash('sha256').update(`${salt}:${code}`).digest('hex'), salt,
+        createdAt: admin.firestore.Timestamp.fromMillis(now), expiresAt: admin.firestore.Timestamp.fromMillis(now + 10 * 60000),
+        attempts: 0, actorUid: params.actorUid, requestId });
+    });
     try {
-      const templateName = process.env.REOPEN_WHATSAPP_TEMPLATE_NAME;
-      const payload = templateName ? {
-        messaging_product: 'whatsapp', to: phone, type: 'template',
-        template: { name: templateName, language: { code: process.env.REOPEN_WHATSAPP_TEMPLATE_LANGUAGE || 'es_MX' }, components: [{ type: 'body', parameters: [{ type: 'text', text: code }, { type: 'text', text: month }] }] },
-      } : {
-        messaging_product: 'whatsapp', to: phone, type: 'text',
-        text: { body: `Código de autorización para reabrir la conciliación ${month}: ${code}. Vence en 10 minutos. No lo compartas.` },
-      };
-      await axios.post(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, payload, {
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, timeout: 15000,
-      });
+      const message = new EmailParams()
+        .setFrom(new Sender('MS_Fpa0aS@notifications.estate-admin.com', 'EstateAdmin'))
+        .setTo([new Recipient(email)])
+        .setSubject(`Código para reabrir la conciliación ${month}`)
+        .setText(`Tu código de autorización para reabrir la conciliación ${month} es: ${code}.\n\nVence en 10 minutos. No lo compartas. Si no solicitaste la reapertura, ignora este correo.`);
+      await mailerSend.email.send(message);
     } catch {
-      await challengeRef.delete().catch(() => undefined);
-      throw new ServiceUnavailableException('WhatsApp no pudo entregar el código. Si no hay una plantilla aprobada, el administrador debe abrir una conversación reciente con el número del servicio.');
+      await this.db.runTransaction(async (tx) => {
+        const challenge = await tx.get(challengeRef);
+        if (challenge.data()?.requestId === requestId) tx.delete(challengeRef);
+      }).catch(() => undefined);
+      throw new ServiceUnavailableException('No se pudo enviar el código por correo. Inténtalo de nuevo.');
     }
-    return { sent: true, phoneLast4: phone.slice(-4), expiresInSeconds: 600 };
+    const [localPart, domain] = email.split('@');
+    return { sent: true, emailMasked: `${localPart[0]}***@${domain}`, expiresInSeconds: 600 };
   }
 
   async reopen(params: { clientId: string; condominiumId: string; month: string; code: string; actorUid: string }) {
