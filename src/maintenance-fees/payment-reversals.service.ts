@@ -7,6 +7,7 @@ import {
 import * as admin from 'firebase-admin';
 import { createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { FinancialClosuresService } from './financial-closures.service';
 import {
   PaymentReversalCommitDto,
   PaymentReversalHistoryQueryDto,
@@ -65,6 +66,7 @@ type StoredReversalOperation = {
     towerSnapshot?: string;
     paymentGroupId?: string;
     financialAccountId?: string;
+    paymentMonth?: string;
   };
   impactSummary: ReversalImpactSummary;
   target: {
@@ -73,6 +75,7 @@ type StoredReversalOperation = {
     paymentGroupId?: string;
     userId?: string;
     financialAccountId?: string;
+    paymentMonth?: string;
     creditUsed: number;
     creditBalance: number;
     receiptUrl?: string;
@@ -104,6 +107,7 @@ type ResolvedPaymentTarget = {
   amountPaid: number;
   userId?: string;
   financialAccountId?: string;
+  paymentMonth?: string;
   creditUsed: number;
   creditBalance: number;
   receiptUrl?: string;
@@ -114,6 +118,7 @@ type ResolvedPaymentTarget = {
 
 @Injectable()
 export class PaymentReversalsService {
+  constructor(private readonly closures: FinancialClosuresService) {}
   private readonly logger = new Logger(PaymentReversalsService.name);
   private readonly firestore = admin.firestore();
   private readonly previewTtlMs = 15 * 60 * 1000;
@@ -216,6 +221,9 @@ export class PaymentReversalsService {
       userId: this.normalizeString(dto.userId),
       chargeId: this.normalizeString(dto.chargeId),
     });
+    if (resolvedPayment.paymentMonth) {
+      await this.closures.assertOpen(clientId, condominiumId, `${resolvedPayment.paymentMonth}-01`);
+    }
 
     const impactSummary: ReversalImpactSummary = {
       chargeRestoreAmount: this.roundAmount(resolvedPayment.amountPaid),
@@ -267,6 +275,7 @@ export class PaymentReversalsService {
           towerSnapshot: resolvedPayment.towerSnapshot,
           paymentGroupId: resolvedPayment.paymentGroupId,
           financialAccountId: resolvedPayment.financialAccountId,
+          paymentMonth: resolvedPayment.paymentMonth,
         },
         impactSummary,
         target: {
@@ -275,6 +284,7 @@ export class PaymentReversalsService {
           paymentGroupId: resolvedPayment.paymentGroupId,
           userId: resolvedPayment.userId,
           financialAccountId: resolvedPayment.financialAccountId,
+          paymentMonth: resolvedPayment.paymentMonth,
           creditUsed: resolvedPayment.creditUsed,
           creditBalance: resolvedPayment.creditBalance,
           receiptUrl: resolvedPayment.receiptUrl,
@@ -387,6 +397,14 @@ export class PaymentReversalsService {
         }
 
         const operation = operationSnap.data() as StoredReversalOperation;
+
+        const paymentMonth = this.normalizeString(operation.target?.paymentMonth);
+        if (paymentMonth) {
+          const closureSnap = await transaction.get(condominiumRef.collection('financialClosures').doc(paymentMonth));
+          if (['closed', 'closing'].includes(closureSnap.data()?.status)) {
+            this.throwApiError(HttpStatus.CONFLICT, 'PERIOD_CLOSED', `El mes ${paymentMonth} está cerrado; solicita su reapertura.`);
+          }
+        }
 
         if (
           this.normalizeString(operation.clientId) !== clientId ||
@@ -820,6 +838,7 @@ export class PaymentReversalsService {
       amountPaid,
       userId: this.normalizeString(data.userId),
       financialAccountId: this.normalizeString(data.financialAccountId),
+      paymentMonth: this.resolvePaymentMonth(data),
       creditUsed: 0,
       creditBalance: 0,
       receiptUrl: this.normalizeString(data.receiptUrl),
@@ -1120,6 +1139,13 @@ export class PaymentReversalsService {
         );
       }
 
+      const paymentMonth = this.resolvePaymentMonth(paymentData);
+      if (!paymentMonth) this.throwApiError(HttpStatus.CONFLICT, 'PAYMENT_INVALID', 'El pago no tiene fecha válida para reversa.');
+      const closureSnap = await params.transaction.get(params.condominiumRef.collection('financialClosures').doc(paymentMonth));
+      if (['closed', 'closing'].includes(closureSnap.data()?.status)) {
+        this.throwApiError(HttpStatus.CONFLICT, 'PERIOD_CLOSED', `El mes ${paymentMonth} está cerrado; solicita su reapertura.`);
+      }
+
       if (
         this.normalizeString(paymentData.clientId) !== params.operation.clientId ||
         this.normalizeString(paymentData.condominiumId) !== params.operation.condominiumId ||
@@ -1362,6 +1388,13 @@ export class PaymentReversalsService {
       );
     }
 
+    const paymentMonth = this.resolvePaymentMonth(unidentifiedData);
+    if (!paymentMonth) this.throwApiError(HttpStatus.CONFLICT, 'PAYMENT_INVALID', 'El pago no tiene fecha válida para reversa.');
+    const closureSnap = await params.transaction.get(params.condominiumRef.collection('financialClosures').doc(paymentMonth));
+    if (['closed', 'closing'].includes(closureSnap.data()?.status)) {
+      this.throwApiError(HttpStatus.CONFLICT, 'PERIOD_CLOSED', `El mes ${paymentMonth} está cerrado; solicita su reapertura.`);
+    }
+
     const amountPaid = this.roundAmount(this.toNumber(unidentifiedData.amountPaid));
     if (amountPaid <= 0) {
       this.throwApiError(
@@ -1506,6 +1539,7 @@ export class PaymentReversalsService {
       amountPaid,
       userId: params.userId,
       financialAccountId: this.normalizeString(data.financialAccountId),
+      paymentMonth: this.resolvePaymentMonth(data),
       creditUsed: this.roundAmount(this.toNumber(data.creditUsed)),
       creditBalance: this.roundAmount(this.toNumber(data.creditBalance)),
       receiptUrl: this.normalizeString(data.receiptUrl),
@@ -1638,6 +1672,7 @@ export class PaymentReversalsService {
       amountPaid,
       userId: targetUserId,
       financialAccountId: this.normalizeString(data.financialAccountId),
+      paymentMonth: this.resolvePaymentMonth(data),
       creditUsed: this.roundAmount(creditUsedFromDoc),
       creditBalance: this.roundAmount(creditBalanceFromDoc),
       receiptUrl: this.normalizeString(data.receiptUrl),
@@ -1800,6 +1835,14 @@ export class PaymentReversalsService {
       'Reversa de pago solicitada por administración';
 
     return resolved.slice(0, 300);
+  }
+
+  private resolvePaymentMonth(data: Record<string, any>): string {
+    const stored = this.normalizeString(data.yearMonth);
+    if (/^\d{4}-(0[1-9]|1[0-2])$/.test(stored)) return stored;
+    const date = data.paymentDate?.toDate?.() || data.paymentDate;
+    const parsed = date instanceof Date ? date : new Date(date);
+    return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 7);
   }
 
   private getAllowedPaymentIdsFromOperation(

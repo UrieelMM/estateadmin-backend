@@ -67,8 +67,30 @@ service cloud.firestore {
         'notificationQueue',
         'settings',
         'customChargeConcepts',
-        'customExpenseConcepts'
+        'customExpenseConcepts',
+        'financialClosures',
+        'financialReopenChallenges',
+        'expenses',
+        'unidentifiedPayments',
+        'unidentifiedPaymentsReversed',
+        'paymentsToSendEmail',
+        'reversedPaymentsToSendEmail',
+        'reversedPayments',
+        'paymentReversalOperations',
+        'paymentReversalIdempotency',
+        'paymentReversals'
       ].hasAny([collectionName]);
+    }
+    function isPeriodOpen(clientId, condominiumId, month) {
+      let path = /databases/$(database)/documents/clients/$(clientId)/condominiums/$(condominiumId)/financialClosures/$(month);
+      return month is string
+        && month.matches('^\\d{4}-(0[1-9]|1[0-2])$')
+        && (!exists(path) || get(path).data.status == 'open');
+    }
+    function isExpenseDateOpen(clientId, condominiumId, expenseDate) {
+      return expenseDate is string
+        && expenseDate.matches('^\\d{4}-(0[1-9]|1[0-2])-[0-3][0-9].*')
+        && isPeriodOpen(clientId, condominiumId, expenseDate.split('-')[0] + '-' + expenseDate.split('-')[1]);
     }
     function isSameClientUser(clientId, userId) {
       return isAuthenticated()
@@ -405,6 +427,37 @@ service cloud.firestore {
           allow delete: if false;
         }
 
+        match /financialClosures/{month} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow write: if false;
+        }
+        match /financialReopenChallenges/{month} {
+          allow read, write: if false;
+        }
+        match /expenses/{expenseId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+            && isExpenseDateOpen(clientId, condominiumId, request.resource.data.expenseDate);
+          allow update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+            && isExpenseDateOpen(clientId, condominiumId, resource.data.expenseDate)
+            && isExpenseDateOpen(clientId, condominiumId, request.resource.data.expenseDate);
+          allow delete: if ((isAdmin() && belongsToClient(clientId)) || isSuperAdmin())
+            && isExpenseDateOpen(clientId, condominiumId, resource.data.expenseDate);
+        }
+        match /unidentifiedPayments/{paymentId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow create: if false;
+          allow update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
+            && isPeriodOpen(clientId, condominiumId, resource.data.yearMonth)
+            && request.resource.data.yearMonth == resource.data.yearMonth
+            && request.resource.data.paymentDate == resource.data.paymentDate;
+          allow delete: if false;
+        }
+        match /paymentsToSendEmail/{paymentId} {
+          allow read: if belongsToClientOrSuperAdmin(clientId);
+          allow write: if false;
+        }
+
         // ─── Bitácora de auditoría transversal ───
         match /auditLogs/{logId} {
           allow read: if belongsToClientOrSuperAdmin(clientId);
@@ -452,9 +505,7 @@ service cloud.firestore {
             // ─── Pagos dentro de Cargos ───
             match /payments/{paymentId} {
               allow read:   if belongsToClientOrSuperAdmin(clientId);
-              allow create, update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
-                                     && isValidPayment();
-              allow delete: if (isAdmin() && belongsToClient(clientId)) || isSuperAdmin();
+              allow create, update, delete: if false;
             }
           }
           
@@ -585,45 +636,6 @@ service cloud.firestore {
       && request.resource.data.notificationSent is bool
       && request.resource.data.chargeId is string;
     }
-    function isValidPayment() {
-      return request.resource.data.keys().hasAll([
-        'amountPaid','amountPending','attachmentPayment','chargeUID',
-        'clientId','comments','concept','condominiumId',
-        'creditBalance','creditUsed','dateRegistered','email',
-        'financialAccountId','folio','invoiceRequired','month',
-        'numberCondominium','paymentDate','paymentGroupId',
-        'paymentReference',
-        'paymentId','paymentType','phone','startAt',
-        'userId','yearMonth', 'paymentAmountReference'
-      ])
-      && (request.resource.data.amountPaid is int || request.resource.data.amountPaid is float)
-      && (request.resource.data.amountPending is int || request.resource.data.amountPending is float)
-      && (request.resource.data.paymentAmountReference is int || request.resource.data.paymentAmountReference is float)
-      && request.resource.data.attachmentPayment is string
-      && request.resource.data.chargeUID is string
-      && request.resource.data.clientId is string
-      && request.resource.data.comments is string
-      && request.resource.data.concept is string
-      && request.resource.data.condominiumId is string
-      && (request.resource.data.creditBalance is int || request.resource.data.creditBalance is float)
-      && (request.resource.data.creditUsed is int || request.resource.data.creditUsed is float)
-      && request.resource.data.dateRegistered is timestamp
-      && request.resource.data.email is string
-      && request.resource.data.financialAccountId is string
-      && request.resource.data.folio is string
-      && request.resource.data.invoiceRequired is bool
-      && request.resource.data.month is string
-      && request.resource.data.numberCondominium is string
-      && request.resource.data.paymentDate is timestamp
-      && request.resource.data.paymentGroupId is string
-      && request.resource.data.paymentReference is string
-      && request.resource.data.paymentId is string
-      && request.resource.data.paymentType is string
-      && (request.resource.data.phone is int || request.resource.data.phone is float)
-      && request.resource.data.startAt is string
-      && request.resource.data.userId is string
-      && request.resource.data.userId.size() > 0
-      && request.resource.data.yearMonth is string;
-    }
+
   }
 }
