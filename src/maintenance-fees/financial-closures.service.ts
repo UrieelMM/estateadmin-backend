@@ -6,6 +6,7 @@ import { mailerSend } from '../utils/mailerSend';
 
 export type MovementDirection = 'income' | 'expense';
 export type ClosureDirection = 'all' | MovementDirection;
+export type MatchStatus = 'all' | 'matched' | 'unmatched';
 export type ClosureMovement = {
   id: string;
   type: 'income' | 'expense';
@@ -224,9 +225,11 @@ export class FinancialClosuresService {
     return { incomeCents, expenseCents, incomeCount: rows.filter((row) => row.type === 'income').length, expenseCount: rows.filter((row) => row.type === 'expense').length, digest };
   }
 
-  async movements(params: { clientId: string; condominiumId: string; from: string; to: string; direction?: ClosureDirection; search?: string; page?: number; limit?: number }) {
+  async movements(params: { clientId: string; condominiumId: string; from: string; to: string; direction?: ClosureDirection; matchStatus?: MatchStatus; search?: string; page?: number; limit?: number }) {
     this.validateRange(params.from, params.to);
     const direction = this.validDirection(params.direction || 'income');
+    const matchStatus = params.matchStatus || 'all';
+    if (!['all', 'matched', 'unmatched'].includes(matchStatus)) throw new BadRequestException('Filtro de conciliación inválido.');
     const condo = this.condo(params.clientId, params.condominiumId);
     const previousMonthDate = new Date(`${params.from.slice(0, 7)}-01T12:00:00Z`);
     previousMonthDate.setUTCDate(0);
@@ -288,12 +291,52 @@ export class FinancialClosuresService {
       previousMonthIsClosed: !!comparisonClosure,
       accounts,
     };
+    const periodIds = [...new Set(rows.map((row) => this.closureId(row.date.slice(0, 7), row.type)))];
+    const markSnaps = await Promise.all(periodIds.map((id) => condo.collection('financialReconciliationMarks').doc(id).collection('items').get()));
+    const markedIds = new Set(markSnaps.flatMap((snap) => snap.docs.map((doc) => String(doc.data().movementId || ''))));
+    const closureStatuses = new Map(closureHistory.docs.map((doc) => [doc.id, doc.data().status]));
+    const markedRows = rows.map((row) => ({
+      ...row,
+      matched: markedIds.has(row.id),
+      matchLocked: this.isBlocking(closureStatuses.get(row.date.slice(0, 7)))
+        || this.isBlocking(closureStatuses.get(this.closureId(row.date.slice(0, 7), row.type))),
+    }));
+    const matchSummary = { matched: markedRows.filter((row) => row.matched).length, unmatched: markedRows.filter((row) => !row.matched).length };
     const search = String(params.search || '').trim().toLocaleLowerCase('es-MX');
-    const filtered = rows.filter((row) => !search || [row.concept, row.condominiumUnit, row.reference, row.description, row.accountId]
-      .some((value) => value.toLocaleLowerCase('es-MX').includes(search)));
+    const filtered = markedRows.filter((row) => (matchStatus === 'all' || row.matched === (matchStatus === 'matched'))
+      && (!search || [row.concept, row.condominiumUnit, row.reference, row.description, row.accountId]
+        .some((value) => value.toLocaleLowerCase('es-MX').includes(search))));
     const page = Math.max(1, Number(params.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(params.limit) || 25));
-    return { items: filtered.slice((page - 1) * limit, page * limit), total: filtered.length, page, limit, summary, overview };
+    return { items: filtered.slice((page - 1) * limit, page * limit), total: filtered.length, page, limit, summary, overview, matchSummary };
+  }
+
+  async setMovementMatched(params: { clientId: string; condominiumId: string; movementId: string; date: string; matched: boolean; actorUid: string }) {
+    const date = this.validDate(params.date);
+    if (typeof params.movementId !== 'string' || !/^(income|expense):[^\s]{1,1000}$/.test(params.movementId) || typeof params.matched !== 'boolean') {
+      throw new BadRequestException('Selecciona un movimiento y un estado de conciliación válidos.');
+    }
+    const movement = (await this.readMovements(params.clientId, params.condominiumId, date, date))
+      .find((row) => row.id === params.movementId && row.date === date);
+    if (!movement) throw new BadRequestException('El movimiento ya no existe en la fecha indicada. Actualiza el listado.');
+    const month = date.slice(0, 7);
+    const condo = this.condo(params.clientId, params.condominiumId);
+    const closures = condo.collection('financialClosures');
+    const periodId = this.closureId(month, movement.type);
+    const markRef = condo.collection('financialReconciliationMarks').doc(periodId).collection('items')
+      .doc(createHash('sha256').update(movement.id).digest('hex'));
+    await this.db.runTransaction(async (tx) => {
+      const [legacy, selected] = await Promise.all([tx.get(closures.doc(month)), tx.get(closures.doc(periodId))]);
+      if (this.isBlocking(legacy.data()?.status) || this.isBlocking(selected.data()?.status)) {
+        throw new ConflictException(`Los ${movement.type === 'income' ? 'ingresos' : 'egresos'} de ${month} están cerrados. Solicita su reapertura para cambiar la conciliación.`);
+      }
+      if (params.matched) {
+        tx.set(markRef, { movementId: movement.id, date, direction: movement.type, matchedBy: params.actorUid, matchedAt: admin.firestore.FieldValue.serverTimestamp() });
+      } else {
+        tx.delete(markRef);
+      }
+    });
+    return { movementId: movement.id, matched: params.matched };
   }
 
   async list(clientId: string, condominiumId: string, direction: ClosureDirection, page = 1, limit = 10) {

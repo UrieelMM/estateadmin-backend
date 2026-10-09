@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Param, Post, Query, UnauthorizedException } from '@nestjs/common';
-import { FinancialClosuresService, ClosureDirection, MovementDirection } from './financial-closures.service';
+import { FinancialClosuresService, ClosureDirection, MatchStatus, MovementDirection } from './financial-closures.service';
 
 @Controller('financial-closures')
 export class FinancialClosuresController {
@@ -17,7 +17,17 @@ export class FinancialClosuresController {
       clientId: query.clientId, condominiumId: query.condominiumId,
       from: query.from, to: query.to,
       direction: (query.direction || 'income') as ClosureDirection,
+      matchStatus: (query.matchStatus || 'all') as MatchStatus,
       search: query.search, page: Number(query.page), limit: Number(query.limit),
+    });
+  }
+
+  @Post('movements/match')
+  async setMovementMatched(@Headers('authorization') authorization: string, @Body() body: Record<string, any>) {
+    const actor = await this.actor(authorization, body.clientId, body.condominiumId);
+    return this.service.setMovementMatched({
+      clientId: body.clientId, condominiumId: body.condominiumId,
+      movementId: body.movementId, date: body.date, matched: body.matched, actorUid: actor.uid,
     });
   }
 

@@ -69,6 +69,7 @@ service cloud.firestore {
         'customChargeConcepts',
         'customExpenseConcepts',
         'financialClosures',
+        'financialReconciliationMarks',
         'financialReopenChallenges',
         'expenses',
         'unidentifiedPayments',
@@ -433,6 +434,12 @@ service cloud.firestore {
         match /financialClosures/{month} {
           allow read: if belongsToClientOrSuperAdmin(clientId);
           allow write: if false;
+        }
+        match /financialReconciliationMarks/{periodId} {
+          allow read, write: if false;
+          match /items/{itemId} {
+            allow read, write: if false;
+          }
         }
         match /financialReopenChallenges/{month} {
           allow read, write: if false;

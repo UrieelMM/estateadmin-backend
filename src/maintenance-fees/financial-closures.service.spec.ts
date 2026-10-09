@@ -139,6 +139,46 @@ describe('FinancialClosuresService', () => {
     expect(result.overview.previousMonthIsClosed).toBe(true);
   });
 
+  it('autosaves reconciliation marks per movement and filters them without changing financial totals', async () => {
+    const documents: Record<string, any> = {};
+    const rows: any[] = [
+      { id: 'income:payment-1', type: 'income', date: '2026-02-10', amount: 12500, concept: 'Cuota', condominiumUnit: '101', reference: 'R1', accountId: '', description: '' },
+      { id: 'income:payment-2', type: 'income', date: '2026-02-11', amount: 2500, concept: 'Extra', condominiumUnit: '102', reference: 'R2', accountId: '', description: '' },
+      { id: 'expense:expense-1', type: 'expense', date: '2026-02-12', amount: 3000, concept: 'Limpieza', condominiumUnit: '', reference: 'E1', accountId: '', description: '' },
+    ];
+    const service = serviceWith(documents);
+    (service as any).readMovements = async (_client: string, _condo: string, from: string, to: string) => rows.filter((row) => row.date >= from && row.date <= to);
+    const common = { clientId: 'client-1', condominiumId: 'condo-1', from: '2026-02-01', to: '2026-02-28', direction: 'income' as const };
+    const before = await service.movements(common);
+    expect(before.matchSummary).toEqual({ matched: 0, unmatched: 2 });
+    await service.setMovementMatched({ clientId: 'client-1', condominiumId: 'condo-1', movementId: rows[0].id, date: rows[0].date, matched: true, actorUid: 'admin-1' });
+    const matched = await service.movements({ ...common, matchStatus: 'matched', page: 1, limit: 25 });
+    expect(matched.total).toBe(1);
+    expect(matched.items[0]).toMatchObject({ id: rows[0].id, matched: true, matchLocked: false });
+    expect(matched.matchSummary).toEqual({ matched: 1, unmatched: 1 });
+    expect(matched.summary).toEqual(before.summary);
+    expect((await service.movements({ ...common, matchStatus: 'unmatched' })).items.map((row) => row.id)).toEqual([rows[1].id]);
+    expect((await service.movements({ ...common, direction: 'expense' })).matchSummary).toEqual({ matched: 0, unmatched: 1 });
+    await service.setMovementMatched({ clientId: 'client-1', condominiumId: 'condo-1', movementId: rows[0].id, date: rows[0].date, matched: false, actorUid: 'admin-1' });
+    expect((await service.movements(common)).matchSummary).toEqual({ matched: 0, unmatched: 2 });
+  });
+
+  it('rejects changes to marks after the corresponding type or legacy month closes', async () => {
+    const documents: Record<string, any> = { [`${base}/financialClosures/2026-02_income`]: { status: 'closed' } };
+    const rows: any[] = [
+      { id: 'income:payment-1', type: 'income', date: '2026-02-10', amount: 100, concept: 'Cuota', condominiumUnit: '', reference: '', accountId: '', description: '' },
+      { id: 'expense:expense-1', type: 'expense', date: '2026-02-10', amount: 50, concept: 'Limpieza', condominiumUnit: '', reference: '', accountId: '', description: '' },
+    ];
+    const service = serviceWith(documents);
+    (service as any).readMovements = async () => rows;
+    const common = { clientId: 'client-1', condominiumId: 'condo-1', date: '2026-02-10', matched: true, actorUid: 'admin-1' };
+    await expect(service.setMovementMatched({ ...common, movementId: rows[0].id })).rejects.toThrow('cerrados');
+    expect((await service.movements({ clientId: 'client-1', condominiumId: 'condo-1', from: '2026-02-01', to: '2026-02-28', direction: 'income' })).items[0].matchLocked).toBe(true);
+    await service.setMovementMatched({ ...common, movementId: rows[1].id });
+    documents[`${base}/financialClosures/2026-02`] = { status: 'closed' };
+    await expect(service.setMovementMatched({ ...common, movementId: rows[1].id, matched: false })).rejects.toThrow('cerrados');
+  });
+
   it('blocks a payment operation while the month is closed', async () => {
     const documents = { [`${base}/financialClosures/2026-02`]: { status: 'closed', month: '2026-02', closedAt: admin.firestore.Timestamp.now() } };
     const service = serviceWith(documents);
