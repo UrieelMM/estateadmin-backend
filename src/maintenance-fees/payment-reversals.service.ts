@@ -400,8 +400,11 @@ export class PaymentReversalsService {
 
         const paymentMonth = this.normalizeString(operation.target?.paymentMonth);
         if (paymentMonth) {
-          const closureSnap = await transaction.get(condominiumRef.collection('financialClosures').doc(paymentMonth));
-          if (['closed', 'closing'].includes(closureSnap.data()?.status)) {
+          const [legacyClosure, incomeClosure] = await Promise.all([
+            transaction.get(condominiumRef.collection('financialClosures').doc(paymentMonth)),
+            transaction.get(condominiumRef.collection('financialClosures').doc(`${paymentMonth}_income`)),
+          ]);
+          if ([legacyClosure, incomeClosure].some((snap) => ['closed', 'closing'].includes(snap.data()?.status))) {
             this.throwApiError(HttpStatus.CONFLICT, 'PERIOD_CLOSED', `El mes ${paymentMonth} está cerrado; solicita su reapertura.`);
           }
         }
@@ -1141,8 +1144,11 @@ export class PaymentReversalsService {
 
       const paymentMonth = this.resolvePaymentMonth(paymentData);
       if (!paymentMonth) this.throwApiError(HttpStatus.CONFLICT, 'PAYMENT_INVALID', 'El pago no tiene fecha válida para reversa.');
-      const closureSnap = await params.transaction.get(params.condominiumRef.collection('financialClosures').doc(paymentMonth));
-      if (['closed', 'closing'].includes(closureSnap.data()?.status)) {
+      const [legacyClosure, incomeClosure] = await Promise.all([
+        params.transaction.get(params.condominiumRef.collection('financialClosures').doc(paymentMonth)),
+        params.transaction.get(params.condominiumRef.collection('financialClosures').doc(`${paymentMonth}_income`)),
+      ]);
+      if ([legacyClosure, incomeClosure].some((snap) => ['closed', 'closing'].includes(snap.data()?.status))) {
         this.throwApiError(HttpStatus.CONFLICT, 'PERIOD_CLOSED', `El mes ${paymentMonth} está cerrado; solicita su reapertura.`);
       }
 
@@ -1390,8 +1396,11 @@ export class PaymentReversalsService {
 
     const paymentMonth = this.resolvePaymentMonth(unidentifiedData);
     if (!paymentMonth) this.throwApiError(HttpStatus.CONFLICT, 'PAYMENT_INVALID', 'El pago no tiene fecha válida para reversa.');
-    const closureSnap = await params.transaction.get(params.condominiumRef.collection('financialClosures').doc(paymentMonth));
-    if (['closed', 'closing'].includes(closureSnap.data()?.status)) {
+    const [legacyClosure, incomeClosure] = await Promise.all([
+      params.transaction.get(params.condominiumRef.collection('financialClosures').doc(paymentMonth)),
+      params.transaction.get(params.condominiumRef.collection('financialClosures').doc(`${paymentMonth}_income`)),
+    ]);
+    if ([legacyClosure, incomeClosure].some((snap) => ['closed', 'closing'].includes(snap.data()?.status))) {
       this.throwApiError(HttpStatus.CONFLICT, 'PERIOD_CLOSED', `El mes ${paymentMonth} está cerrado; solicita su reapertura.`);
     }
 

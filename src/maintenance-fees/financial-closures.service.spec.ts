@@ -50,19 +50,20 @@ describe('FinancialClosuresService', () => {
   it('emails a one-time reopening code to the configured administrator', async () => {
     const documents: Record<string, any> = {
       [base]: { reconciliationAdminEmail: 'ADMIN@EXAMPLE.COM' },
-      [`${base}/financialClosures/2026-02`]: { status: 'closed' },
+      [`${base}/financialClosures/2026-02_income`]: { month: '2026-02', direction: 'income', status: 'closed' },
     };
     const send = jest.spyOn(mailerSend.email, 'send').mockResolvedValue({} as any);
 
-    const result = await serviceWith(documents).requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', actorUid: 'admin-1' });
+    const result = await serviceWith(documents).requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'income', actorUid: 'admin-1' });
 
     expect(result).toEqual({ sent: true, emailMasked: 'a***@example.com', expiresInSeconds: 600 });
     expect(send).toHaveBeenCalledTimes(1);
     const email = send.mock.calls[0][0];
     expect(email.to[0].email).toBe('admin@example.com');
+    expect(email.subject).toContain('ingresos');
     expect(email.text).toMatch(/\b\d{6}\b/);
-    expect(documents[`${base}/financialReopenChallenges/2026-02`]).toMatchObject({ actorUid: 'admin-1', attempts: 0 });
-    expect(documents[`${base}/financialReopenChallenges/2026-02`].code).toBeUndefined();
+    expect(documents[`${base}/financialReopenChallenges/2026-02_income`]).toMatchObject({ actorUid: 'admin-1', attempts: 0 });
+    expect(documents[`${base}/financialReopenChallenges/2026-02_income`].code).toBeUndefined();
   });
 
   it('requires a configured email and removes the challenge if sending fails', async () => {
@@ -72,12 +73,12 @@ describe('FinancialClosuresService', () => {
     };
     const send = jest.spyOn(mailerSend.email, 'send').mockRejectedValue(new Error('email rejected'));
     const service = serviceWith(documents);
-    await expect(service.requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', actorUid: 'admin-1' }))
+    await expect(service.requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'all', actorUid: 'admin-1' }))
       .rejects.toThrow('Configura un correo válido');
     expect(send).not.toHaveBeenCalled();
 
     documents[base].reconciliationAdminEmail = 'admin@example.com';
-    await expect(service.requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', actorUid: 'admin-1' }))
+    await expect(service.requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'all', actorUid: 'admin-1' }))
       .rejects.toThrow('No se pudo enviar el código');
     expect(documents[`${base}/financialReopenChallenges/2026-02`]).toBeUndefined();
   });
@@ -93,7 +94,7 @@ describe('FinancialClosuresService', () => {
       throw new Error('email rejected');
     });
 
-    await expect(serviceWith(documents).requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', actorUid: 'admin-1' }))
+    await expect(serviceWith(documents).requestReopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'all', actorUid: 'admin-1' }))
       .rejects.toThrow('No se pudo enviar el código');
     expect(documents[challengePath]).toEqual({ requestId: 'newer-request' });
   });
@@ -139,12 +140,59 @@ describe('FinancialClosuresService', () => {
   });
 
   it('blocks a payment operation while the month is closed', async () => {
-    const documents = { [`${base}/financialClosures/2026-02`]: { status: 'closed', month: '2026-02' } };
+    const documents = { [`${base}/financialClosures/2026-02`]: { status: 'closed', month: '2026-02', closedAt: admin.firestore.Timestamp.now() } };
     const service = serviceWith(documents);
     const action = jest.fn();
     await expect(service.withOpenMonth('client-1', 'condo-1', '2026-02-12T12:00:00Z', action))
       .rejects.toThrow('cerrado');
     expect(action).not.toHaveBeenCalled();
+    expect(await service.isClosed('client-1', 'condo-1', '2026-02-12', 'expense')).toBe(true);
+    expect((await service.get('client-1', 'condo-1', '2026-02', 'expense'))?.direction).toBe('all');
+    expect((await service.list('client-1', 'condo-1', 'expense')).total).toBe(0);
+    expect((await service.list('client-1', 'condo-1', 'all')).total).toBe(1);
+  });
+
+  it('keeps income and expense totals, closures, history and reopening independent', async () => {
+    const documents: Record<string, any> = {
+      [`${base}/financialAccounts/bank-1`]: { name: 'Banco', type: 'bank', initialBalance: 500 },
+    };
+    const rows: any[] = [
+      { id: 'income:1', type: 'income', date: '2026-02-10', amount: 10000, concept: 'Cuota', condominiumUnit: '101', reference: 'R1', accountId: '', description: '' },
+      { id: 'expense:1', type: 'expense', date: '2026-02-11', amount: 2500, concept: 'Limpieza', condominiumUnit: '', reference: 'E1', accountId: '', description: '' },
+    ];
+    const service = serviceWith(documents);
+    (service as any).readMovements = async () => rows;
+    const common = { clientId: 'client-1', condominiumId: 'condo-1', from: '2026-02-01', to: '2026-02-28', page: 1, limit: 25 };
+    const income = await service.movements({ ...common, direction: 'income' });
+    const expense = await service.movements({ ...common, direction: 'expense' });
+    expect(income.items.map((row) => row.type)).toEqual(['income']);
+    expect(expense.items.map((row) => row.type)).toEqual(['expense']);
+    expect(income.summary).toMatchObject({ incomeCents: 10000, expenseCents: 0 });
+    expect(expense.summary).toMatchObject({ incomeCents: 0, expenseCents: 2500 });
+    expect(income.overview.balanceAtEndCents).toBe(10000);
+    expect(expense.overview.balanceAtEndCents).toBe(2500);
+    expect(income.overview.globalBalanceAtEndCents).toBe(57500);
+    expect(expense.overview.globalBalanceAtEndCents).toBe(57500);
+
+    const closeArgs = { clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', openingBalanceCents: 0, actorUid: 'admin-1' };
+    await service.close({ ...closeArgs, direction: 'income', expectedDigest: income.summary.digest });
+    expect(await service.isClosed('client-1', 'condo-1', '2026-02-12', 'income')).toBe(true);
+    expect(await service.isClosed('client-1', 'condo-1', '2026-02-12', 'expense')).toBe(false);
+    await service.close({ ...closeArgs, direction: 'expense', expectedDigest: expense.summary.digest });
+    expect(documents[`${base}/financialClosures/2026-02_income`]).toMatchObject({ direction: 'income', incomeCents: 10000, expenseCents: 0, globalBalanceAtEndCents: 57500 });
+    expect(documents[`${base}/financialClosures/2026-02_expense`]).toMatchObject({ direction: 'expense', incomeCents: 0, expenseCents: 2500, globalBalanceAtEndCents: 57500 });
+    expect((await service.list('client-1', 'condo-1', 'income')).items.map((item: any) => item.id)).toEqual(['2026-02_income']);
+    expect((await service.list('client-1', 'condo-1', 'expense')).items.map((item: any) => item.id)).toEqual(['2026-02_expense']);
+
+    const salt = 'test-salt';
+    const code = '123456';
+    documents[`${base}/financialReopenChallenges/2026-02_expense`] = {
+      hash: createHash('sha256').update(`${salt}:${code}`).digest('hex'), salt,
+      actorUid: 'admin-1', attempts: 0, expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 600000),
+    };
+    await service.reopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'expense', code, actorUid: 'admin-1' });
+    expect(await service.isClosed('client-1', 'condo-1', '2026-02-12', 'income')).toBe(true);
+    expect(await service.isClosed('client-1', 'condo-1', '2026-02-12', 'expense')).toBe(false);
   });
 
   it('carries the last closed balance through months without a closure', async () => {
@@ -157,7 +205,7 @@ describe('FinancialClosuresService', () => {
       { id: 'expense:1', type: 'expense', date: '2026-02-14', amount: 1000 },
       { id: 'income:1', type: 'income', date: '2026-03-10', amount: 2000 },
     ];
-    const result = await service.movements({ clientId: 'client-1', condominiumId: 'condo-1', from: '2026-03-01', to: '2026-03-31', page: 1, limit: 25 });
+    const result = await service.movements({ clientId: 'client-1', condominiumId: 'condo-1', from: '2026-03-01', to: '2026-03-31', direction: 'all', page: 1, limit: 25 });
     expect(result.overview.previousMonth).toBe('2026-01');
     expect(result.overview.balanceBeforePeriodCents).toBe(59000);
     expect(result.overview.balanceAtEndCents).toBe(61000);
@@ -167,9 +215,9 @@ describe('FinancialClosuresService', () => {
     const documents: Record<string, any> = {};
     const service = serviceWith(documents);
     await service.withOpenMonth('client-1', 'condo-1', '2026-02-12', async () => {
-      expect(documents[`${base}/financialClosures/2026-02`].activeMutations).toBe(1);
+      expect(documents[`${base}/financialClosures/2026-02_income`].activeMutations).toBe(1);
     });
-    expect(documents[`${base}/financialClosures/2026-02`].activeMutations).toBe(0);
+    expect(documents[`${base}/financialClosures/2026-02_income`].activeMutations).toBe(0);
   });
 
   it('blocks new movements while closing and saves the month totals', async () => {
@@ -185,10 +233,11 @@ describe('FinancialClosuresService', () => {
       await expect(service.withOpenMonth('client-1', 'condo-1', '2026-02-12', async () => undefined)).rejects.toThrow('cerrado');
       return rows;
     };
-    const digest = (service as any).summarize(rows).digest;
-    const result = await service.close({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', openingBalanceCents: 50000, expectedDigest: digest, actorUid: 'admin-1' });
-    expect(result.closingBalanceCents).toBe(57500);
-    expect(documents[`${base}/financialClosures/2026-02`].status).toBe('closed');
+    const digest = (service as any).summarize(rows.filter((row) => row.type === 'income')).digest;
+    const result = await service.close({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'income', openingBalanceCents: 0, expectedDigest: digest, actorUid: 'admin-1' });
+    expect(result.closingBalanceCents).toBe(10000);
+    expect(documents[`${base}/financialClosures/2026-02_income`].status).toBe('closed');
+    expect(await service.isClosed('client-1', 'condo-1', '2026-02-12', 'expense')).toBe(false);
   });
 
   it('requires later closed months to reopen before closing an earlier month', async () => {
@@ -196,20 +245,20 @@ describe('FinancialClosuresService', () => {
       [`${base}/financialClosures/2026-03`]: { month: '2026-03', status: 'closed' },
     };
     const service = serviceWith(documents);
-    await expect(service.close({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', openingBalanceCents: 0, expectedDigest: '', actorUid: 'admin-1' }))
+    await expect(service.close({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'income', openingBalanceCents: 0, expectedDigest: '', actorUid: 'admin-1' }))
       .rejects.toThrow('meses posteriores');
   });
 
-  it('does not close with an opening balance different from the configured account balance', async () => {
+  it('rejects a stale opening amount for the selected movement type', async () => {
     const documents: Record<string, any> = {
       [`${base}/financialAccounts/account-1`]: { name: 'Banco', type: 'bank', initialBalance: 500 },
     };
     const service = serviceWith(documents);
     (service as any).readMovements = async () => [];
     const digest = (service as any).summarize([]).digest;
-    await expect(service.close({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', openingBalanceCents: 0, expectedDigest: digest, actorUid: 'admin-1' }))
-      .rejects.toThrow('saldo inicial cambió');
-    expect(documents[`${base}/financialClosures/2026-02`].status).toBe('open');
+    await expect(service.close({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'income', openingBalanceCents: 50000, expectedDigest: digest, actorUid: 'admin-1' }))
+      .rejects.toThrow('acumulado anterior cambió');
+    expect(documents[`${base}/financialClosures/2026-02_income`].status).toBe('open');
   });
 
   it('reopens the month after a matching one-time code', async () => {
@@ -224,9 +273,9 @@ describe('FinancialClosuresService', () => {
       },
     };
     const service = serviceWith(documents);
-    await expect(service.reopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', code: '000000', actorUid: 'admin-1' })).rejects.toThrow('incorrecto');
+    await expect(service.reopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'all', code: '000000', actorUid: 'admin-1' })).rejects.toThrow('incorrecto');
     expect(documents[`${base}/financialReopenChallenges/2026-02`].attempts).toBe(1);
-    await service.reopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', code, actorUid: 'admin-1' });
+    await service.reopen({ clientId: 'client-1', condominiumId: 'condo-1', month: '2026-02', direction: 'all', code, actorUid: 'admin-1' });
     expect(documents[`${base}/financialClosures/2026-02`].status).toBe('open');
     expect(documents[`${base}/financialReopenChallenges/2026-02`]).toBeUndefined();
   });

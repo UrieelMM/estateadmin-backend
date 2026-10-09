@@ -81,16 +81,19 @@ service cloud.firestore {
         'paymentReversals'
       ].hasAny([collectionName]);
     }
-    function isPeriodOpen(clientId, condominiumId, month) {
-      let path = /databases/$(database)/documents/clients/$(clientId)/condominiums/$(condominiumId)/financialClosures/$(month);
+    function isPeriodOpen(clientId, condominiumId, month, direction) {
+      let legacyPath = /databases/$(database)/documents/clients/$(clientId)/condominiums/$(condominiumId)/financialClosures/$(month);
+      let selectedMonth = month + '_' + direction;
+      let selectedPath = /databases/$(database)/documents/clients/$(clientId)/condominiums/$(condominiumId)/financialClosures/$(selectedMonth);
       return month is string
         && month.matches('^\\d{4}-(0[1-9]|1[0-2])$')
-        && (!exists(path) || get(path).data.status == 'open');
+        && (!exists(legacyPath) || get(legacyPath).data.status == 'open')
+        && (!exists(selectedPath) || get(selectedPath).data.status == 'open');
     }
     function isExpenseDateOpen(clientId, condominiumId, expenseDate) {
       return expenseDate is string
         && expenseDate.matches('^\\d{4}-(0[1-9]|1[0-2])-[0-3][0-9].*')
-        && isPeriodOpen(clientId, condominiumId, expenseDate.split('-')[0] + '-' + expenseDate.split('-')[1]);
+        && isPeriodOpen(clientId, condominiumId, expenseDate.split('-')[0] + '-' + expenseDate.split('-')[1], 'expense');
     }
     function isSameClientUser(clientId, userId) {
       return isAuthenticated()
@@ -448,7 +451,7 @@ service cloud.firestore {
           allow read: if belongsToClientOrSuperAdmin(clientId);
           allow create: if false;
           allow update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
-            && isPeriodOpen(clientId, condominiumId, resource.data.yearMonth)
+            && isPeriodOpen(clientId, condominiumId, resource.data.yearMonth, 'income')
             && request.resource.data.yearMonth == resource.data.yearMonth
             && request.resource.data.paymentDate == resource.data.paymentDate;
           allow delete: if false;
