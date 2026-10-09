@@ -103,10 +103,11 @@ service firebase.storage {
     }
 
     /* ─── Inventarios ─── */
-    /* Maintenance users can read images of inventory items and (in items
-       marked managedByMaintenanceApp=true) attach new images. The
-       managedByMaintenanceApp check lives in Firestore rules; Storage
-       enforces role + size + image content-type. */
+    /* Los usuarios de la app de mantenimiento pueden leer y subir imágenes
+       (PNG/JPG/etc.) para los ítems marcados como administrables por la app.
+       La verificación de "managedByMaintenanceApp" se hace en Firestore
+       (canMaintenanceUpdateInventoryItem). Storage no puede leer documentos,
+       así que limitamos por rol + content-type + size. */
     match /clients/{clientId}/condominiums/{condominiumId}/inventory_items/{itemId}/{fileName} {
       allow read:    if belongsToClient(clientId)
                        || (isMaintenanceUser() && belongsToClient(clientId))
@@ -354,6 +355,24 @@ service firebase.storage {
       allow read:            if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
       allow create, update:  if (((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin()) && isValidFileSize() && isValidContentType());
       allow delete:          if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
+    }
+
+    /* ─── Asambleas: Logos personalizados ───
+       Subidos por el admin del cliente para mostrarse en cada slide.
+       Lectura pública porque el viewer (`/asamblea/:id`) no requiere auth. */
+    match /clients/{clientId}/condominiums/{condominiumId}/assembly/logos/{fileName} {
+      allow read: if true;
+      allow create, update: if (
+        (isAdminOrAssistant()
+          && belongsToClient(clientId)
+          && isValidFileSize()
+          && request.resource.contentType.matches('image/.*'))
+        || isSuperAdmin()
+      );
+      allow delete: if (
+        (isAdmin() && belongsToClient(clientId))
+        || isSuperAdmin()
+      );
     }
 
     /* ─── ÁREAS COMUNES (ajuste 1) ─── */
