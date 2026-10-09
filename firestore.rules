@@ -88,6 +88,7 @@ service cloud.firestore {
       let selectedPath = /databases/$(database)/documents/clients/$(clientId)/condominiums/$(condominiumId)/financialClosures/$(selectedMonth);
       return month is string
         && month.matches('^\\d{4}-(0[1-9]|1[0-2])$')
+        && ['income', 'expense'].hasAny([direction])
         && (!exists(legacyPath) || get(legacyPath).data.status == 'open')
         && (!exists(selectedPath) || get(selectedPath).data.status == 'open');
     }
@@ -482,7 +483,9 @@ service cloud.firestore {
             && request.resource.data.name is string
             && request.resource.data.name.size() >= 2
             && request.resource.data.name.size() <= 100
-            && request.resource.data.normalizedName is string;
+            && request.resource.data.normalizedName is string
+            && request.resource.data.normalizedName.size() >= 2
+            && request.resource.data.normalizedName.size() <= 100;
           allow delete: if false;
         }
 
@@ -492,7 +495,9 @@ service cloud.firestore {
             && request.resource.data.name is string
             && request.resource.data.name.size() >= 2
             && request.resource.data.name.size() <= 100
-            && request.resource.data.normalizedName is string;
+            && request.resource.data.normalizedName is string
+            && request.resource.data.normalizedName.size() >= 2
+            && request.resource.data.normalizedName.size() <= 100;
           allow delete: if false;
         }
 
@@ -521,10 +526,13 @@ service cloud.firestore {
           
           // ─── Otras subcolecciones de tercer nivel ───
           match /{subcollection}/{subdocId} {
-            allow read:   if belongsToClientOrSuperAdmin(clientId);
-            allow create, update: if !['notifications'].hasAny([subcollection])
+            allow read:   if !['financialClosures', 'financialReconciliationMarks', 'financialReopenChallenges'].hasAny([collection])
+                          && belongsToClientOrSuperAdmin(clientId);
+            allow create, update: if !['financialClosures', 'financialReconciliationMarks', 'financialReopenChallenges'].hasAny([collection])
+                                  && !['notifications'].hasAny([subcollection])
                                   && ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin());
-            allow delete: if !['notifications'].hasAny([subcollection])
+            allow delete: if !['financialClosures', 'financialReconciliationMarks', 'financialReopenChallenges'].hasAny([collection])
+                          && !['notifications'].hasAny([subcollection])
                           && ((isAdmin() && belongsToClient(clientId)) || isSuperAdmin());
           }
         }
