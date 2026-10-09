@@ -15,6 +15,20 @@ export type ClosureMovement = {
   accountId: string;
   description: string;
 };
+export type FinancialPeriodOverview = {
+  configuredInitialBalanceCents: number;
+  bankInitialBalanceCents: number;
+  historicalIncomeCents: number;
+  historicalExpenseCents: number;
+  balanceBeforePeriodCents: number;
+  balanceAtEndCents: number;
+  previousMonth: string;
+  previousMonthIncomeCents: number;
+  previousMonthExpenseCents: number;
+  previousMonthClosingBalanceCents: number;
+  previousMonthIsClosed: boolean;
+  accounts: { id: string; name: string; type: string; initialBalanceCents: number }[];
+};
 
 @Injectable()
 export class FinancialClosuresService {
@@ -104,12 +118,16 @@ export class FinancialClosuresService {
     }
   }
 
-  async readMovements(clientId: string, condominiumId: string, from: string, to: string): Promise<ClosureMovement[]> {
+  private validateRange(from: string, to: string, allowHistorical = false) {
     this.validDate(from);
     this.validDate(to);
-    if (from > to || (new Date(`${to}T12:00:00Z`).getTime() - new Date(`${from}T12:00:00Z`).getTime()) > 366 * 86400000) {
+    if (from > to || (!allowHistorical && (new Date(`${to}T12:00:00Z`).getTime() - new Date(`${from}T12:00:00Z`).getTime()) > 366 * 86400000)) {
       throw new BadRequestException('Selecciona un rango válido de hasta 12 meses.');
     }
+  }
+
+  async readMovements(clientId: string, condominiumId: string, from: string, to: string, allowHistorical = false): Promise<ClosureMovement[]> {
+    this.validateRange(from, to, allowHistorical);
     const condo = this.condo(clientId, condominiumId);
     const [users, expenses, unidentified] = await Promise.all([
       condo.collection('users').get(),
@@ -179,15 +197,65 @@ export class FinancialClosuresService {
   }
 
   async movements(params: { clientId: string; condominiumId: string; from: string; to: string; direction?: ClosureDirection; search?: string; page?: number; limit?: number }) {
-    const rows = await this.readMovements(params.clientId, params.condominiumId, params.from, params.to);
+    this.validateRange(params.from, params.to);
+    const condo = this.condo(params.clientId, params.condominiumId);
+    const previousMonthDate = new Date(`${params.from.slice(0, 7)}-01T12:00:00Z`);
+    previousMonthDate.setUTCDate(0);
+    const previousMonth = previousMonthDate.toISOString().slice(0, 7);
+    const [historicalRows, accountSnap, previousClosure, closureHistory] = await Promise.all([
+      this.readMovements(params.clientId, params.condominiumId, '1900-01-01', params.to, true),
+      condo.collection('financialAccounts').get(),
+      condo.collection('financialClosures').doc(previousMonth).get(),
+      condo.collection('financialClosures').orderBy('month', 'desc').get(),
+    ]);
+    const rows = historicalRows.filter((row) => row.date >= params.from);
     const summary = this.summarize(rows);
+    const before = this.summarize(historicalRows.filter((row) => row.date < params.from));
+    const historical = this.summarize(historicalRows);
+    const previousRows = historicalRows.filter((row) => row.date.startsWith(previousMonth));
+    const previousSummary = this.summarize(previousRows);
+    const throughPrevious = this.summarize(historicalRows.filter((row) => row.date <= previousMonthDate.toISOString().slice(0, 10)));
+    const accounts = accountSnap.docs.map((account) => ({
+      id: account.id,
+      name: String(account.data().name || 'Cuenta sin nombre'),
+      type: String(account.data().type || ''),
+      initialBalanceCents: Math.round(Number(account.data().initialBalance || 0) * 100),
+    })).filter((account) => Number.isSafeInteger(account.initialBalanceCents));
+    const configuredInitialBalanceCents = accounts.reduce((sum, account) => sum + account.initialBalanceCents, 0);
+    const bankInitialBalanceCents = accounts.filter((account) => account.type === 'bank').reduce((sum, account) => sum + account.initialBalanceCents, 0);
+    const previousClosed = previousClosure.data()?.status === 'closed';
+    const previousClosedPeriod = [...closureHistory.docs].sort((a, b) => b.id.localeCompare(a.id))
+      .find((doc) => doc.id < params.from.slice(0, 7) && doc.data().status === 'closed');
+    const comparisonClosure = previousClosed ? previousClosure : previousClosedPeriod;
+    const calculatedBefore = configuredInitialBalanceCents + before.incomeCents - before.expenseCents;
+    const priorClosureEnd = String(previousClosedPeriod?.data().to || `${previousClosedPeriod?.id || ''}-31`);
+    const sincePrior = this.summarize(historicalRows.filter((row) => row.date > priorClosureEnd && row.date < params.from));
+    const balanceBeforePeriodCents = previousClosedPeriod
+      ? Number(previousClosedPeriod.data().closingBalanceCents || 0) + sincePrior.incomeCents - sincePrior.expenseCents
+      : calculatedBefore;
+    const overview: FinancialPeriodOverview = {
+      configuredInitialBalanceCents,
+      bankInitialBalanceCents,
+      historicalIncomeCents: historical.incomeCents,
+      historicalExpenseCents: historical.expenseCents,
+      balanceBeforePeriodCents,
+      balanceAtEndCents: balanceBeforePeriodCents + summary.incomeCents - summary.expenseCents,
+      previousMonth: comparisonClosure?.id || previousMonth,
+      previousMonthIncomeCents: comparisonClosure ? Number(comparisonClosure.data().incomeCents || 0) : previousSummary.incomeCents,
+      previousMonthExpenseCents: comparisonClosure ? Number(comparisonClosure.data().expenseCents || 0) : previousSummary.expenseCents,
+      previousMonthClosingBalanceCents: comparisonClosure
+        ? Number(comparisonClosure.data().closingBalanceCents || 0)
+        : configuredInitialBalanceCents + throughPrevious.incomeCents - throughPrevious.expenseCents,
+      previousMonthIsClosed: !!comparisonClosure,
+      accounts,
+    };
     const direction = params.direction || 'all';
     const search = String(params.search || '').trim().toLocaleLowerCase('es-MX');
     const filtered = rows.filter((row) => (direction === 'all' || row.type === direction)
       && (!search || [row.concept, row.condominiumUnit, row.reference, row.description, row.accountId].some((value) => value.toLocaleLowerCase('es-MX').includes(search))));
     const page = Math.max(1, Number(params.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(params.limit) || 25));
-    return { items: filtered.slice((page - 1) * limit, page * limit), total: filtered.length, page, limit, summary };
+    return { items: filtered.slice((page - 1) * limit, page * limit), total: filtered.length, page, limit, summary, overview };
   }
 
   async list(clientId: string, condominiumId: string, page = 1, limit = 10) {
@@ -226,9 +294,14 @@ export class FinancialClosuresService {
       tx.set(ref, { month, status: 'closing', closingAt: admin.firestore.Timestamp.now(), closingLease: lease, activeMutations: 0 }, { merge: true });
     });
     try {
-    const rows = await this.readMovements(params.clientId, params.condominiumId, from, to);
-    const summary = this.summarize(rows);
+    const { summary, overview } = await this.movements({
+      clientId: params.clientId, condominiumId: params.condominiumId,
+      from, to, page: 1, limit: 1,
+    });
     if (summary.digest !== params.expectedDigest) throw new ConflictException('Los movimientos cambiaron. Actualiza el listado antes de cerrar.');
+    if (openingBalanceCents !== overview.balanceBeforePeriodCents) {
+      throw new ConflictException('El saldo inicial cambió. Actualiza los saldos antes de cerrar.');
+    }
     const previousMonth = new Date(`${from}T12:00:00Z`);
     previousMonth.setUTCDate(0);
     const previous = await condo.collection('financialClosures').doc(previousMonth.toISOString().slice(0, 7)).get();
@@ -248,7 +321,12 @@ export class FinancialClosuresService {
       if (snap.data()?.status !== 'closing' || snap.data()?.closingLease !== lease) throw new ConflictException('El cierre fue interrumpido; vuelve a cargar.');
       tx.set(ref, {
         month, from, to, status: 'closed', openingBalanceCents, closingBalanceCents,
-        ...summary, closedAt: admin.firestore.Timestamp.now(), closedBy: params.actorUid,
+        ...summary,
+        configuredInitialBalanceCents: overview.configuredInitialBalanceCents,
+        bankInitialBalanceCents: overview.bankInitialBalanceCents,
+        historicalIncomeCents: overview.historicalIncomeCents,
+        historicalExpenseCents: overview.historicalExpenseCents,
+        closedAt: admin.firestore.Timestamp.now(), closedBy: params.actorUid,
         revision: Number(snap.data()?.revision || 0) + 1, activeMutations: 0,
         closingLease: admin.firestore.FieldValue.delete(),
       }, { merge: true });

@@ -56,6 +56,7 @@ export class MaintenanceFeesController {
       chargeAssignments: req.body.chargeAssignments,
       useCreditBalance: req.body.useCreditBalance,
       isUnidentifiedPayment: req.body.isUnidentifiedPayment,
+      sourceUnidentifiedPaymentId: req.body.sourceUnidentifiedPaymentId,
       financialAccountId: req.body.financialAccountId,
       startAt: req.body.startAt,
       startAts: req.body.startAts,

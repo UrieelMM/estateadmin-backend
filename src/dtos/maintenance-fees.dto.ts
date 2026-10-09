@@ -100,6 +100,10 @@ export class MaintenanceFeesDto {
   @IsOptional()
   isUnidentifiedPayment: boolean;
 
+  @IsOptional()
+  @IsString()
+  sourceUnidentifiedPaymentId?: string;
+
   @IsNotEmpty()
   @IsString()
   clientId: string;
