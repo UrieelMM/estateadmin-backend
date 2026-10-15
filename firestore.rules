@@ -79,7 +79,14 @@ service cloud.firestore {
         'reversedPayments',
         'paymentReversalOperations',
         'paymentReversalIdempotency',
-        'paymentReversals'
+        'paymentReversals',
+        'reversedExpenses',
+        'expenseReversalOperations',
+        'expenseReversalIdempotency',
+        'expenseReversals',
+        'expenseEdits',
+        'expenseEditIdempotency',
+        'openingCredits'
       ].hasAny([collectionName]);
     }
     function isPeriodOpen(clientId, condominiumId, month, direction) {
@@ -451,7 +458,9 @@ service cloud.firestore {
             && isExpenseDateOpen(clientId, condominiumId, request.resource.data.expenseDate);
           allow update: if ((isAdminOrAssistant() && belongsToClient(clientId)) || isSuperAdmin())
             && isExpenseDateOpen(clientId, condominiumId, resource.data.expenseDate)
-            && isExpenseDateOpen(clientId, condominiumId, request.resource.data.expenseDate);
+            && isExpenseDateOpen(clientId, condominiumId, request.resource.data.expenseDate)
+            && !request.resource.data.diff(resource.data).affectedKeys()
+                 .hasAny(['editCount', 'lastEditedBy', 'lastEditedAt', 'lastEditId']);
           allow delete: if ((isAdmin() && belongsToClient(clientId)) || isSuperAdmin())
             && isExpenseDateOpen(clientId, condominiumId, resource.data.expenseDate);
         }

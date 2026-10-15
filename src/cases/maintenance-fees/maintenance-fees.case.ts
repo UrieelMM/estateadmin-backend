@@ -13,6 +13,69 @@ import {
   resolveTowerSnapshot,
   sanitizeTowerSnapshot,
 } from 'src/utils/tower-snapshot';
+import {
+  CREDIT_ALLOCATION_PER_PAYMENT,
+  allocateCents,
+  resolveOpeningCreditUsage,
+} from './payment-credit-allocation';
+
+type ActiveOpeningCredit = {
+  ref: FirebaseFirestore.DocumentReference;
+  id: string;
+  remainingCents: number;
+};
+
+const findActiveOpeningCredit = async (
+  clientId: string,
+  condominiumId: string,
+  userId: string,
+): Promise<ActiveOpeningCredit | null> => {
+  const snapshot = await admin
+    .firestore()
+    .collection('clients')
+    .doc(clientId)
+    .collection('condominiums')
+    .doc(condominiumId)
+    .collection('openingCredits')
+    .where('userId', '==', userId)
+    .where('status', '==', 'active')
+    .limit(1)
+    .get();
+  if (snapshot.empty) return null;
+  const doc = snapshot.docs[0];
+  const data = doc.data();
+  const amountCents = Math.round(Number(data.amountCents) || 0);
+  const remainingCents =
+    data.remainingCents === undefined
+      ? amountCents
+      : Math.round(Number(data.remainingCents) || 0);
+  return {
+    ref: doc.ref,
+    id: doc.id,
+    remainingCents: Math.max(0, Math.min(amountCents, remainingCents)),
+  };
+};
+
+const consumeOpeningCredit = async (
+  openingCredit: ActiveOpeningCredit,
+  usedCents: number,
+  appliedAt: admin.firestore.Timestamp,
+) => {
+  await admin.firestore().runTransaction(async (transaction) => {
+    const snap = await transaction.get(openingCredit.ref);
+    if (!snap.exists) return;
+    const data = snap.data() || {};
+    const amountCents = Math.round(Number(data.amountCents) || 0);
+    const currentRemaining =
+      data.remainingCents === undefined
+        ? amountCents
+        : Math.round(Number(data.remainingCents) || 0);
+    transaction.update(openingCredit.ref, {
+      remainingCents: Math.max(0, currentRemaining - usedCents),
+      lastAppliedAt: appliedAt,
+    });
+  });
+};
 
 const normalizeEmail = (value: unknown): string =>
   String(value || '')
@@ -272,6 +335,7 @@ export const MaintenancePaymentCase = async (
 
     let totalLeftover = 0;
     const paymentsArray: any[] = [];
+    const paymentRefs: FirebaseFirestore.DocumentReference[] = [];
     let index = 0;
     // Por cada asignación se procesa el cargo correspondiente
     for (const assignment of assignments) {
@@ -350,13 +414,41 @@ export const MaintenancePaymentCase = async (
         paymentAmountReference: assignedAmount,
       };
       console.log('individual paymentRecord', paymentRecord);
-      await assignmentChargeRef
-        .collection('payments')
-        .doc(individualPaymentId)
-        .set(paymentRecord);
+      paymentRefs.push(
+        assignmentChargeRef.collection('payments').doc(individualPaymentId),
+      );
       paymentsArray.push(paymentRecord);
       totalLeftover += leftoverForThisCharge;
       index++;
+    }
+
+    // creditUsed del grupo se reparte entre los pagos para que la suma por pago no lo duplique.
+    const creditAllocation = allocateCents(
+      creditUsed,
+      paymentsArray.map((p) => Number(p.amountPaid || 0)),
+    );
+    const openingCredit =
+      creditUsed > 0
+        ? await findActiveOpeningCredit(clientId, condominiumId, userId)
+        : null;
+    const openingCreditUsed = openingCredit
+      ? resolveOpeningCreditUsage({
+          remainingCents: openingCredit.remainingCents,
+          availableCreditCents: currentTotalCredit,
+          creditUsedCents: creditUsed,
+        })
+      : 0;
+    const openingAllocation = allocateCents(openingCreditUsed, creditAllocation);
+    paymentsArray.forEach((paymentRecord, paymentIndex) => {
+      paymentRecord.creditUsed = creditAllocation[paymentIndex];
+      paymentRecord.creditAllocation = CREDIT_ALLOCATION_PER_PAYMENT;
+      if (openingCredit && openingAllocation[paymentIndex] > 0) {
+        paymentRecord.openingCreditUsed = openingAllocation[paymentIndex];
+        paymentRecord.openingCreditId = openingCredit.id;
+      }
+    });
+    for (let paymentIndex = 0; paymentIndex < paymentsArray.length; paymentIndex++) {
+      await paymentRefs[paymentIndex].set(paymentsArray[paymentIndex]);
     }
 
     const aggregatedAmountPaid = paymentsArray.reduce(
@@ -397,6 +489,10 @@ export const MaintenancePaymentCase = async (
       invoiceRequired,
       creditBalance: aggregatedCreditBalance,
       creditUsed: creditUsed,
+      creditAllocation: CREDIT_ALLOCATION_PER_PAYMENT,
+      ...(openingCredit && openingCreditUsed > 0
+        ? { openingCreditUsed, openingCreditId: openingCredit.id }
+        : {}),
       paymentType: paymentType || '',
       paymentGroupId: resolvedPaymentGroupId,
       paymentDate: paymentDate
@@ -440,6 +536,9 @@ export const MaintenancePaymentCase = async (
     const newUserTotalCredit = currentTotalCredit - creditUsed + totalLeftover;
     const newTotalCredit = Math.round(newUserTotalCredit * 100) / 100;
     await userRef.update({ totalCreditBalance: newTotalCredit });
+    if (openingCredit && openingCreditUsed > 0) {
+      await consumeOpeningCredit(openingCredit, openingCreditUsed, currentTimestamp);
+    }
 
     return {
       overallCreditBalance: newTotalCredit,
@@ -527,6 +626,17 @@ export const MaintenancePaymentCase = async (
 
     const effectivePayment = amountPaid + creditToApply;
     const creditUsed = creditToApply;
+    const openingCredit =
+      creditUsed > 0
+        ? await findActiveOpeningCredit(clientId, condominiumId, userId)
+        : null;
+    const openingCreditUsed = openingCredit
+      ? resolveOpeningCreditUsage({
+          remainingCents: openingCredit.remainingCents,
+          availableCreditCents: currentTotalCredit,
+          creditUsedCents: creditUsed,
+        })
+      : 0;
     let leftover = 0;
     if (effectivePayment > remainingAmount) {
       leftover = Math.round((effectivePayment - remainingAmount) * 100) / 100;
@@ -564,6 +674,10 @@ export const MaintenancePaymentCase = async (
       invoiceRequired,
       creditBalance: leftover > 0 ? leftover : 0,
       creditUsed,
+      creditAllocation: CREDIT_ALLOCATION_PER_PAYMENT,
+      ...(openingCredit && openingCreditUsed > 0
+        ? { openingCreditUsed, openingCreditId: openingCredit.id }
+        : {}),
       paymentType: paymentType || '',
       paymentGroupId: resolvedPaymentGroupId,
       paymentDate: paymentDate
@@ -607,6 +721,9 @@ export const MaintenancePaymentCase = async (
         totalCreditBalance: Math.round(newCredit * 100) / 100,
       });
     });
+    if (openingCredit && openingCreditUsed > 0) {
+      await consumeOpeningCredit(openingCredit, openingCreditUsed, currentTimestamp);
+    }
 
     return {
       paymentId,

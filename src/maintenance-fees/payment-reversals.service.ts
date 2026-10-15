@@ -1230,6 +1230,36 @@ export class PaymentReversalsService {
       userBalanceUpdate = { userRef, newCredit };
     }
 
+    const openingCreditRestores = new Map<string, number>();
+    for (const state of componentStates) {
+      const openingCreditId = this.normalizeString(state.paymentData.openingCreditId);
+      const openingCreditUsed = Math.round(this.toNumber(state.paymentData.openingCreditUsed));
+      if (!openingCreditId || openingCreditUsed <= 0) continue;
+      openingCreditRestores.set(
+        openingCreditId,
+        (openingCreditRestores.get(openingCreditId) || 0) + openingCreditUsed,
+      );
+    }
+    const openingCreditUpdates: Array<{
+      ref: FirebaseFirestore.DocumentReference;
+      remainingCents: number;
+    }> = [];
+    for (const [openingCreditId, restoreCents] of openingCreditRestores) {
+      const openingRef = params.condominiumRef.collection('openingCredits').doc(openingCreditId);
+      const openingSnap = await params.transaction.get(openingRef);
+      const openingData = openingSnap.data() || {};
+      if (!openingSnap.exists || openingData.status !== 'active') continue;
+      const amountCents = Math.round(this.toNumber(openingData.amountCents));
+      const currentRemaining =
+        openingData.remainingCents === undefined
+          ? amountCents
+          : Math.round(this.toNumber(openingData.remainingCents));
+      openingCreditUpdates.push({
+        ref: openingRef,
+        remainingCents: Math.min(amountCents, currentRemaining + restoreCents),
+      });
+    }
+
     const totalPaidAmount = this.roundAmount(
       components.reduce(
         (sum, component) => sum + this.toNumber(component.amountPaid),
@@ -1317,6 +1347,13 @@ export class PaymentReversalsService {
         updatedBy: params.actorUid,
       });
       params.effects.creditAdjusted = true;
+    }
+
+    for (const update of openingCreditUpdates) {
+      params.transaction.update(update.ref, {
+        remainingCents: update.remainingCents,
+        updatedAt: params.nowTs,
+      });
     }
 
     if (financialAccountAdjustment) {

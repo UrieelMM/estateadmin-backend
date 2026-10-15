@@ -3,6 +3,10 @@ import * as admin from 'firebase-admin';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import axios from 'axios';
+import {
+  CreditNormalizationEntry,
+  normalizeGroupCreditUsed,
+} from 'src/cases/maintenance-fees/payment-credit-allocation';
 
 export interface ChargeData {
   id: string;
@@ -44,6 +48,8 @@ export interface ProcessedAccountData {
     totalPaid: number;
     totalBalance: number;
     totalCreditBalance: number;
+    /** Saldo a favor inicial activo (centavos); no está en los pagos porque no es ingreso. */
+    openingCreditTotal: number;
   };
 }
 
@@ -86,12 +92,14 @@ export class AccountStatementService {
             totalPaid: 0,
             totalBalance: 0,
             totalCreditBalance: 0,
+            openingCreditTotal: 0,
           },
         };
       }
 
       const charges: ChargeData[] = [];
       const payments: PaymentData[] = [];
+      const creditEntries: CreditNormalizationEntry[] = [];
 
       // Procesar cada cargo y sus pagos
       for (const chargeDoc of chargesSnapshot.docs) {
@@ -110,8 +118,22 @@ export class AccountStatementService {
           }
           paymentData.id = paymentDoc.id;
           payments.push(paymentData);
+          const rawPayment = paymentDoc.data();
+          creditEntries.push({
+            key: paymentDoc.ref.path,
+            groupKey: String(rawPayment.paymentGroupId || rawPayment.folio || ''),
+            order: String(chargeData.startAt || ''),
+            amountPaid: rawPayment.amountPaid,
+            creditUsed: rawPayment.creditUsed,
+            creditAllocation: rawPayment.creditAllocation,
+          });
         }
       }
+
+      const normalizedCreditUsed = normalizeGroupCreditUsed(creditEntries);
+      payments.forEach((payment, index) => {
+        payment.creditUsed = normalizedCreditUsed.get(creditEntries[index].key) || 0;
+      });
 
       // Calcular resumen
       const totalCharges = charges.reduce(
@@ -127,6 +149,11 @@ export class AccountStatementService {
         0,
       );
       const totalBalance = totalCharges - totalPaid;
+      const openingCreditTotal = await this.getActiveOpeningCreditTotal(
+        clientId,
+        condominiumId,
+        userId,
+      );
 
       this.logger.log(
         `Estado de cuenta obtenido: ${charges.length} cargos, ${payments.length} pagos`,
@@ -140,6 +167,7 @@ export class AccountStatementService {
           totalPaid,
           totalBalance,
           totalCreditBalance,
+          openingCreditTotal,
         },
       };
     } catch (error) {
@@ -149,6 +177,24 @@ export class AccountStatementService {
       );
       throw error;
     }
+  }
+
+  private async getActiveOpeningCreditTotal(
+    clientId: string,
+    condominiumId: string,
+    userId: string,
+  ): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(
+        `clients/${clientId}/condominiums/${condominiumId}/openingCredits`,
+      )
+      .where('userId', '==', userId)
+      .where('status', '==', 'active')
+      .get();
+    return snapshot.docs.reduce((sum, doc) => {
+      const amountCents = Number(doc.data().amountCents);
+      return sum + (Number.isFinite(amountCents) ? Math.round(amountCents) : 0);
+    }, 0);
   }
 
   /**
@@ -292,14 +338,21 @@ export class AccountStatementService {
         return sum + amountPaid + creditBalance - creditUsed;
       }, 0);
 
-      // 3. Saldo = Total de Cargos - Total de Monto Abonado
-      const balance = totalCharges - totalPaid;
+      // 3. El saldo a favor inicial cubre cargos (vía creditUsed) sin ser un abono nuevo
+      const openingCreditTotal = accountData.summary.openingCreditTotal || 0;
+
+      // 4. Saldo = Total de Cargos - Total de Monto Abonado - Saldo a favor inicial
+      const balance = totalCharges - totalPaid - openingCreditTotal;
 
       const summaryData = [
         ['Total de Cargos', this.formatCurrency(totalCharges)],
         ['Total de Monto Abonado', this.formatCurrency(totalPaid)],
+        ...(openingCreditTotal > 0
+          ? [['Saldo a favor inicial', this.formatCurrency(openingCreditTotal)]]
+          : []),
         ['Saldo', this.formatCurrency(balance)],
       ];
+      const balanceRowIndex = summaryData.length - 1;
 
       autoTable(doc, {
         startY: yPos,
@@ -321,8 +374,8 @@ export class AccountStatementService {
         didParseCell: (data) => {
           if (data.section === 'body' && data.column.index === 1) {
             const rowIndex = data.row.index;
-            // Aplicar color solo a la fila del saldo (índice 2)
-            if (rowIndex === 2) {
+            // Aplicar color solo a la fila del saldo (última fila)
+            if (rowIndex === balanceRowIndex) {
               if (balance < 0) {
                 data.cell.styles.textColor = [0, 128, 0]; // Verde para saldo a favor
               } else if (balance > 0) {
